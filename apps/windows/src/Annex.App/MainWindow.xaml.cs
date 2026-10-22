@@ -21,6 +21,10 @@ public sealed partial class MainWindow : Window
     private CoreClient? _core;
     private DiscoveryHandle? _discovery;
     private ViewerHandle? _viewer;
+    private HostHandle? _host;
+    private IReadOnlyList<MonitorInfo> _monitors = [];
+    private ContentDialog? _pinDialog;
+    private ulong _pinRequest;
     private TrayIcon? _tray;
     private bool _quitting;
     private string _viewingName = "";
@@ -58,6 +62,7 @@ public sealed partial class MainWindow : Window
             VersionText.Text = $"Annex {AnnexNative.Version}";
             _discovery = new DiscoveryHandle(_core, e => _ui.TryEnqueue(() => OnDiscovery(e)));
             RefreshTrusted();
+            RefreshMonitors();
         }
         catch (Exception ex)
         {
@@ -68,6 +73,10 @@ public sealed partial class MainWindow : Window
     private IReadOnlyList<TrayIcon.MenuItem?> BuildTrayMenu()
     {
         var items = new List<TrayIcon.MenuItem?> { new("Open Annex", ShowFromTray), null };
+        items.Add(_host is null
+            ? new("Share this screen", () => HostToggle.IsOn = true)
+            : new("Stop sharing", () => HostToggle.IsOn = false));
+        items.Add(null);
         if (_viewer is not null)
         {
             items.Add(new($"Viewing {_viewingName}", () => { }, Enabled: false));
@@ -99,6 +108,130 @@ public sealed partial class MainWindow : Window
         Close();
         Application.Current.Exit();
     }
+
+    // ---- Hosting ----------------------------------------------------------------------
+
+    private void RefreshMonitors()
+    {
+        try
+        {
+            _monitors = AnnexNative.Monitors();
+        }
+        catch (Exception ex)
+        {
+            HostStatusText.Text = $"Can't list displays: {ex.Message}";
+            _monitors = [];
+        }
+        MonitorBox.ItemsSource = _monitors.Select(m => m.Label).ToList();
+        MonitorBox.SelectedIndex = _monitors.Count > 0 ? 0 : -1;
+    }
+
+    private void HostToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (HostToggle.IsOn) StartHosting(); else StopHosting();
+    }
+
+    private void StartHosting()
+    {
+        if (_core is null || _host is not null) return;
+        var index = Math.Max(0, MonitorBox.SelectedIndex);
+        var hardware = HardwareBox.IsChecked == true;
+        try
+        {
+            try
+            {
+                _host = HostHandle.StartScreen(_core, index, 47800, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)));
+            }
+            catch (AnnexException)
+            {
+                // Default port busy: take any free port (discovery advertises it).
+                _host = HostHandle.StartScreen(_core, index, 0, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)));
+            }
+            HostStatusText.Text = $"Waiting for a viewer on port {_host.Port}…";
+            MonitorBox.IsEnabled = HardwareBox.IsEnabled = false;
+            if (_tray is not null) _tray.Tooltip = "Annex — sharing this screen";
+        }
+        catch (AnnexException ex)
+        {
+            HostStatusText.Text = $"Could not start sharing: {ex.Message}";
+            HostToggle.IsOn = false;
+        }
+    }
+
+    private void StopHosting()
+    {
+        var h = _host;
+        _host = null;
+        h?.Dispose();
+        HostStatusText.Text = "";
+        MonitorBox.IsEnabled = HardwareBox.IsEnabled = true;
+        if (_tray is not null) _tray.Tooltip = "Annex";
+    }
+
+    private async void OnHostEvent(CoreEvent e)
+    {
+        switch (e)
+        {
+            case CoreEvent.PairingPin pin:
+                await ShowPin(pin);
+                break;
+            case CoreEvent.PairingFinished f when f.RequestId == _pinRequest:
+                _pinDialog?.Hide();
+                if (!f.Success) HostStatusText.Text = $"Pairing with {f.PeerName} failed.";
+                RefreshTrusted();
+                break;
+            case CoreEvent.SessionStarted s:
+                HostStatusText.Text = $"Streaming to {s.PeerName} — {s.Stream.Width}×{s.Stream.Height} @ {s.Stream.Fps} fps";
+                RefreshTrusted();
+                break;
+            case CoreEvent.SessionEnded:
+                if (_host is not null) HostStatusText.Text = $"Waiting for a viewer on port {_host.Port}…";
+                break;
+        }
+    }
+
+    private async Task ShowPin(CoreEvent.PairingPin pin)
+    {
+        if (_core is null) return;
+        ShowFromTray();
+        _pinRequest = pin.RequestId;
+        var panel = new StackPanel { Spacing = 8 };
+        panel.Children.Add(new TextBlock { Text = $"Enter this PIN on {pin.PeerName}:", TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock
+        {
+            Text = pin.Pin,
+            FontSize = 40,
+            FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            IsTextSelectionEnabled = true,
+        });
+        panel.Children.Add(new TextBlock { Text = $"Its identity code: {pin.FingerprintDisplay}" });
+        _pinDialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = $"“{pin.PeerName}” wants to view this PC",
+            Content = panel,
+            CloseButtonText = "Don't allow",
+        };
+        try
+        {
+            var result = await _pinDialog.ShowAsync();
+            // Closed by the user (not by pairing finishing): refuse the pairing.
+            if (result == ContentDialogResult.None && _pinRequest == pin.RequestId && _host is not null)
+                _core.CancelRequest(pin.RequestId);
+        }
+        catch (Exception ex)
+        {
+            // Another dialog is already open; the viewer side will time out.
+            HostStatusText.Text = $"PIN {pin.Pin} for {pin.PeerName} ({ex.Message})";
+        }
+        finally
+        {
+            _pinDialog = null;
+        }
+    }
+
+    // ---- Viewing ----------------------------------------------------------------------
 
     private void OnDiscovery(CoreEvent e)
     {
@@ -253,6 +386,7 @@ public sealed partial class MainWindow : Window
     {
         _tray?.Dispose();
         _tray = null;
+        StopHosting();
         Disconnect();
         _discovery?.Dispose();
         _discovery = null;

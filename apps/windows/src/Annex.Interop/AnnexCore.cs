@@ -67,6 +67,10 @@ public static class AnnexNative
     public static string Version => Marshal.PtrToStringUTF8(NativeMethods.annex_version()) ?? "";
     public static long NowMicros() => NativeMethods.annex_now_us();
     public static string DisplayFingerprint(string fp) => NativeMethods.TakeString(NativeMethods.annex_display_fingerprint(fp));
+
+    /// <summary>Windows only: connected monitors, main display first.</summary>
+    public static IReadOnlyList<MonitorInfo> Monitors() =>
+        AnnexJson.Deserialize<MonitorInfo[]>(NativeMethods.TakeString(NativeMethods.annex_win_monitors_json()));
 }
 
 /// <summary>Identity and trust store. Create one per process.</summary>
@@ -121,6 +125,27 @@ public sealed unsafe class HostHandle : IDisposable
     private readonly CoreClient _core;
     private readonly CallbackTarget _target;
     private nint _raw;
+
+    private HostHandle(CoreClient core, CallbackTarget target, nint raw)
+    {
+        _core = core;
+        _target = target;
+        _raw = raw;
+    }
+
+    /// <summary>Windows only: share a monitor. Capture and encoding run in the core.</summary>
+    public static HostHandle StartScreen(CoreClient core, int monitorIndex, ushort port, bool advertise, bool preferHardware,
+        Action<CoreEvent> onEvent)
+    {
+        var target = new CallbackTarget(onEvent);
+        if (NativeMethods.annex_host_start_screen(core.Raw, (uint)monitorIndex, port, advertise, preferHardware,
+                CallbackTarget.EventCallback, target.Context, out var raw) < 0)
+        {
+            target.Dispose();
+            throw NativeMethods.LastError();
+        }
+        return new HostHandle(core, target, raw);
+    }
 
     public HostHandle(CoreClient core, ushort port, int width, int height, int fps, bool advertise, Action<CoreEvent> onEvent, string codec = "h264")
     {

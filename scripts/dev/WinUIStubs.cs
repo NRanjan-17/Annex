@@ -7,5 +7,9 @@ public sealed partial class MainWindow
     private TextBlock DeviceNameText = new(), FingerprintText = new(), NoHostsText = new(), StatusText = new(), LatencyText = new(), VersionText = new();
     private ListView HostsList = new(), TrustedList = new();
     private TextBox AddressBox = new();
+    private ToggleSwitch HostToggle = new();
+    private ComboBox MonitorBox = new();
+    private CheckBox HardwareBox = new();
+    private TextBlock HostStatusText = new();
     private void InitializeComponent() { }
 }

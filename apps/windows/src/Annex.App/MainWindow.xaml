@@ -13,7 +13,15 @@
                            ToolTipService.ToolTip="This device's identity code. Compare it with what the other device shows when pairing." />
             </StackPanel>
 
-            <TextBlock Text="Hosts on this network" Style="{StaticResource BodyStrongTextBlockStyle}" />
+            <TextBlock Text="Share this PC's screen" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,8,0,0" />
+            <ToggleSwitch x:Name="HostToggle" Header="Mirror to another computer" Toggled="HostToggle_Toggled" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <ComboBox x:Name="MonitorBox" Header="Display" MinWidth="260" />
+                <CheckBox x:Name="HardwareBox" Content="Hardware encoder" IsChecked="True" VerticalAlignment="Bottom" />
+            </StackPanel>
+            <TextBlock x:Name="HostStatusText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+            <TextBlock Text="View another computer" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,12,0,0" />
             <TextBlock x:Name="NoHostsText" Text="Looking for hosts…" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <ListView x:Name="HostsList" SelectionMode="None" IsItemClickEnabled="True"
                       ItemClick="HostsList_ItemClick" DisplayMemberPath="Name" MaxHeight="220" />

@@ -78,6 +78,15 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport(Lib)] public static partial void annex_host_free(nint host);
 
+    /// <summary>Windows only.</summary>
+    [LibraryImport(Lib)] public static partial nint annex_win_monitors_json();
+
+    /// <summary>Windows only: the core captures and encodes the monitor while a viewer is connected.</summary>
+    [LibraryImport(Lib)]
+    public static partial int annex_host_start_screen(nint core, uint monitorIndex, ushort port,
+        [MarshalAs(UnmanagedType.U1)] bool advertise, [MarshalAs(UnmanagedType.U1)] bool preferHardware,
+        delegate* unmanaged<nint, nint, void> onEvent, nint ctx, out nint host);
+
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_viewer_connect(nint core, string address, string? expectedFingerprint, string? displayJson,
         delegate* unmanaged<nint, nint, void> onEvent, delegate* unmanaged<nint, byte*, nuint, uint, long, byte, void> onFrame,

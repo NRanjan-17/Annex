@@ -26,7 +26,7 @@ macOS 27.0.1 (Apple Silicon), Xcode 27.1, Rust 1.99.1:
 |---|---|---|
 | Rust core | macOS 27.0.1 (local); Ubuntu 24.04, macOS 26, Windows Server 2025 (CI) | |
 | macOS app | macOS 27.0.1 build + tests + launch | Live screen capture with a real viewer (needs Screen Recording approval), macOS 14–26 |
-| Windows app | C# compile-checked on macOS; CI builds it | **Running it on Windows 10/11** |
+| Windows app | C# compile-checked on macOS; CI builds it; MF software encode→decode round trip runs on the Windows CI runner | **Running it on Windows 10/11** (capture, hardware encode/decode, UI) |
 
 ## Manual tests: M1/M2 (Mac host → Windows viewer, LAN, encrypted, PIN pairing)
 
@@ -67,11 +67,26 @@ These need two machines (or a Windows VM with network bridging). Put both on the
 8. Lockout: enter a wrong PIN 5 times in a row. The 6th attempt must fail immediately with
    "pairing_locked" and no PIN panel on the Mac (it unlocks after 10 minutes).
 
+### 2b. M3: the other directions
+
+Repeat section 2 with the roles swapped. Pass criteria are the same: pairing, picture within
+~1 s, Esc to disconnect, reconnect without PIN.
+
+| Direction | Host steps | Viewer steps |
+|---|---|---|
+| **Windows → Mac** | Tray → *Share this screen* (pick the display; *Hardware encoder* on). Windows may show a one-time capture border on older builds. | Mac menu → click the PC under *View another computer*, type the PIN shown on the PC |
+| **Mac → Mac** | Mac A: *Share this screen* | Mac B: click Mac A, type the PIN |
+| **Windows → Windows** | PC A: *Share this screen* | PC B: click PC A, type the PIN |
+
+Also check on the Windows host: change the screen's resolution in Settings → Display while
+streaming (the stream continues, letterboxed), and cover the screen with a fast-moving video
+(no stalls; the latency line on the viewer stays under ~80 ms on 5 GHz Wi-Fi).
+
 ### 3. Tray behaviour (Windows)
 
 - Close the main window (X): Annex stays in the tray. Left-click the tray icon: the window
-  comes back. Right-click: the menu lists discovered hosts ("View <name>"), "Disconnect"
-  while viewing, and "Quit Annex". Quit removes the icon.
+  comes back. Right-click: the menu has "Share this screen" / "Stop sharing", discovered hosts
+  ("View <name>"), "Disconnect" while viewing, and "Quit Annex". Quit removes the icon.
 
 ### 4. Uninstall cleanup (Windows)
 

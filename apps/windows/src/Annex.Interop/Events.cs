@@ -22,6 +22,11 @@ public sealed record PeerInfo(string Instance, string Name, string[] Addresses, 
 
 public sealed record TrustedPeer(string Fingerprint, string Name, ulong AddedAt, ulong LastSeen);
 
+public sealed record MonitorInfo(int Index, string Name, int Width, int Height, int RefreshHz, bool Primary)
+{
+    public string Label => $"{(Primary ? "Main display" : Name.TrimStart('\\', '.'))} — {Width}×{Height}";
+}
+
 public abstract record CoreEvent
 {
     public sealed record Listening(int Port) : CoreEvent;
@@ -103,6 +108,7 @@ internal sealed record InstanceDto(string Instance);
 [JsonSerializable(typeof(PeerInfo))]
 [JsonSerializable(typeof(DisplayInfo))]
 [JsonSerializable(typeof(TrustedPeer[]))]
+[JsonSerializable(typeof(MonitorInfo[]))]
 [JsonSerializable(typeof(StreamWrapper))]
 [JsonSerializable(typeof(ReasonDto))]
 [JsonSerializable(typeof(MessageDto))]

@@ -4,14 +4,14 @@ Use another computer as an extra or mirrored display, over your local network, e
 encrypted. Mac and Windows, in any combination. Open source (MIT), no cloud, no accounts,
 no telemetry.
 
-> **Status: M2 done**: mirror Mac → Windows with hardware encode/decode and PIN pairing.
-> See [docs/PLAN.md](docs/PLAN.md) for the roadmap (all directions, real virtual displays,
-> wired/QUIC, input forwarding).
+> **Status: M3 done**: mirroring works in all four directions (Mac↔Windows, Mac↔Mac,
+> Windows↔Windows) with hardware codecs and PIN pairing. See [docs/PLAN.md](docs/PLAN.md) for
+> the roadmap (real virtual displays, wired/QUIC, input forwarding).
 
 | | Host (shares its screen) | Viewer (shows the stream) |
 |---|---|---|
-| macOS 14+ | ✅ M1 | ✅ basic (window / full screen) |
-| Windows 10 2004+ / 11 | M3 | ✅ M1 (full screen, tray app) |
+| macOS 14+ | ✅ menu bar app | ✅ window / full screen |
+| Windows 10 2004+ / 11 | ✅ tray app | ✅ full screen |
 
 ## How it works
 
@@ -31,13 +31,16 @@ Download from [Releases](https://github.com/NRanjan-17/Annex/releases):
   or drive, for just you or for all users. Uninstalling removes the app **and** all settings,
   identity keys and trusted devices.
 
-## Use it (mirror a Mac on a Windows PC)
+## Use it
 
-1. **Mac:** menu bar icon → **Share this screen (Mirror)**. Allow Screen Recording when asked.
-2. **Windows:** open Annex from the system tray. Click the Mac under *Hosts on this network*
-   (or type its IP address).
-3. The first time, the Mac shows a 6-digit PIN. Type it on the PC to pair (once per device pair).
-4. The Mac's screen appears full screen on the PC. Press **Esc** to disconnect.
+1. On the computer whose screen you want to share (the **host**):
+   - **Mac:** menu bar icon → **Share this screen (Mirror)**. Allow Screen Recording when asked.
+   - **Windows:** tray icon → **Share this screen** (or open Annex and turn on *Mirror to
+     another computer*).
+2. On the other computer (the **viewer**), click the host under *Hosts on this network* (or
+   type its IP address).
+3. The first time, the host shows a 6-digit PIN. Type it on the viewer (once per pair of devices).
+4. The host's screen appears full screen on the viewer. Press **Esc** to disconnect.
 
 Step-by-step manual test plans: [docs/TESTING.md](docs/TESTING.md).
 

@@ -33,6 +33,13 @@ public class EventTests
         Assert.Equal("10.0.0.2:5", (p.Peer with { Addresses = ["10.0.0.2"], Port = 5 }).ConnectAddress);
     }
 
+    [Fact]
+    public void MonitorLabels()
+    {
+        Assert.Equal("Main display — 2560×1440", new MonitorInfo(0, @"\\.\DISPLAY1", 2560, 1440, 60, true).Label);
+        Assert.Equal("DISPLAY2 — 1920×1080", new MonitorInfo(1, @"\\.\DISPLAY2", 1920, 1080, 60, false).Label);
+    }
+
     [Theory]
     [InlineData("""{"type":"from_the_future","x":1}""", "from_the_future")]
     [InlineData("not json", "invalid")]
