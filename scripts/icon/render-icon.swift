@@ -15,6 +15,8 @@ guard args.count >= 2 else {
 let out = URL(fileURLWithPath: args[1])
 let size = args.count >= 3 ? CGFloat(Double(args[2]) ?? 1024) : 1024
 let flat = args.contains("--flat")
+/// `--glyph`: the menu bar template image (black shapes on transparent; macOS tints it).
+let glyph = args.contains("--glyph")
 
 func rgb(_ hex: UInt32, _ a: CGFloat = 1) -> CGColor {
     CGColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
@@ -30,6 +32,33 @@ ctx.scaleBy(x: size / 1024, y: -size / 1024)
 
 func gradient(_ colors: [CGColor], _ locations: [CGFloat]) -> CGGradient {
     CGGradient(colorsSpace: space, colors: colors as CFArray, locations: locations)!
+}
+
+if glyph {
+    // Two displays in outline, the front one with a stand; drawn on a 1024 canvas.
+    let black = CGColor(gray: 0, alpha: 1)
+    ctx.setStrokeColor(black)
+    ctx.setFillColor(black)
+    ctx.setLineWidth(72)
+    ctx.setLineJoin(.round)
+    let back = CGRect(x: 76, y: 150, width: 560, height: 390)
+    let front = CGRect(x: 388, y: 380, width: 560, height: 390)
+    // The back display shows only where the front one doesn't cover it.
+    ctx.saveGState()
+    ctx.addRect(CGRect(x: 0, y: 0, width: 1024, height: 1024))
+    ctx.addPath(CGPath(roundedRect: front.insetBy(dx: -70, dy: -70), cornerWidth: 110, cornerHeight: 110, transform: nil))
+    ctx.clip(using: .evenOdd)
+    ctx.addPath(CGPath(roundedRect: back, cornerWidth: 70, cornerHeight: 70, transform: nil))
+    ctx.strokePath()
+    ctx.restoreGState()
+    ctx.addPath(CGPath(roundedRect: front, cornerWidth: 70, cornerHeight: 70, transform: nil))
+    ctx.strokePath()
+    ctx.fill(CGRect(x: 632, y: 770, width: 72, height: 90))
+    ctx.addPath(CGPath(roundedRect: CGRect(x: 500, y: 850, width: 336, height: 72), cornerWidth: 36, cornerHeight: 36, transform: nil))
+    ctx.fillPath()
+    let image = ctx.makeImage()!
+    try! NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])!.write(to: out)
+    exit(0)
 }
 
 // Background tile. macOS: 824 px squircle centred on the 1024 canvas, with a soft drop shadow.

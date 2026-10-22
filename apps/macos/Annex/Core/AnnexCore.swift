@@ -86,6 +86,10 @@ final class CoreClient {
     var fingerprint: String { takeString(annex_core_fingerprint(raw)) }
     var deviceName: String { takeString(annex_core_device_name(raw)) }
 
+    /// Renames this device; returns the name as stored (cleaned and shortened).
+    @discardableResult
+    func setDeviceName(_ name: String) -> String { takeString(annex_core_set_device_name(raw, name)) }
+
     var trustedPeers: [TrustedPeer] {
         let json = takeString(annex_core_trusted_peers_json(raw))
         return (try? CoreEvent.decoder.decode([TrustedPeer].self, from: Data(json.utf8))) ?? []

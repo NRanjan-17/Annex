@@ -43,6 +43,22 @@ ${images%,$'\n'}
 }
 JSON
 
+echo "==> Menu bar glyph (template image)"
+GLYPH="$CAT/MenuBarIcon.imageset"
+mkdir -p "$GLYPH"
+"$TMP/render" "$GLYPH/menubar.png" 18 --glyph
+"$TMP/render" "$GLYPH/menubar@2x.png" 36 --glyph
+cat > "$GLYPH/Contents.json" <<'JSON'
+{
+  "images" : [
+    { "filename" : "menubar.png", "idiom" : "mac", "scale" : "1x" },
+    { "filename" : "menubar@2x.png", "idiom" : "mac", "scale" : "2x" }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 },
+  "properties" : { "template-rendering-intent" : "template" }
+}
+JSON
+
 echo "==> Windows .ico"
 for s in 16 20 24 32 40 48 64 128 256; do
   "$TMP/render" "$TMP/win-$s.png" "$s" --flat

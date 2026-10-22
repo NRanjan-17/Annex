@@ -297,8 +297,19 @@ pub unsafe extern "C" fn annex_core_fingerprint(core: *const AnnexCore) -> *mut 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn annex_core_device_name(core: *const AnnexCore) -> *mut c_char {
     match unsafe { core.as_ref() } {
-        Some(c) => out_string(c.core.device_name()),
+        Some(c) => out_string(&c.core.device_name()),
         None => std::ptr::null_mut(),
+    }
+}
+
+/// Renames this device (shown to other devices on their next connection; advertisements
+/// update when hosting restarts). Returns the stored name (cleaned and shortened).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_set_device_name(core: *const AnnexCore, name: *const c_char) -> *mut c_char {
+    let Some(c) = (unsafe { core.as_ref() }) else { return std::ptr::null_mut() };
+    match unsafe { str_arg(name, "name") } {
+        Ok(n) => out_string(&c.core.set_device_name(n)),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 
@@ -414,7 +425,7 @@ pub unsafe extern "C" fn annex_host_start(
         let handle =
             c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, callbacks.event_sink())).map_err(failed)?;
         let advert = if advertise {
-            Some(c.discovery()?.advertise_host(c.core.device_name(), handle.port()).map_err(failed)?)
+            Some(c.discovery()?.advertise_host(&c.core.device_name(), handle.port()).map_err(failed)?)
         } else {
             None
         };
@@ -596,7 +607,7 @@ pub unsafe extern "C" fn annex_host_start_screen(
         let (host, screen) =
             win_host::start(c, monitor, port, prefer_hardware, callbacks.event_sink()).map_err(failed)?;
         let advert = if advertise {
-            Some(c.discovery()?.advertise_host(c.core.device_name(), host.port()).map_err(failed)?)
+            Some(c.discovery()?.advertise_host(&c.core.device_name(), host.port()).map_err(failed)?)
         } else {
             None
         };

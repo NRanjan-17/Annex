@@ -62,6 +62,9 @@ char *annex_core_device_name(const AnnexCore *core);
 char *annex_core_trusted_peers_json(const AnnexCore *core);
 /* Returns 1 if removed, 0 if not trusted. */
 int32_t annex_core_untrust(const AnnexCore *core, const char *fingerprint);
+/* Renames this device; returns the stored name (free with annex_string_free). Advertisements
+ * update when hosting restarts. */
+char *annex_core_set_device_name(const AnnexCore *core, const char *name);
 /* Host: lets a trusted device control this computer's mouse and keyboard (off by default).
  * Returns 1 if changed, 0 if the device isn't trusted. Running sessions follow within ~1 s. */
 int32_t annex_core_set_allow_input(const AnnexCore *core, const char *fingerprint, bool allow);

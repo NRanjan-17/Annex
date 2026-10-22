@@ -28,7 +28,7 @@ pub const FAILURE_WINDOW: Duration = Duration::from_secs(10 * 60);
 pub struct Core {
     identity: Identity,
     trust: Mutex<TrustStore>,
-    device_name: String,
+    device_name: Mutex<String>,
     policy: TrustPolicy,
     /// Outstanding requests waiting for the user: a PIN (viewer) or a cancel (host).
     pending: Mutex<HashMap<u64, oneshot::Sender<Option<String>>>>,
@@ -60,14 +60,10 @@ impl Core {
     }
 
     fn new(identity: Identity, trust: TrustStore, device_name: &str, policy: TrustPolicy) -> Arc<Self> {
-        let mut name: String = device_name.chars().filter(|c| !c.is_control()).collect();
-        while name.len() > annex_proto::MAX_NAME_LEN {
-            name.pop();
-        }
         Arc::new(Core {
             identity,
             trust: Mutex::new(trust),
-            device_name: name,
+            device_name: Mutex::new(clean_name(device_name)),
             policy,
             pending: Mutex::new(HashMap::new()),
             next_request: AtomicU64::new(1),
@@ -83,8 +79,16 @@ impl Core {
         self.identity.fingerprint()
     }
 
-    pub fn device_name(&self) -> &str {
-        &self.device_name
+    pub fn device_name(&self) -> String {
+        self.device_name.lock().unwrap().clone()
+    }
+
+    /// Renames this device. New connections see the new name at once; discovery advertisements
+    /// pick it up when hosting restarts. Returns the name as stored (cleaned and shortened).
+    pub fn set_device_name(&self, name: &str) -> String {
+        let name = clean_name(name);
+        *self.device_name.lock().unwrap() = name.clone();
+        name
     }
 
     pub fn policy(&self) -> TrustPolicy {
@@ -189,5 +193,28 @@ impl PendingRequest<'_> {
 impl Drop for PendingRequest<'_> {
     fn drop(&mut self) {
         self.core.pending.lock().unwrap().remove(&self.id);
+    }
+}
+
+/// Control characters removed, surrounding space trimmed, at most `MAX_NAME_LEN` bytes.
+fn clean_name(name: &str) -> String {
+    let mut name: String = name.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_string();
+    while name.len() > annex_proto::MAX_NAME_LEN {
+        name.pop();
+    }
+    if name.is_empty() { "Annex device".to_string() } else { name }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+
+    #[test]
+    fn rename_cleans_and_limits() {
+        let core = Core::ephemeral("Mac", TrustPolicy::Pair).unwrap();
+        assert_eq!(core.set_device_name("  Studio\n Mac  "), "Studio Mac");
+        assert_eq!(core.device_name(), "Studio Mac");
+        assert_eq!(core.set_device_name(&"é".repeat(40)).len(), 64);
+        assert_eq!(core.set_device_name("   "), "Annex device");
     }
 }

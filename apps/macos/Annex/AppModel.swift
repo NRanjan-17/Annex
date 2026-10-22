@@ -78,7 +78,7 @@ final class AppModel: ObservableObject {
 
     private func start() {
         do {
-            let name = Host.current().localizedName ?? "Mac"
+            let name = settings.customDeviceName ?? Self.systemName
             let core = try CoreClient(dataDirectory: Self.dataDirectory, deviceName: name)
             self.core = core
             deviceName = core.deviceName
@@ -91,6 +91,22 @@ final class AppModel: ObservableObject {
         }
         refreshDisplays()
         refreshTrusted()
+    }
+
+    static var systemName: String { Host.current().localizedName ?? "Mac" }
+
+    /// Renames this Mac for other devices. An empty name goes back to the system name.
+    func rename(_ name: String) {
+        guard let core else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stored = core.setDeviceName(trimmed.isEmpty ? Self.systemName : trimmed)
+        settings.customDeviceName = trimmed.isEmpty ? nil : stored
+        deviceName = stored
+        // Discovery advertises the name; re-advertise if we're sharing.
+        if isHosting, hostStatus.viewerName == nil {
+            stopHosting()
+            startHosting()
+        }
     }
 
     func refreshDisplays() {

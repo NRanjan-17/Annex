@@ -14,6 +14,8 @@ final class AppSettings: ObservableObject {
     @Published var openFullScreen: Bool { didSet { defaults.set(openFullScreen, forKey: Keys.fullScreen) } }
     /// Viewer: default to using the other computer as an extra display.
     @Published var extendByDefault: Bool { didSet { defaults.set(extendByDefault, forKey: Keys.extend) } }
+    /// The name other devices see; nil = this Mac's name from System Settings.
+    @Published var customDeviceName: String? { didSet { defaults.set(customDeviceName, forKey: Keys.name) } }
     @Published private(set) var launchAtLogin = false
     @Published private(set) var launchAtLoginError: String?
 
@@ -23,6 +25,7 @@ final class AppSettings: ObservableObject {
         static let control = "controlWhenViewing"
         static let fullScreen = "openFullScreen"
         static let extend = "extendByDefault"
+        static let name = "deviceName"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -33,6 +36,7 @@ final class AppSettings: ObservableObject {
         controlWhenViewing = defaults.bool(forKey: Keys.control)
         openFullScreen = defaults.bool(forKey: Keys.fullScreen)
         extendByDefault = defaults.bool(forKey: Keys.extend)
+        customDeviceName = defaults.string(forKey: Keys.name)
         refreshLaunchAtLogin()
     }
 

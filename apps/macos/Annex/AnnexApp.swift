@@ -37,7 +37,9 @@ private struct MenuBarIcon: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Image(systemName: hosting ? "display.2" : "display")
+        // Template image: macOS tints it for light and dark menu bars.
+        Image("MenuBarIcon")
+            .opacity(hosting ? 1 : 0.85)
             .onAppear {
                 DockPresence.shared.start()
                 // Open the window on launch, except when started at login (quietly, in the menu bar).

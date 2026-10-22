@@ -38,7 +38,7 @@ struct MainView: View {
                 ConnectPage(model: model)
             }
         case .devices: DevicesPage(model: model)
-        case .general: GeneralPage(settings: model.settings)
+        case .general: GeneralPage(model: model, settings: model.settings)
         case .viewing: ViewingPage(settings: model.settings)
         case .about: AboutPage()
         }
@@ -55,6 +55,9 @@ private struct Sidebar: View {
             ThisMacCard(model: model)
                 .listRowInsets(EdgeInsets(top: 6, leading: 6, bottom: 10, trailing: 6))
                 .selectionDisabled()
+                .contentShape(Rectangle())
+                .onTapGesture { model.pane = .general }
+                .help("Rename this Mac in General")
 
             Section {
                 SidebarItem(title: "Share This Mac", symbol: "display.2", tint: .blue,
@@ -497,12 +500,33 @@ private struct DeviceRow: View {
 // MARK: Preferences
 
 private struct GeneralPage: View {
+    @ObservedObject var model: AppModel
     @ObservedObject var settings: AppSettings
+    @State private var name = ""
+    @FocusState private var editingName: Bool
 
     var body: some View {
         Page(title: "General") {
             Hero(title: "General", text: "How Annex starts. It lives in the menu bar and keeps everything on your own network: no accounts, no cloud.",
                  symbol: "gearshape.fill", tint: .gray)
+            Section {
+                Row(symbol: "laptopcomputer", tint: .blue, title: "Device name",
+                    subtitle: "What other computers see when they find this Mac") {
+                    TextField("", text: $name, prompt: Text(AppModel.systemName))
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.leading)
+                        .frame(width: 220)
+                        .focused($editingName)
+                        .onSubmit { model.rename(name) }
+                        .onChange(of: editingName) { _, editing in
+                            if !editing && name != model.deviceName { model.rename(name) }
+                        }
+                }
+            } footer: {
+                Text("Leave it empty to use the name from System Settings → General → About.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .onAppear { name = model.deviceName }
             Section {
                 Row(symbol: "power", tint: .blue, title: "Open at login") {
                     Toggle("", isOn: Binding(get: { settings.launchAtLogin }, set: { settings.setLaunchAtLogin($0) }))

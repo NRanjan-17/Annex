@@ -98,7 +98,7 @@ pub(crate) fn hello(core: &crate::Core, roles: Vec<annex_proto::Role>, knows_pee
     Control::Hello(annex_proto::Hello {
         proto_major: annex_proto::PROTOCOL_MAJOR,
         proto_minor: annex_proto::PROTOCOL_MINOR,
-        device_name: core.device_name().to_string(),
+        device_name: core.device_name(),
         device_id: core.fingerprint().to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         roles,

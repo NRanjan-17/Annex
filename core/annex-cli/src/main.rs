@@ -221,7 +221,7 @@ async fn host(o: &mut Opts) {
     .unwrap_or_else(|e| die(&e.to_string()));
     let _ad = if advertise {
         let d = annex_discovery::Discovery::new(core.fingerprint()).unwrap_or_else(|e| die(&e.to_string()));
-        let ad = d.advertise_host(core.device_name(), handle.port()).unwrap_or_else(|e| die(&e.to_string()));
+        let ad = d.advertise_host(&core.device_name(), handle.port()).unwrap_or_else(|e| die(&e.to_string()));
         Some((d, ad))
     } else {
         None
