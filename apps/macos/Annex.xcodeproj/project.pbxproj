@@ -313,7 +313,7 @@
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Annex contributors. MIT License.";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nranjan-17.annex";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nranjan-17.annex";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				ENABLE_HARDENED_RUNTIME = NO;
 			};
@@ -332,7 +332,7 @@
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Annex contributors. MIT License.";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nranjan-17.annex";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nranjan-17.annex";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				ENABLE_HARDENED_RUNTIME = YES;
 			};
@@ -345,7 +345,7 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "Annex/Annex-Bridging-Header.h";
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Annex";
 				GENERATE_INFOPLIST_FILE = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nranjan-17.annex.tests";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nranjan-17.annex.tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Annex.app/Contents/MacOS/Annex";
 			};
@@ -358,7 +358,7 @@
 				SWIFT_OBJC_BRIDGING_HEADER = "Annex/Annex-Bridging-Header.h";
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/Annex";
 				GENERATE_INFOPLIST_FILE = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nranjan-17.annex.tests";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.nranjan-17.annex.tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Annex.app/Contents/MacOS/Annex";
 			};

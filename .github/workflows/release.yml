@@ -176,7 +176,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Checksums, SBOM, draft release
+    name: Checksums, SBOM, release
     needs: [version, macos, windows]
     runs-on: ubuntu-latest
     permissions:
@@ -212,14 +212,14 @@ jobs:
         with:
           name: release-bundle
           path: dist/
-      - name: Create draft release
+      - name: Create release
         if: needs.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           cat > notes.md <<'NOTES'
-          > Draft created by CI. Check the artifacts, then publish manually.
+          > Built by CI from this tag. Installation steps: see the README.
 
           **Windows Extend-mode driver:** included **unsigned** (the installer option is off by default). It loads only
           with test signing enabled until it is attestation-signed through Microsoft Partner Center (docs/CICD.md).
@@ -228,5 +228,8 @@ jobs:
           ad-hoc (macOS) or unsigned (Windows) and will trigger Gatekeeper / SmartScreen warnings.
           Verify downloads against `SHA256SUMS.txt`.
           NOTES
-          gh release create "v$VERSION" dist/* --draft --generate-notes --notes-file notes.md --title "Annex $VERSION" \
+          # Pre-release tags (v1.2.3-pre.1) are published as GitHub pre-releases right away so testers can
+          # download them; stable versions stay drafts until checked and published by hand.
+          if [[ "$VERSION" == *-* ]]; then KIND=(--prerelease); else KIND=(--draft); fi
+          gh release create "v$VERSION" dist/* "${KIND[@]}" --generate-notes --notes-file notes.md --title "Annex $VERSION" \
             --verify-tag

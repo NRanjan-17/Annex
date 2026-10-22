@@ -2,7 +2,7 @@
 # Removes Annex and everything it stores on this Mac: the app, its identity key (Keychain),
 # trusted devices, preferences, caches and its privacy (TCC) permissions.
 set -u
-BUNDLE_ID="io.github.nranjan-17.annex"
+BUNDLE_ID="com.nranjan-17.annex"
 
 echo "This will remove Annex, its settings, its identity key and the list of trusted devices."
 read -r -p "Continue? [y/N] " answer

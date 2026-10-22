@@ -1,6 +1,6 @@
 //! Where the identity's private key lives.
 //!
-//! - macOS: the login Keychain (generic password item, service `io.github.nranjan-17.annex`).
+//! - macOS: the login Keychain (generic password item, service `com.nranjan-17.annex`).
 //! - Windows: a file encrypted with DPAPI for the current user (`identity.key.dpapi`).
 //! - Elsewhere, or with `ANNEX_KEY_STORAGE=file`: a 0600 PEM file (`identity.key.pem`).
 //!
@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::CryptoError;
 
-pub const KEYCHAIN_SERVICE: &str = "io.github.nranjan-17.annex";
+pub const KEYCHAIN_SERVICE: &str = "com.nranjan-17.annex";
 pub(crate) const PEM_FILE: &str = "identity.key.pem";
 #[cfg(windows)]
 const DPAPI_FILE: &str = "identity.key.dpapi";

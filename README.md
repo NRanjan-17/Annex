@@ -1,62 +1,163 @@
-# Annex
+<p align="center">
+  <img src="assets/icon-256.png" width="128" alt="Annex icon">
+</p>
 
-Use another computer as an extra or mirrored display, over your local network, end-to-end
-encrypted. Mac and Windows, in any combination. Open source (MIT), no cloud, no accounts,
-no telemetry.
+<h1 align="center">Annex</h1>
 
-> **Status:** mirror and extend in all four directions, hardware codecs, PIN pairing, QUIC with
-> FEC and adaptive bitrate, wired (direct cable) links. Remaining (M6): input forwarding and a
-> settings window. Roadmap: [docs/PLAN.md](docs/PLAN.md).
+<p align="center">
+  Use another computer as a second display, or mirror its screen.<br>
+  Mac and Windows, in any combination. Over your network or a cable, encrypted end to end.<br>
+  Open source (MIT). No cloud, no accounts, no telemetry.
+</p>
 
-| | Host (shares its screen) | Viewer (shows the stream) |
+---
+
+## What it does
+
+| | |
+|---|---|
+| **Mirror** | See and use another computer's screen on this one. |
+| **Extend** | Turn this computer into an **extra display** for the other one: drag windows onto it like a real monitor. |
+| **Control** *(optional)* | Use this computer's mouse and keyboard on the other one. Off by default, allowed per device. |
+
+Works **Mac ↔ Mac, Mac ↔ Windows, Windows ↔ Windows**, in either direction.
+
+| | Share its screen (host) | Show another screen (viewer) |
 |---|---|---|
-| macOS 14+ | ✅ menu bar app | ✅ window / full screen |
-| Windows 10 2004+ / 11 | ✅ tray app | ✅ full screen |
+| macOS 14 Sonoma or later | ✅ | ✅ |
+| Windows 10 (2004) / Windows 11, x64 or ARM | ✅ | ✅ |
 
-## How it works
-
-A Rust core (`core/`) does the protocol, encryption, discovery and sessions (QUIC with
-forward error correction and adaptive bitrate, TCP fallback); native apps do
-capture, encoding, decoding and UI: SwiftUI menu bar app on macOS (`apps/macos`), WinUI 3
-tray app on Windows (`apps/windows`). Devices find each other with mDNS, connect over
-**TLS 1.3 with mutual authentication**, and must be explicitly trusted once. After that their
-key fingerprints are pinned. Details: [PROTOCOL](docs/PROTOCOL.md) · [SECURITY](docs/SECURITY.md).
+> **Pre-release.** Annex is new. The builds aren't code-signed yet, so macOS and Windows warn
+> you the first time you open them (the steps below show how to get past that). Please
+> [report anything odd](https://github.com/NRanjan-17/Annex/issues).
 
 ## Install
 
-Download from [Releases](https://github.com/NRanjan-17/Annex/releases):
+Download the latest files from **[Releases](https://github.com/NRanjan-17/Annex/releases)**.
 
-- **macOS:** `Annex-<version>-macos-universal.dmg` → drag to Applications. The DMG also
-  contains *Uninstall Annex.command*, which removes the app, its keys and its settings.
-- **Windows:** `Annex-Setup-<version>-x64.exe` (or `-arm64`). You can install to any folder
-  or drive, for just you or for all users. Uninstalling removes the app **and** all settings,
-  identity keys and trusted devices.
+### macOS
 
-## Use it
+1. Download **`Annex-<version>-macos-universal.dmg`** and open it.
+2. Drag **Annex** onto **Applications**.
+3. Open Annex from Applications. Because the build isn't signed by Apple yet, macOS says it
+   *can't check it for malicious software*. Click **Done**, then open
+   **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Annex.
+   You only do this once.
+4. Annex opens its window and adds an icon to the menu bar.
 
-1. On the computer whose screen you want to share (the **host**):
-   - **Mac:** menu bar icon → **Share this screen (Mirror)**. Allow Screen Recording when asked.
-   - **Windows:** tray icon → **Share this screen** (or open Annex and turn on *Mirror to
-     another computer*).
-2. On the other computer (the **viewer**), click the host under *Hosts on this network* (or
-   type its IP address).
-3. The first time, the host shows a 6-digit PIN. Type it on the viewer (once per pair of devices).
-4. The host's screen appears full screen on the viewer. Press **Esc** to disconnect.
+The first time you **share** this Mac, macOS asks for **Screen Recording** permission: allow
+it in System Settings → Privacy & Security → Screen & System Audio Recording, then turn
+sharing off and on again. Letting another computer **control** this Mac also needs
+**Accessibility** permission (Annex asks when you turn it on).
 
-**Extra display (Extend):** on the viewer choose *Use as extra display* before connecting. The host
-gets a new "Annex Display" in System Settings → Displays (Mac) or Settings → Display (Windows,
-needs the optional Extend-mode driver from the installer); arrange it, pick its resolution, and
-drag windows onto it.
+### Windows
 
-**Cable:** connect the computers with USB-Ethernet adapters or Thunderbolt for the lowest latency;
-see [docs/CABLES.md](docs/CABLES.md).
+1. Download **`Annex-Setup-<version>-x64.exe`** (or `-arm64.exe` for ARM PCs) and run it.
+2. Windows SmartScreen may say *Windows protected your PC*: click **More info → Run anyway**.
+3. Choose **just for me** or **all users**, and any folder or drive. Optional:
+   *Install the Extend-mode display driver* (see [Extend on Windows](#extend-on-windows)).
+4. Annex opens and adds an icon to the system tray (next to the clock).
 
-Step-by-step manual test plans: [docs/TESTING.md](docs/TESTING.md).
+When Windows asks whether to allow Annex on **private networks**, click **Allow**, or other
+computers can't find this PC.
+
+## Quick start
+
+You need two computers on the **same network** (Wi-Fi or Ethernet), or joined by a cable.
+
+**On the computer you want to see (the one sharing):**
+
+1. Open Annex → **Share This Mac** / **Share this PC** → turn **Sharing** on.
+2. Annex now shows *Connect from another computer* with this computer's name and its
+   addresses (for example `192.168.1.20`).
+
+**On the computer you're sitting at:**
+
+1. Open Annex. The other computer appears in the sidebar under **Nearby**. Click it.
+2. Click **Mirror** to see its screen, or **Extend** to use this computer as its extra display.
+3. **The first time only**, the sharing computer shows a **6-digit PIN**. Type it here and
+   check that the *identity code* matches on both screens. After that the two connect without a PIN.
+
+The other screen opens full screen. To leave, press **Esc** (or **⌃⌥⇧Q** on Mac /
+**Ctrl+Alt+Shift+Q** on Windows while you're controlling the other computer).
+
+**Doesn't appear under Nearby?** Go to **Connect → Connect by address** and type one of the
+addresses the sharing computer shows. Discovery can be blocked by guest Wi-Fi, VPNs or
+company networks.
+
+## Using it
+
+### Extra display (Extend)
+
+Choose **Extend** (or set *Use as an extra display by default* under **Viewing**). The
+sharing computer gets a new display called **Annex Display**:
+
+- **Mac:** arrange it in System Settings → Displays, and pick its resolution there.
+- **Windows:** arrange it in Settings → System → Display. Needs the Extend-mode driver (below).
+
+### Control the other computer
+
+Off by default, and both sides have to agree:
+
+1. On the **sharing** computer: **Paired Devices** → turn on **Control** (Mac) / **Can control**
+   (Windows) for the device you'll control it from. On a Mac, allow **Accessibility** when asked.
+2. On the computer you're **sitting at**: **Viewing → Control the other computer** → on.
+
+Windows doesn't let any app type into administrator windows or UAC prompts, so those ignore
+remote input.
+
+### Paired devices
+
+Every device you pair with a PIN is listed under **Paired Devices**. Remove one to make it
+enter a PIN again next time. Rename this computer under **General → Device name** (leave it
+empty to use the computer's own name).
+
+### Fastest connection: a cable
+
+For the lowest delay, connect the two computers directly: Thunderbolt/USB-C cable between
+two Macs, or USB-Ethernet adapters / an Ethernet cable. Annex prefers a direct cable
+automatically when one is plugged in. See [docs/CABLES.md](docs/CABLES.md).
+
+### Extend on Windows
+
+Windows has no built-in way for an app to add a display, so Extend on a Windows **host** uses
+Annex's own display driver. It isn't signed by Microsoft yet, so for now it only loads with
+Windows **test signing** turned on (an administrator command: `bcdedit /set testsigning on`,
+then restart). Mirroring, and using a Windows PC as an extra display for a **Mac**, work
+without it.
+
+## Uninstall
+
+- **macOS:** open the DMG again and run **Uninstall Annex.command**. It removes the app, its
+  identity key (Keychain), paired devices, settings and permissions.
+- **Windows:** Settings → Apps → Annex → Uninstall. It removes the app, the display driver,
+  the firewall rule, *Start with Windows*, and all settings, keys and paired devices.
+
+## Privacy and security
+
+- Everything stays on your network. There are no Annex servers, accounts or analytics.
+- Connections use **TLS 1.3** (over QUIC) with **mutual authentication**. Devices pair once
+  with a PIN (SPAKE2), then pin each other's keys, so nobody can impersonate a paired device.
+- Identity keys live in the Mac Keychain or Windows DPAPI.
+
+Details: [docs/SECURITY.md](docs/SECURITY.md) · [docs/PROTOCOL.md](docs/PROTOCOL.md).
+
+## Troubleshooting
+
+| Problem | Try this |
+|---|---|
+| The other computer doesn't show under **Nearby** | Same network? Turn sharing on there. Use **Connect by address** with an address it shows. Allow Annex through the Windows firewall (private networks). |
+| Black screen when mirroring a Mac | Allow Screen Recording for Annex (System Settings → Privacy & Security), then turn sharing off and on. |
+| "Annex can't be opened" on Mac | System Settings → Privacy & Security → **Open Anyway** (see Install). |
+| Mouse/keyboard does nothing on the other computer | It must allow your device under **Paired Devices**, and on a Mac have Accessibility permission. Turn on **Viewing → Control the other computer** on your side. |
+| PIN keeps failing | After 5 wrong PINs pairing pauses for 10 minutes. Make sure you type the PIN shown on the *sharing* computer. |
+| Laggy picture | Use Ethernet or a cable instead of Wi-Fi, keep *Hardware video encoder* on, and close bandwidth-heavy apps. |
 
 ## Build from source
 
-Prerequisites: [Rust via rustup](https://rustup.rs) (the toolchain version is pinned in
-`rust-toolchain.toml`), plus Xcode 16+ on macOS or the .NET 10 SDK on Windows.
+Prerequisites: [Rust via rustup](https://rustup.rs) (the version is pinned in
+`rust-toolchain.toml`), plus Xcode 16+ on macOS or the .NET 10 SDK and Visual Studio Build
+Tools on Windows.
 
 ```sh
 # Rust core: tests and the latency benchmark
@@ -64,19 +165,24 @@ cd core && cargo test --workspace && cargo run --release -p annex-bench
 
 # macOS app (Xcode builds the Rust core automatically)
 xcodebuild test -project apps/macos/Annex.xcodeproj -scheme Annex -destination 'platform=macOS'
-scripts/package-macos.sh            # → dist/Annex-<version>-macos-universal.dmg
+scripts/package-macos.sh                # → dist/Annex-<version>-macos-universal.dmg
 
 # Windows app (PowerShell). Inno Setup 6 is needed for the installer
 cargo build --manifest-path core/Cargo.toml -p annex-ffi --target x86_64-pc-windows-msvc
 dotnet build apps/windows/src/Annex.App -p:Platform=x64
 scripts/package-windows.ps1 -Arch x64   # → dist/Annex-Setup-<version>-x64.exe
 
-# Headless CLI for testing (host/viewer/discovery/trust management)
+# Headless CLI for testing (host / viewer / discovery / trust management)
 cd core && cargo run -p annex-cli -- help
 ```
 
-CI/CD, signing and releases: [docs/CICD.md](docs/CICD.md). Dependencies and licenses:
-[docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
+How it's built: a Rust core (`core/`) handles discovery, pairing, encryption and the
+streaming protocol (QUIC with forward error correction and adaptive bitrate, TCP fallback).
+Native apps handle capture, hardware video encoding/decoding and the UI: SwiftUI on macOS
+(`apps/macos`), WinUI 3 on Windows (`apps/windows`).
+
+More: [roadmap](docs/PLAN.md) · [manual test plans](docs/TESTING.md) ·
+[CI/CD, signing and releases](docs/CICD.md) · [dependencies and licenses](docs/DEPENDENCIES.md).
 
 ## License
 

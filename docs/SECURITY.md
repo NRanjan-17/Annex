@@ -27,7 +27,7 @@ busy handling. `core/annex-proto/tests/fuzz.rs` fuzzes every decoder.
   200,000 chance per locked-out window for a persistent attacker on the LAN. The PIN is only
   shown on the host's screen.
 - **Key storage:** the private key is in the macOS login Keychain (service
-  `io.github.nranjan-17.annex`) or, on Windows, in `%LOCALAPPDATA%\Annex\identity.key.dpapi`
+  `com.nranjan-17.annex`) or, on Windows, in `%LOCALAPPDATA%\Annex\identity.key.dpapi`
   encrypted with DPAPI for the current user. Keys from older versions are migrated
   automatically. Anyone who can run code as you can still use the key. The headless CLI keeps
   its own key in a 0600 file. Development builds signed ad hoc trigger a Keychain access
