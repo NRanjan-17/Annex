@@ -35,7 +35,8 @@ struct MenuContent: View {
             }
             Spacer()
             Button {
-                openWindow(id: "settings")
+                model.pane = .general
+                openWindow(id: "main")
                 // A menu bar app isn't frontmost; bring the settings window forward.
                 NSApp.activate(ignoringOtherApps: true)
             } label: {
@@ -57,7 +58,15 @@ struct MenuContent: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Spacer()
-            Button("Quit Annex") { model.quit() }
+            Button("Open Annex") {
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(Color.accentColor)
+            Text("·").font(.caption).foregroundStyle(.tertiary)
+            Button("Quit") { model.quit() }
                 .buttonStyle(.plain)
                 .font(.caption)
                 .foregroundStyle(.secondary)

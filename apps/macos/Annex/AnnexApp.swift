@@ -13,14 +13,14 @@ struct AnnexApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // System Settings-style window: sidebar plus a unified toolbar.
-        Window("Annex Settings", id: "settings") {
-            SettingsView(model: model)
+        // The app window: sidebar and pages, like System Settings.
+        Window("Annex", id: "main") {
+            MainView(model: model)
         }
-        .windowResizability(.contentSize)
+        .defaultSize(width: 880, height: 620)
         .windowToolbarStyle(.unified)
         .defaultPosition(.center)
-        .commands { CommandGroup(replacing: .appSettings) { SettingsCommand() } }
+        .commands { CommandGroup(replacing: .appSettings) { SettingsCommand(model: model) } }
 
         #if DEBUG
         // The menu panel as a normal window, for screenshots (`ANNEX_PREVIEW_UI=1`).
@@ -40,10 +40,13 @@ private struct MenuBarIcon: View {
         Image(systemName: hosting ? "display.2" : "display")
             .onAppear {
                 DockPresence.shared.start()
+                // Open the window on launch, except when started at login (quietly, in the menu bar).
+                if !AppModel.isRunningTests && !AppModel.launchedAtLogin {
+                    openWindow(id: "main")
+                }
                 #if DEBUG
                 if ProcessInfo.processInfo.environment["ANNEX_PREVIEW_UI"] != nil {
                     openWindow(id: "menu-preview")
-                    openWindow(id: "settings")
                 }
                 #endif
             }
@@ -82,11 +85,13 @@ final class DockPresence {
 
 /// ⌘, opens the settings window.
 private struct SettingsCommand: View {
+    let model: AppModel
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Button("Settings…") {
-            openWindow(id: "settings")
+            model.pane = .general
+            openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)
         }
         .keyboardShortcut(",")

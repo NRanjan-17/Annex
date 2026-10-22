@@ -10,6 +10,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var startupError: String?
 
     let settings = AppSettings()
+    /// The main window's selected page.
+    @Published var pane: Pane = .share
 
     @Published var displays: [Displays.Info] = []
     @Published var selectedDisplayID: CGDirectDisplayID?
@@ -36,6 +38,13 @@ final class AppModel: ObservableObject {
     private var viewer: ViewerHandle?
     private var viewerWindow: ViewerWindowController?
 
+    /// Started by "Open at login": stay quietly in the menu bar.
+    static let launchedAtLogin: Bool = {
+        guard let e = NSAppleEventManager.shared().currentAppleEvent else { return false }
+        return e.eventID == kAEOpenApplication
+            && e.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+    }()
+
     static var isRunningTests: Bool {
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
@@ -53,6 +62,10 @@ final class AppModel: ObservableObject {
     }
 
     var isViewing: Bool { viewer != nil }
+
+    func isPaired(_ peer: PeerInfo) -> Bool {
+        peer.fingerprint.map { fp in trusted.contains { $0.fingerprint == fp } } ?? false
+    }
 
     func refreshPermissions() {
         accessibilityTrusted = InputInjector.isTrusted
@@ -289,6 +302,7 @@ final class AppModel: ObservableObject {
             discovered.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         case .peerLost(let instance):
             discovered.removeAll { $0.instance == instance }
+            if pane == .peer(instance) { pane = .connect }
         default:
             break
         }
