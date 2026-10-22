@@ -9,7 +9,8 @@ final class AppSettings: ObservableObject {
 
     @Published var preferHardwareEncoder: Bool { didSet { defaults.set(preferHardwareEncoder, forKey: Keys.hardware) } }
     @Published var startSharingAtLaunch: Bool { didSet { defaults.set(startSharingAtLaunch, forKey: Keys.autoShare) } }
-    /// Viewer: ask hosts to let this Mac's mouse and keyboard control them. Off by default.
+    /// Viewer: ask hosts to let this Mac's mouse and keyboard control them. On by default: the
+    /// sharing computer still decides per device, so asking is harmless.
     @Published var controlWhenViewing: Bool { didSet { defaults.set(controlWhenViewing, forKey: Keys.control) } }
     @Published var openFullScreen: Bool { didSet { defaults.set(openFullScreen, forKey: Keys.fullScreen) } }
     /// Viewer: default to using the other computer as an extra display.
@@ -22,7 +23,7 @@ final class AppSettings: ObservableObject {
     private enum Keys {
         static let hardware = "preferHardwareEncoder"
         static let autoShare = "startSharingAtLaunch"
-        static let control = "controlWhenViewing"
+        static let control = "useMouseAndKeyboard"
         static let fullScreen = "openFullScreen"
         static let extend = "extendByDefault"
         static let name = "deviceName"
@@ -30,7 +31,7 @@ final class AppSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true])
+        defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true])
         preferHardwareEncoder = defaults.bool(forKey: Keys.hardware)
         startSharingAtLaunch = defaults.bool(forKey: Keys.autoShare)
         controlWhenViewing = defaults.bool(forKey: Keys.control)

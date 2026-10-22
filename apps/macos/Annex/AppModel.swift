@@ -327,6 +327,7 @@ final class AppModel: ObservableObject {
         case "pairing_locked": return "Too many wrong PINs. Pairing is paused for 10 minutes."
         case "host_stopped": return "\(peer) stopped sharing."
         case "host_ended_session": return "\(peer) ended the session."
+        case "closed", "connection closed": return "Disconnected from \(peer)."
         default:
             let r = reason.lowercased()
             if r.contains("refused") || r.contains("timed out") || r.contains("timeout") {

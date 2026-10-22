@@ -1144,9 +1144,11 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
             Arc::new(move |e: Event| {
                 match &e {
                     Event::SessionEnded { .. } => window.close(),
-                    Event::SessionStarted { input, .. } | Event::InputAllowed { allowed: input, .. } => {
-                        window.set_input_active(*input)
+                    Event::SessionStarted { input, .. } => {
+                        window.set_input_active(*input);
+                        window.show();
                     }
+                    Event::InputAllowed { allowed, .. } => window.set_input_active(*allowed),
                     _ => {}
                 }
                 events(e)

@@ -51,8 +51,14 @@ function Remove-Trust {
     $thumb = (Get-ItemProperty $RegPath -Name $RegValue -ErrorAction SilentlyContinue).$RegValue
     if (-not $thumb) { return }
     foreach ($store in "Root", "TrustedPublisher", "My") {
-        Get-ChildItem "Cert:\LocalMachine\$store\$thumb" -ErrorAction SilentlyContinue |
-            Remove-Item -DeleteKey -ErrorAction SilentlyContinue
+        # Explicit -Path: piping into Remove-Item hides the Cert: provider's -DeleteKey parameter
+        # ("A parameter cannot be found that matches parameter name 'DeleteKey'").
+        $path = "Cert:\LocalMachine\$store\$thumb"
+        if (-not (Test-Path $path)) { continue }
+        try {
+            if ($store -eq "My") { Remove-Item -Path $path -DeleteKey } else { Remove-Item -Path $path }
+        }
+        catch { Note "could not remove $path : $_" }
     }
     Remove-ItemProperty $RegPath -Name $RegValue -ErrorAction SilentlyContinue
     Note "removed driver certificate $thumb"

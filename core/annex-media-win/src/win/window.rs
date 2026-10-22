@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use annex_proto::{InputEvent, MouseButton};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint};
@@ -45,9 +45,18 @@ struct InputState {
 }
 
 enum Msg {
-    Frame { data: Vec<u8>, frame_id: u32, keyframe: bool },
+    Frame {
+        data: Vec<u8>,
+        frame_id: u32,
+        keyframe: bool,
+    },
+    /// The session started: show the (until now hidden) window in front.
+    Show,
     Close,
 }
+
+/// The local pointer hides after this long without moving (the stream shows the remote one).
+const CURSOR_IDLE: Duration = Duration::from_secs(2);
 
 pub struct VideoWindow {
     tx: Mutex<Sender<Msg>>,
@@ -59,6 +68,8 @@ pub struct VideoWindow {
 thread_local! {
     static DESTROYED: Cell<bool> = const { Cell::new(false) };
     static RESIZED: Cell<bool> = const { Cell::new(false) };
+    static CURSOR_HIDDEN: Cell<bool> = const { Cell::new(false) };
+    static LAST_MOVE: Cell<Option<Instant>> = const { Cell::new(None) };
     static INPUT: RefCell<Option<InputState>> = const { RefCell::new(None) };
 }
 
@@ -145,7 +156,26 @@ fn forward_input(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
     })
 }
 
+/// Forwarding input to the host right now (then the local pointer stays hidden).
+fn input_active() -> bool {
+    INPUT.with(|i| i.borrow().as_ref().is_some_and(|st| st.active.load(Ordering::Acquire)))
+}
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_MOUSEMOVE {
+        LAST_MOVE.with(|t| t.set(Some(Instant::now())));
+        if !input_active() {
+            // Moving the mouse brings the pointer back (WM_SETCURSOR follows and shows it).
+            CURSOR_HIDDEN.with(|h| h.set(false));
+        }
+    }
+    if msg == WM_SETCURSOR
+        && (lparam.0 & 0xFFFF) as u32 == HTCLIENT
+        && (CURSOR_HIDDEN.with(|h| h.get()) || input_active())
+    {
+        unsafe { SetCursor(None) };
+        return LRESULT(1);
+    }
     if forward_input(hwnd, msg, wparam, lparam) {
         return LRESULT(0);
     }
@@ -189,7 +219,8 @@ fn create_window(title: &str) -> Result<HWND, MediaError> {
             WS_EX_APPWINDOW,
             class,
             PCWSTR(title.as_ptr()),
-            WS_POPUP | WS_VISIBLE,
+            // Hidden until the session starts, so a PIN prompt in the app isn't covered.
+            WS_POPUP,
             r.left,
             r.top,
             r.right - r.left,
@@ -199,7 +230,6 @@ fn create_window(title: &str) -> Result<HWND, MediaError> {
             Some(instance.into()),
             None,
         )?;
-        let _ = SetForegroundWindow(hwnd);
         Ok(hwnd)
     }
 }
@@ -237,6 +267,7 @@ fn run(rx: Receiver<Msg>, mut hooks: WindowHooks, hwnd: HWND, mut renderer: Rend
         if RESIZED.with(|r| r.replace(false)) {
             renderer.resized();
         }
+        hide_idle_cursor(hwnd);
         let first = match rx.recv_timeout(Duration::from_millis(4)) {
             Ok(m) => m,
             Err(RecvTimeoutError::Timeout) => continue,
@@ -247,6 +278,10 @@ fn run(rx: Receiver<Msg>, mut hooks: WindowHooks, hwnd: HWND, mut renderer: Rend
         for m in std::iter::once(first).chain(rx.try_iter()) {
             match m {
                 Msg::Close => break 'outer,
+                Msg::Show => unsafe {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                    let _ = SetForegroundWindow(hwnd);
+                },
                 Msg::Frame { data, frame_id, keyframe } => {
                     if waiting_for_key && !keyframe {
                         continue;
@@ -336,6 +371,11 @@ impl VideoWindow {
         self.input_active.store(active, Ordering::Release);
     }
 
+    /// Shows the window in front (call when the session has started).
+    pub fn show(&self) {
+        let _ = self.tx.lock().unwrap().send(Msg::Show);
+    }
+
     pub fn submit(&self, data: &[u8], frame_id: u32, keyframe: bool) {
         let _ = self.tx.lock().unwrap().send(Msg::Frame { data: data.to_vec(), frame_id, keyframe });
     }
@@ -358,5 +398,24 @@ impl VideoWindow {
 impl Drop for VideoWindow {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+/// Hides the local pointer over the video after it rests (or at once while controlling the host).
+fn hide_idle_cursor(hwnd: HWND) {
+    if CURSOR_HIDDEN.with(|h| h.get()) {
+        return;
+    }
+    let idle = LAST_MOVE.with(|t| t.get()).is_none_or(|at| at.elapsed() >= CURSOR_IDLE);
+    if !(idle || input_active()) {
+        return;
+    }
+    let mut pt = POINT::default();
+    // SAFETY: plain Win32 queries on our own window.
+    unsafe {
+        if GetCursorPos(&mut pt).is_ok() && WindowFromPoint(pt) == hwnd {
+            SetCursor(None);
+            CURSOR_HIDDEN.with(|h| h.set(true));
+        }
     }
 }

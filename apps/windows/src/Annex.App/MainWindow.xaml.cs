@@ -77,7 +77,7 @@ public sealed partial class MainWindow : Window
         _extend = _settings.ExtendByDefault;
         SystemBackdrop = new MicaBackdrop();
         ExtendsContentIntoTitleBar = true;
-        AppWindow.Resize(new SizeInt32(1040, 760));
+        SizeWindow();
         AppWindow.SetIcon(Ui.AssetPath("Annex.ico"));
         Closed += (_, _) => Shutdown();
         // Closing the window keeps Annex running in the tray.
@@ -136,6 +136,25 @@ public sealed partial class MainWindow : Window
             x is null ? "null" : $"{{\"state\":\"{x.State}\",\"problem\":{x.Problem},\"test_signing\":{(x.TestSigning ? "true" : "false")}}}");
         File.WriteAllText(Path.Combine(DataDirectory, "selftest-ok"), DateTimeOffset.Now.ToString("O"));
     }
+
+    /// <summary>Opens at a comfortable size in effective pixels (so display scaling doesn't shrink it),
+    /// centred, never larger than the screen, with a minimum size.</summary>
+    private void SizeWindow()
+    {
+        var scale = GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)) / 96.0;
+        var work = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(AppWindow.Id, Microsoft.UI.Windowing.DisplayAreaFallback.Primary).WorkArea;
+        var w = Math.Min((int)(1240 * scale), work.Width - 40);
+        var h = Math.Min((int)(840 * scale), work.Height - 40);
+        AppWindow.MoveAndResize(new Windows.Graphics.RectInt32(work.X + (work.Width - w) / 2, work.Y + (work.Height - h) / 2, w, h));
+        if (AppWindow.Presenter is Microsoft.UI.Windowing.OverlappedPresenter p)
+        {
+            p.PreferredMinimumWidth = (int)(960 * scale);
+            p.PreferredMinimumHeight = (int)(620 * scale);
+        }
+    }
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    private static partial uint GetDpiForWindow(nint hwnd);
 
     // ---- Shell: title bar + sidebar ---------------------------------------------------
 
@@ -475,6 +494,7 @@ public sealed partial class MainWindow : Window
         "pairing_locked" => "Too many wrong PINs. Pairing is paused for 10 minutes.",
         "host_stopped" => $"{peer} stopped sharing.",
         "host_ended_session" => $"{peer} ended the session.",
+        "closed" or "connection closed" => $"Disconnected from {peer}.",
         _ when reason.Contains("refused", StringComparison.OrdinalIgnoreCase) || reason.Contains("timed out", StringComparison.OrdinalIgnoreCase)
             => $"Couldn't reach {peer}. Check that it's sharing and that both are on the same network ({reason}).",
         _ => reason,
@@ -580,8 +600,8 @@ public sealed partial class MainWindow : Window
         p.Children.Add(Ui.Card("", "Use as an extra display by default", null,
             Ui.Switch(_settings.ExtendByDefault, on => { _settings.ExtendByDefault = on; _extend = on; _settings.Save(); })));
         p.Children.Add(Ui.Card("", "Control the other computer",
-            "Use this PC's mouse and keyboard on it. It must allow this PC in its Paired devices. Press Ctrl+Alt+Shift+Q to leave.",
-            Ui.Switch(_settings.ControlWhenViewing, on => { _settings.ControlWhenViewing = on; _settings.Save(); })));
+            "Use this PC's mouse and keyboard on the other computer when it allows it (on that computer: Paired devices → Can control). Press Ctrl+Alt+Shift+Q to leave.",
+            Ui.Switch(_settings.UseMouseAndKeyboard, on => { _settings.UseMouseAndKeyboard = on; _settings.Save(); })));
     }
 
     private void AboutPage(StackPanel p)
@@ -878,7 +898,7 @@ public sealed partial class MainWindow : Window
         try
         {
             _viewer = ViewerHandle.ConnectWindowed(_core, address, pinnedFingerprint, e => _ui.TryEnqueue(() => OnViewerEvent(e)),
-                extend: _extend, input: _settings.ControlWhenViewing);
+                extend: _extend, input: _settings.UseMouseAndKeyboard);
             _viewingName = title;
             _viewerStatus = $"Connecting to {title}…";
             if (_tray is not null) _tray.Tooltip = $"Annex — connecting to {title}";

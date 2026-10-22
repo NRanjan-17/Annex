@@ -600,6 +600,12 @@ async fn sessions_use_quic_with_datagram_video() {
     host.stop().await;
 }
 
+/// Windows reports an ICMP "port unreachable" from an earlier send as a ConnectionReset error on
+/// the next receive (the viewer races several attempts). That is not fatal for a relay.
+fn relay_error_is_fatal(e: &std::io::Error) -> bool {
+    !matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionRefused)
+}
+
 /// UDP relay that drops every `drop_every`-th host→viewer packet once the handshake is done.
 async fn lossy_udp_proxy(target: std::net::SocketAddr, drop_every: usize) -> u16 {
     use tokio::net::UdpSocket;
@@ -612,16 +618,27 @@ async fn lossy_udp_proxy(target: std::net::SocketAddr, drop_every: usize) -> u16
         let (front, back, client) = (front.clone(), back.clone(), client.clone());
         tokio::spawn(async move {
             let mut buf = vec![0u8; 65536];
-            while let Ok((n, from)) = front.recv_from(&mut buf).await {
-                *client.lock().unwrap() = Some(from);
-                let _ = back.send(&buf[..n]).await;
+            loop {
+                match front.recv_from(&mut buf).await {
+                    Ok((n, from)) => {
+                        *client.lock().unwrap() = Some(from);
+                        let _ = back.send(&buf[..n]).await;
+                    }
+                    Err(e) if !relay_error_is_fatal(&e) => continue,
+                    Err(_) => break,
+                }
             }
         });
     }
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65536];
         let mut count = 0usize;
-        while let Ok(n) = back.recv(&mut buf).await {
+        loop {
+            let n = match back.recv(&mut buf).await {
+                Ok(n) => n,
+                Err(e) if !relay_error_is_fatal(&e) => continue,
+                Err(_) => break,
+            };
             count += 1;
             if count > 50 && count.is_multiple_of(drop_every) {
                 continue;
