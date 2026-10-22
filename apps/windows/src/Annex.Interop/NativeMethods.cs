@@ -102,18 +102,29 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_viewer_connect(nint core, string address, string? expectedFingerprint, string? displayJson,
-        [MarshalAs(UnmanagedType.U1)] bool extend, [MarshalAs(UnmanagedType.U1)] bool input,
+        [MarshalAs(UnmanagedType.U1)] bool extend, [MarshalAs(UnmanagedType.U1)] bool input, uint quality,
         delegate* unmanaged<nint, nint, void> onEvent, delegate* unmanaged<nint, byte*, nuint, uint, long, byte, void> onFrame,
         nint ctx, out nint viewer);
 
     /// <summary>Windows only: the core decodes and renders into its own full-screen window.</summary>
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_viewer_connect_windowed(nint core, string address, string? expectedFingerprint,
-        [MarshalAs(UnmanagedType.U1)] bool extend, [MarshalAs(UnmanagedType.U1)] bool input,
+        [MarshalAs(UnmanagedType.U1)] bool extend, [MarshalAs(UnmanagedType.U1)] bool input, uint quality,
         delegate* unmanaged<nint, nint, void> onEvent, nint ctx, out nint viewer);
 
     [LibraryImport(Lib)] public static partial void annex_viewer_request_keyframe(nint viewer);
     [LibraryImport(Lib)] public static partial void annex_viewer_frame_presented(nint viewer, uint frameId);
+    [LibraryImport(Lib)] public static partial void annex_viewer_request_direct_link(nint viewer);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_viewer_offer_direct_link(nint viewer, string ssid, string passphrase);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_host_offer_direct_link(nint host, ulong sessionId, string ssid, string passphrase);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_host_refuse_direct_link(nint host, ulong sessionId, string reason);
+
     [LibraryImport(Lib)] public static partial void annex_viewer_free(nint viewer);
 
     [LibraryImport(Lib)]

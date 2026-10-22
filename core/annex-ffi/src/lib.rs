@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use annex_discovery::{Advertisement, Browser, Discovery};
 use annex_session::{
     Codec, Core, DisplayInfo, Event, EventSink, FrameOut, FrameSink, HostConfig, HostHandle, InputEvent, Mode,
-    MouseButton, StreamConfig, SubmitResult, TrustPolicy, ViewerConfig, ViewerHandle, keys,
+    MouseButton, Quality, StreamConfig, SubmitResult, TrustPolicy, ViewerConfig, ViewerHandle, keys,
 };
 
 pub const ANNEX_OK: i32 = 0;
@@ -987,6 +987,13 @@ mod win_host {
         let events: EventSink = {
             let state = state.clone();
             Arc::new(move |e: Event| {
+                // Wi-Fi low-latency mode while any viewer is connected (host sessions always pair
+                // SessionStarted with SessionEnded).
+                match &e {
+                    Event::SessionStarted { .. } => annex_media_win::wifi_low_latency(true),
+                    Event::SessionEnded { .. } => annex_media_win::wifi_low_latency(false),
+                    _ => {}
+                }
                 state.on_event(&e);
                 app_events(e);
             })
@@ -1009,6 +1016,7 @@ unsafe fn viewer_config(
     display_json: *const c_char,
     extend: bool,
     input: bool,
+    quality: u32,
 ) -> Result<ViewerConfig, (i32, String)> {
     let address = unsafe { str_arg(address, "address") }?.to_string();
     let expected = unsafe { opt_str_arg(expected_fingerprint, "expected_fingerprint") }?
@@ -1032,6 +1040,11 @@ unsafe fn viewer_config(
         expected_fingerprint: expected,
         mode: if extend { Mode::Extend } else { Mode::Mirror },
         input,
+        quality: match quality {
+            1 => Quality::Balanced,
+            2 => Quality::Fast,
+            _ => Quality::Best,
+        },
         latency_csv: std::env::var_os("ANNEX_LATENCY_CSV").map(PathBuf::from),
     })
 }
@@ -1049,6 +1062,7 @@ pub unsafe extern "C" fn annex_viewer_connect(
     display_json: *const c_char,
     extend: bool,
     input: bool,
+    quality: u32,
     on_event: AnnexEventCallback,
     on_frame: AnnexFrameCallback,
     ctx: *mut c_void,
@@ -1059,7 +1073,7 @@ pub unsafe extern "C" fn annex_viewer_connect(
         if out.is_null() {
             return Err(invalid("out is null"));
         }
-        let cfg = unsafe { viewer_config(address, expected_fingerprint, display_json, extend, input) }?;
+        let cfg = unsafe { viewer_config(address, expected_fingerprint, display_json, extend, input, quality) }?;
         let callbacks = Callbacks::new(on_event, on_frame, ctx);
         let _enter = c.rt.enter();
         let handle = Arc::new(annex_session::connect_viewer(
@@ -1092,6 +1106,7 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
     expected_fingerprint: *const c_char,
     extend: bool,
     input: bool,
+    quality: u32,
     on_event: AnnexEventCallback,
     ctx: *mut c_void,
     out: *mut *mut AnnexViewer,
@@ -1101,7 +1116,8 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
         if out.is_null() {
             return Err(invalid("out is null"));
         }
-        let mut cfg = unsafe { viewer_config(address, expected_fingerprint, std::ptr::null(), extend, input) }?;
+        let mut cfg =
+            unsafe { viewer_config(address, expected_fingerprint, std::ptr::null(), extend, input, quality) }?;
         cfg.display = annex_media_win::primary_display_info();
         let callbacks = Callbacks::new(on_event, None, ctx);
         let events = callbacks.event_sink();
@@ -1141,7 +1157,18 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
         };
         let events: EventSink = {
             let window = window.clone();
+            // Wi-Fi low-latency mode while the session runs (only undo what this viewer turned on).
+            let wifi_on = Arc::new(std::sync::atomic::AtomicBool::new(false));
             Arc::new(move |e: Event| {
+                match &e {
+                    Event::SessionStarted { .. } if !wifi_on.swap(true, std::sync::atomic::Ordering::AcqRel) => {
+                        annex_media_win::wifi_low_latency(true)
+                    }
+                    Event::SessionEnded { .. } if wifi_on.swap(false, std::sync::atomic::Ordering::AcqRel) => {
+                        annex_media_win::wifi_low_latency(false)
+                    }
+                    _ => {}
+                }
                 match &e {
                     Event::SessionEnded { .. } => window.close(),
                     Event::SessionStarted { input, .. } => {
@@ -1229,6 +1256,59 @@ pub unsafe extern "C" fn annex_viewer_send_key(viewer: *const AnnexViewer, nativ
         }
         None => 0,
     }
+}
+
+/// Asks the host for a direct Wi-Fi link; answered by a `direct_link_offer` or
+/// `direct_link_unavailable` event.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_request_direct_link(viewer: *const AnnexViewer) {
+    if let Some(v) = unsafe { viewer.as_ref() } {
+        v.handle.request_direct_link();
+    }
+}
+
+/// This computer runs a hotspot: tells the host to join it for a direct link.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_offer_direct_link(
+    viewer: *const AnnexViewer,
+    ssid: *const c_char,
+    passphrase: *const c_char,
+) -> i32 {
+    guard(|| {
+        let v = unsafe { viewer.as_ref() }.ok_or_else(|| invalid("viewer is null"))?;
+        let (ssid, pass) = unsafe { (str_arg(ssid, "ssid")?, str_arg(passphrase, "passphrase")?) };
+        v.handle.offer_direct_link(ssid, pass);
+        Ok(ANNEX_OK)
+    })
+}
+
+/// Host: answers a `direct_link_requested` event with this computer's hotspot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_offer_direct_link(
+    host: *const AnnexHost,
+    session_id: u64,
+    ssid: *const c_char,
+    passphrase: *const c_char,
+) -> i32 {
+    guard(|| {
+        let h = unsafe { host.as_ref() }.ok_or_else(|| invalid("host is null"))?;
+        let (ssid, pass) = unsafe { (str_arg(ssid, "ssid")?, str_arg(passphrase, "passphrase")?) };
+        Ok(h.handle.offer_direct_link(session_id, ssid, pass) as i32)
+    })
+}
+
+/// Host: answers a `direct_link_requested` event that can't be met (`reason` is shown to the viewer).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_refuse_direct_link(
+    host: *const AnnexHost,
+    session_id: u64,
+    reason: *const c_char,
+) -> i32 {
+    guard(|| {
+        let h = unsafe { host.as_ref() }.ok_or_else(|| invalid("host is null"))?;
+        let reason = unsafe { str_arg(reason, "reason") }?;
+        Ok(h.handle.refuse_direct_link(session_id, reason) as i32)
+    })
 }
 
 /// Disconnects (if connected) and frees the viewer.

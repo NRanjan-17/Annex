@@ -105,6 +105,8 @@ struct SessionSlot {
     next_frame_id: AtomicU32,
     /// Signalled by [`HostHandle::end_session`].
     ended: tokio::sync::Notify,
+    /// Messages the app sends to this viewer (direct-link offers).
+    outbox: mpsc::UnboundedSender<Control>,
 }
 
 struct Shared {
@@ -230,6 +232,20 @@ impl HostHandle {
             Some(s) => self.shared.submit(&s, &Arc::new(data.to_vec()), capture_ts_us, keyframe),
             None => SubmitResult::NoSession,
         }
+    }
+
+    /// Tells one viewer to join this hotspot (this computer runs it) for a direct link.
+    pub fn offer_direct_link(&self, session_id: SessionId, ssid: &str, passphrase: &str) -> bool {
+        self.send_to(session_id, Control::DirectLinkOffer { ssid: ssid.into(), passphrase: passphrase.into() })
+    }
+
+    /// Answers a direct-link request that can't be met here.
+    pub fn refuse_direct_link(&self, session_id: SessionId, reason: &str) -> bool {
+        self.send_to(session_id, Control::DirectLinkUnavailable { reason: reason.into() })
+    }
+
+    fn send_to(&self, session_id: SessionId, c: Control) -> bool {
+        self.shared.sessions.lock().unwrap().get(&session_id).is_some_and(|s| s.outbox.send(c).is_ok())
     }
 
     /// Ends one session (e.g. its virtual display could not be created or was removed).
@@ -448,6 +464,7 @@ async fn run_session(
     writer.send_control(&Control::SessionAccept { stream: stream.clone(), input }).await?;
 
     let (frame_tx, mut frame_rx) = mpsc::channel::<OutFrame>(FRAME_QUEUE);
+    let (outbox, mut outbox_rx) = mpsc::unbounded_channel::<Control>();
     let (stream_tx, mut stream_rx) = watch::channel(stream.clone());
     let slot = Arc::new(SessionSlot {
         id,
@@ -457,6 +474,7 @@ async fn run_session(
         need_keyframe: AtomicBool::new(false),
         next_frame_id: AtomicU32::new(0),
         ended: tokio::sync::Notify::new(),
+        outbox,
     });
     shared.sessions.lock().unwrap().insert(id, slot.clone());
     *started = true;
@@ -492,7 +510,11 @@ async fn run_session(
         // so a `Bye` followed by EOF is reported as the `Bye` reason, not as "closed".
         std::future::pending::<()>().await
     };
-    let mut rate = crate::rate::RateController::default();
+    let mut rate = crate::rate::RateController::new(req.quality);
+    if rate.scale_percent() != 100 {
+        // The viewer chose a lower quality: start the encoder there rather than at 100 %.
+        (shared.events)(Event::BitrateHint { session_id: id, scale_percent: rate.scale_percent() });
+    }
     let main = async {
         loop {
             tokio::select! {
@@ -500,12 +522,19 @@ async fn run_session(
                     Some(f) => video.send(writer, f.header, &f.data).await?,
                     None => return Ok("stopped".to_string()),
                 },
+                Some(c) = outbox_rx.recv() => writer.send_control(&c).await?,
                 _ = slot.ended.notified() => {
                     let _ = writer.send_control(&Control::Bye { reason: "host_ended_session".into() }).await;
                     return Ok("host_ended_session".to_string());
                 },
                 c = ctl_rx.recv() => match c {
                     Some(Ok(Control::KeyframeRequest)) => shared.request_keyframe(&slot),
+                    Some(Ok(Control::DirectLinkRequest)) => {
+                        (shared.events)(Event::DirectLinkRequested { session_id: id });
+                    }
+                    Some(Ok(Control::DirectLinkOffer { ssid, passphrase })) => {
+                        (shared.events)(Event::DirectLinkOffer { session_id: id, ssid, passphrase });
+                    }
                     Some(Ok(Control::Input(event))) => {
                         // Re-checked per event so revoking takes effect immediately.
                         if input && shared.core.allows_input(fp) {

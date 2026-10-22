@@ -51,6 +51,15 @@ public sealed partial class MainWindow : Window
     private string? _viewerStatus;
     private string? _latency;
     private bool _controlling;
+    private string? _viewerFingerprint;
+    private bool _viewerExtend;
+    /// <summary>Connected over this PC's hotspot right now.</summary>
+    private bool _onDirectWifi;
+
+    // Direct Wi-Fi link: this PC's hotspot, and a reconnect we're waiting for after switching.
+    private readonly Hotspot _hotspot = new();
+    private (string Fingerprint, string Name, bool Extend, DateTimeOffset Until)? _directPending;
+    private string? _directStatus;
 
     // UI.
     private readonly NavigationView _nav = new();
@@ -304,6 +313,10 @@ public sealed partial class MainWindow : Window
         if (_hostError is not null)
             p.Children.Add(Ui.Info("Sharing problem", _hostError, InfoBarSeverity.Warning));
         ExtendCard(p);
+        if (_hotspot.IsOn)
+            p.Children.Add(Ui.Card("", "Direct Wi-Fi is on",
+                $"Network “{_hotspot.Ssid}”. Another computer joined it for a faster, router-free link.",
+                Ui.Button("Stop", () => { _ = _hotspot.StopAsync(); RenderIf("share"); })));
 
         if (_host is not null)
         {
@@ -528,6 +541,8 @@ public sealed partial class MainWindow : Window
 
     private void ViewerStatus(StackPanel p)
     {
+        if (_directStatus is not null)
+            p.Children.Add(Ui.Card("", "Direct Wi-Fi", _directStatus));
         if (_viewerStatus is null) return;
         p.Children.Add(Ui.Card(_viewer is not null ? "" : "", _viewerStatus, _latency,
             _viewer is not null ? Ui.Button("Disconnect", Disconnect) : null));
@@ -535,6 +550,57 @@ public sealed partial class MainWindow : Window
             p.Children.Add(Ui.Card("", "Your mouse and keyboard control it", "Press Ctrl+Alt+Shift+Q in the viewer to leave."));
         else if (_viewer is not null)
             p.Children.Add(Ui.Card("", "Leave the viewer", "Press Esc, or close its window."));
+        if (_viewer is not null && !_onDirectWifi && _directPending is null)
+            p.Children.Add(Ui.Card("", "Switch to direct Wi-Fi",
+                "Lag on Wi-Fi? This PC starts its own hotspot and the other computer joins it, so video goes straight between them instead of through the router.",
+                Ui.Button("Switch", () => _ = SwitchToDirectWifiAsync())));
+    }
+
+    /// <summary>Viewer: start this PC's hotspot, hand its name and passphrase to the host inside the
+    /// encrypted session, then reconnect once the host appears on the hotspot.</summary>
+    private async Task SwitchToDirectWifiAsync()
+    {
+        if (_viewer is null || _viewerFingerprint is null) return;
+        _directStatus = "Starting this PC's hotspot…";
+        RenderIf("connect", "peer");
+        var error = await _hotspot.StartAsync();
+        if (error is not null || _viewer is null)
+        {
+            _directStatus = error ?? "Disconnected before the switch.";
+            RenderIf("connect", "peer");
+            return;
+        }
+        _directPending = (_viewerFingerprint, _viewingName, _viewerExtend, DateTimeOffset.UtcNow.AddSeconds(60));
+        _viewer.OfferDirectLink(_hotspot.Ssid!, _hotspot.Passphrase!);
+        _directStatus = $"Asking {_viewingName} to join “{_hotspot.Ssid}”. The picture pauses for a few seconds while it switches.";
+        RenderIf("connect", "peer");
+        var timer = _ui.CreateTimer();
+        timer.Interval = TimeSpan.FromSeconds(61);
+        timer.IsRepeating = false;
+        timer.Tick += (_, _) =>
+        {
+            if (_directPending is { } d && DateTimeOffset.UtcNow >= d.Until)
+            {
+                _directPending = null;
+                _directStatus = $"{d.Name} didn't come back on the direct link. Reconnect from Nearby.";
+                _ = _hotspot.StopAsync();
+                RenderIf("connect", "peer");
+            }
+        };
+        timer.Start();
+    }
+
+    /// <summary>Discovery found the host on the hotspot: reconnect there.</summary>
+    private void TryDirectReconnect(PeerInfo peer)
+    {
+        if (_directPending is not { } d || _viewer is not null || peer.Fingerprint != d.Fingerprint) return;
+        var direct = peer.Addresses.FirstOrDefault(a => a.StartsWith("192.168.137.", StringComparison.Ordinal));
+        if (direct is null) return;
+        _directPending = null;
+        _directStatus = null;
+        _extend = d.Extend;
+        _onDirectWifi = true;
+        Connect($"{direct}:{peer.Port}", d.Name, d.Fingerprint);
     }
 
     private void PeerPage(StackPanel p, PeerInfo peer)
@@ -597,6 +663,19 @@ public sealed partial class MainWindow : Window
     private void ViewingPage(StackPanel p)
     {
         p.Children.Add(Ui.Hero("", "Viewing", "How other computers appear on this PC."));
+        var quality = new ComboBox
+        {
+            ItemsSource = new[] { "Best (cable or fast network)", "Balanced", "Fast (Wi-Fi)" },
+            SelectedIndex = (int)_settings.Quality,
+            MinWidth = 220,
+        };
+        quality.SelectionChanged += (_, _) =>
+        {
+            _settings.Quality = (Quality)Math.Max(0, quality.SelectedIndex);
+            _settings.Save();
+        };
+        p.Children.Add(Ui.Card("", "Quality",
+            "Lower quality uses less bandwidth, so the picture keeps up on Wi-Fi. Applies to the next connection.", quality));
         p.Children.Add(Ui.Card("", "Use as an extra display by default", null,
             Ui.Switch(_settings.ExtendByDefault, on => { _settings.ExtendByDefault = on; _extend = on; _settings.Save(); })));
         p.Children.Add(Ui.Card("", "Control the other computer",
@@ -785,6 +864,7 @@ public sealed partial class MainWindow : Window
         h?.Dispose();
         _sessions.Clear();
         _hostStream = null;
+        _ = _hotspot.StopAsync();
         if (_tray is not null) _tray.Tooltip = "Annex";
     }
 
@@ -813,6 +893,19 @@ public sealed partial class MainWindow : Window
             case CoreEvent.SessionEnded ended:
                 _sessions.Remove(ended.SessionId);
                 RenderIf("share");
+                break;
+            case CoreEvent.DirectLinkRequested req when _host is not null:
+            {
+                // The viewer (a Mac) asks for a direct link: run the hotspot here and hand it over.
+                var error = await _hotspot.StartAsync();
+                if (error is null) _host?.OfferDirectLink(req.SessionId, _hotspot.Ssid!, _hotspot.Passphrase!);
+                else _host?.RefuseDirectLink(req.SessionId, error);
+                RenderIf("share");
+                break;
+            }
+            case CoreEvent.DirectLinkOffer offer when _host is not null:
+                // Another Windows PC offers its hotspot; joining one from here isn't supported yet.
+                _host.RefuseDirectLink(offer.SessionId, "Joining a direct Wi-Fi link isn't supported on Windows yet. Run the switch from the other computer.");
                 break;
         }
     }
@@ -866,6 +959,7 @@ public sealed partial class MainWindow : Window
                 _hosts.RemoveAll(h => h.Instance == peer.Instance);
                 _hosts.Add(peer);
                 _hosts.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
+                TryDirectReconnect(peer);
                 break;
             case CoreEvent.PeerLost(var instance):
                 _hosts.RemoveAll(h => h.Instance == instance);
@@ -898,7 +992,7 @@ public sealed partial class MainWindow : Window
         try
         {
             _viewer = ViewerHandle.ConnectWindowed(_core, address, pinnedFingerprint, e => _ui.TryEnqueue(() => OnViewerEvent(e)),
-                extend: _extend, input: _settings.UseMouseAndKeyboard);
+                extend: _extend, input: _settings.UseMouseAndKeyboard, quality: _settings.Quality);
             _viewingName = title;
             _viewerStatus = $"Connecting to {title}…";
             if (_tray is not null) _tray.Tooltip = $"Annex — connecting to {title}";
@@ -924,12 +1018,19 @@ public sealed partial class MainWindow : Window
                 _viewerStatus = (s.Mode == "extend" ? $"Extra display for {s.PeerName}" : $"Viewing {s.PeerName}")
                     + (s.ConnectionDescription.Length > 0 ? $" ({s.ConnectionDescription})" : "");
                 _viewingName = s.PeerName;
+                _viewerFingerprint = s.Fingerprint;
+                _viewerExtend = s.Mode == "extend";
                 _controlling = s.Input;
                 if (_tray is not null) _tray.Tooltip = $"Annex — viewing {s.PeerName}";
                 RefreshTrusted();
                 break;
             case CoreEvent.InputAllowed a:
                 _controlling = a.Allowed;
+                break;
+            case CoreEvent.DirectLinkUnavailable u:
+                _directPending = null;
+                _directStatus = u.Reason;
+                _ = _hotspot.StopAsync();
                 break;
             case CoreEvent.StreamChanged(var st):
                 _viewerStatus = $"Viewing {_viewingName} — {st.Width}×{st.Height} at {st.Fps} fps";
@@ -938,7 +1039,13 @@ public sealed partial class MainWindow : Window
                 _latency = $"Latency {l.P50Ms:F0} ms (p95 {l.P95Ms:F0} ms) · {l.Fps:F0} fps";
                 break;
             case CoreEvent.SessionEnded(_, var reason):
-                _viewerStatus = reason == "user" ? null : FriendlyReason(reason, _viewingName);
+                // Switching to direct Wi-Fi drops the old connection on purpose.
+                _viewerStatus = _directPending is not null ? null : reason == "user" ? null : FriendlyReason(reason, _viewingName);
+                if (reason == "user" && _onDirectWifi)
+                {
+                    _onDirectWifi = false;
+                    _ = _hotspot.StopAsync();
+                }
                 _latency = null;
                 _controlling = false;
                 if (_tray is not null) _tray.Tooltip = "Annex";
@@ -1005,6 +1112,7 @@ public sealed partial class MainWindow : Window
         _trayMenu = null;
         StopHosting();
         Disconnect();
+        _hotspot.StopAsync().Wait(TimeSpan.FromSeconds(3));
         _discovery?.Dispose();
         _discovery = null;
         _core?.Dispose();

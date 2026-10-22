@@ -15,6 +15,8 @@ final class AppSettings: ObservableObject {
     @Published var openFullScreen: Bool { didSet { defaults.set(openFullScreen, forKey: Keys.fullScreen) } }
     /// Viewer: default to using the other computer as an extra display.
     @Published var extendByDefault: Bool { didSet { defaults.set(extendByDefault, forKey: Keys.extend) } }
+    /// Viewer: bitrate ceiling asked of hosts. 0 best, 1 balanced, 2 fast (Wi-Fi).
+    @Published var quality: Int { didSet { defaults.set(quality, forKey: Keys.quality) } }
     /// The name other devices see; nil = this Mac's name from System Settings.
     @Published var customDeviceName: String? { didSet { defaults.set(customDeviceName, forKey: Keys.name) } }
     @Published private(set) var launchAtLogin = false
@@ -27,6 +29,7 @@ final class AppSettings: ObservableObject {
         static let fullScreen = "openFullScreen"
         static let extend = "extendByDefault"
         static let name = "deviceName"
+        static let quality = "quality"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -38,6 +41,7 @@ final class AppSettings: ObservableObject {
         openFullScreen = defaults.bool(forKey: Keys.fullScreen)
         extendByDefault = defaults.bool(forKey: Keys.extend)
         customDeviceName = defaults.string(forKey: Keys.name)
+        quality = defaults.integer(forKey: Keys.quality)
         refreshLaunchAtLogin()
     }
 

@@ -15,6 +15,8 @@ public sealed class AppSettings
     /// sharing computer still decides per device (Paired devices), so asking is harmless.</summary>
     public bool UseMouseAndKeyboard { get; set; } = true;
     public bool ExtendByDefault { get; set; }
+    /// <summary>Viewer: bitrate ceiling asked of hosts (Fast suits Wi-Fi).</summary>
+    public Annex.Interop.Quality Quality { get; set; } = Annex.Interop.Quality.Best;
 
     private static string FilePath => Path.Combine(MainWindow.DataDirectory, "settings.json");
 

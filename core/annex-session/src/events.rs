@@ -66,6 +66,23 @@ pub enum Event {
         session_id: u64,
         allowed: bool,
     },
+    /// Host: the viewer asks for a direct Wi-Fi link. Answer with an offer (start a hotspot) or
+    /// "unavailable".
+    DirectLinkRequested {
+        session_id: u64,
+    },
+    /// The other side runs a hotspot for a direct link: join it, then reconnect (viewer) or keep
+    /// sharing (host). The passphrase only travels inside the encrypted session.
+    DirectLinkOffer {
+        session_id: u64,
+        ssid: String,
+        passphrase: String,
+    },
+    /// Viewer: the host can't set up a direct link.
+    DirectLinkUnavailable {
+        session_id: u64,
+        reason: String,
+    },
     /// Host: inject this input into the session's display. Only delivered while allowed.
     Input {
         session_id: u64,

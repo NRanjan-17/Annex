@@ -23,6 +23,7 @@ fn viewer_cfg(port: u16) -> ViewerConfig {
         expected_fingerprint: None,
         mode: Mode::Mirror,
         input: false,
+        quality: annex_session::Quality::Best,
         latency_csv: None,
     }
 }

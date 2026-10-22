@@ -33,6 +33,13 @@ final class AppModel: ObservableObject {
     /// Viewer: the host currently accepts this Mac's mouse and keyboard.
     @Published private(set) var controllingHost = false
     private var viewerPeerName = ""
+    private var viewerFingerprint: String?
+    /// Direct Wi-Fi: what's happening, for the Connect page.
+    @Published private(set) var directStatus: String?
+    /// Connected over the other computer's hotspot right now.
+    @Published private(set) var onDirectWiFi = false
+    /// Reconnecting over the hotspot after switching: who, how, and attempts left.
+    private var directReconnect: (fingerprint: String, name: String, extend: Bool, attempts: Int)?
     private var cancellables: Set<AnyCancellable> = []
 
     private var core: CoreClient?
@@ -188,7 +195,7 @@ final class AppModel: ObservableObject {
         do {
             let v = try ViewerHandle(
                 core: core, address: address, expectedFingerprint: expectedFingerprint, display: Displays.mainDisplayInfo(),
-                extend: extendMode, input: settings.controlWhenViewing,
+                extend: extendMode, input: settings.controlWhenViewing, quality: settings.quality,
                 onEvent: { [weak self] e in DispatchQueue.main.async { self?.handleViewerEvent(e) } },
                 onFrame: { [weak window] buf, id, _, key in
                     window?.enqueue(Data(buf), frameID: id, keyframe: key)
@@ -220,6 +227,12 @@ final class AppModel: ObservableObject {
             let via = s.connectionDescription.isEmpty ? "" : " (\(s.connectionDescription))"
             viewerStatus = (s.mode == "extend" ? "Extending \(s.peerName)" : "Viewing \(s.peerName)") + via
             viewerPeerName = s.peerName
+            viewerFingerprint = s.fingerprint
+            if directReconnect != nil {
+                directReconnect = nil
+                directStatus = nil
+                onDirectWiFi = true
+            }
             viewerWindow?.setStreamSize(width: s.stream.width, height: s.stream.height)
             viewerWindow?.show(fullScreen: settings.openFullScreen)
             controllingHost = s.input ?? false
@@ -234,8 +247,26 @@ final class AppModel: ObservableObject {
             viewerWindow?.setControlling(allowed, hostName: viewerPeerName)
         case .latencyStats(let l):
             latency = l
+        case .directLinkOffer(_, let ssid, let passphrase):
+            joinDirectLink(ssid: ssid, passphrase: passphrase, asViewer: true)
+        case .directLinkUnavailable(_, let reason):
+            directStatus = reason
+            directReconnect = nil
         case .sessionEnded(_, let reason):
-            viewerStatus = reason == "user" ? nil : Self.friendlyReason(reason, peer: viewerPeerName)
+            if reason == "user" { onDirectWiFi = false }
+            // Switching networks drops the old connection on purpose; reconnect instead of reporting it.
+            if var d = directReconnect, d.attempts > 0 {
+                d.attempts -= 1
+                directReconnect = d
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.reconnectDirect() }
+                viewerStatus = nil
+            } else {
+                if directReconnect != nil {
+                    directStatus = "Couldn't reach \(viewerPeerName) on the direct link. Connect again from Nearby."
+                    directReconnect = nil
+                }
+                viewerStatus = reason == "user" ? nil : Self.friendlyReason(reason, peer: viewerPeerName)
+            }
             viewer = nil
             let w = viewerWindow
             viewerWindow = nil
@@ -248,12 +279,55 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: Direct Wi-Fi
+
+    /// Viewer: ask the other computer (a Windows PC) to start its hotspot for a direct link.
+    func switchToDirectWiFi() {
+        guard let viewer else { return }
+        directStatus = "Asking \(viewerPeerName) to start a direct Wi-Fi link…"
+        viewer.requestDirectLink()
+    }
+
+    /// Joins the other computer's hotspot. As the viewer, reconnects to it afterwards; as the host,
+    /// the viewer reconnects by itself once this Mac shows up on the hotspot.
+    private func joinDirectLink(ssid: String, passphrase: String, asViewer: Bool) {
+        directStatus = "Joining “\(ssid)”. The picture pauses for a few seconds while the Mac switches Wi-Fi."
+        if asViewer, let fp = viewerFingerprint {
+            directReconnect = (fp, viewerPeerName, extendMode, 4)
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let error = DirectWiFi.join(ssid: ssid, passphrase: passphrase)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let error {
+                    self.directReconnect = nil
+                    self.directStatus = "Couldn't join automatically (\(error)). Join “\(ssid)” from the Wi-Fi menu (password \(passphrase)), then connect again."
+                } else if !asViewer {
+                    self.directStatus = "On “\(ssid)”, the direct link. The other computer reconnects by itself."
+                } else if self.viewer == nil {
+                    self.reconnectDirect()
+                }
+            }
+        }
+    }
+
+    private func reconnectDirect() {
+        guard let d = directReconnect else { return }
+        extendMode = d.extend
+        connect(address: "\(DirectWiFi.windowsHotspotAddress):47800", title: d.name, expectedFingerprint: d.fingerprint)
+    }
+
     // MARK: Pairing
 
     private var pinPanels: [UInt64: PinPanel] = [:]
 
     private func handleSessionEvent(_ e: CoreEvent) {
         switch e {
+        case .directLinkRequested(let session):
+            host?.refuseDirectLink(session: session)
+        case .directLinkOffer(_, let ssid, let passphrase):
+            // A Windows viewer runs the hotspot; this Mac (the host) joins it.
+            joinDirectLink(ssid: ssid, passphrase: passphrase, asViewer: false)
         case .pairingPin(let p):
             // Host: show the PIN until pairing finishes or the user cancels.
             let panel = PinPanel(pin: p.pin, peerName: p.peerName, fingerprint: p.fingerprintDisplay) { [weak self] in

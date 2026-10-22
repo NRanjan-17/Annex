@@ -63,6 +63,11 @@ public abstract record CoreEvent
     public sealed record Latency(LatencyStats Stats) : CoreEvent;
     /// <summary>Input was allowed or revoked during a session (the core injects it itself on Windows).</summary>
     public sealed record InputAllowed(ulong SessionId, bool Allowed) : CoreEvent;
+    /// <summary>Host: the viewer asks for a direct Wi-Fi link.</summary>
+    public sealed record DirectLinkRequested(ulong SessionId) : CoreEvent;
+    /// <summary>Join this hotspot for a direct link (credentials arrive only inside the session).</summary>
+    public sealed record DirectLinkOffer(ulong SessionId, string Ssid, string Passphrase) : CoreEvent;
+    public sealed record DirectLinkUnavailable(ulong SessionId, string Reason) : CoreEvent;
     public sealed record SessionEnded(ulong SessionId, string Reason) : CoreEvent;
     public sealed record Error(string Message) : CoreEvent;
     public sealed record PeerFound(PeerInfo Peer) : CoreEvent;
@@ -96,6 +101,9 @@ public abstract record CoreEvent
                 "bitrate_hint" => Get<BitrateHint>(json),
                 "latency_stats" => new Latency(Get<LatencyStats>(json)),
                 "input_allowed" => Get<InputAllowed>(json),
+                "direct_link_requested" => Get<DirectLinkRequested>(json),
+                "direct_link_offer" => Get<DirectLinkOffer>(json),
+                "direct_link_unavailable" => Get<DirectLinkUnavailable>(json),
                 // Windows injects input inside the core; the app doesn't need each event.
                 "input" => new Unknown(type),
                 "session_ended" => Get<SessionEnded>(json),
@@ -131,6 +139,9 @@ internal sealed record InstanceDto(string Instance);
 [JsonSerializable(typeof(CoreEvent.PairingFinished))]
 [JsonSerializable(typeof(CoreEvent.SessionStarted))]
 [JsonSerializable(typeof(CoreEvent.InputAllowed))]
+[JsonSerializable(typeof(CoreEvent.DirectLinkRequested))]
+[JsonSerializable(typeof(CoreEvent.DirectLinkOffer))]
+[JsonSerializable(typeof(CoreEvent.DirectLinkUnavailable))]
 [JsonSerializable(typeof(ExtendStatus))]
 [JsonSerializable(typeof(LatencyStats))]
 [JsonSerializable(typeof(PeerInfo))]

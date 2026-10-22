@@ -192,6 +192,14 @@ public sealed unsafe class HostHandle : IDisposable
         }
     }
 
+    /// <summary>Answers a DirectLinkRequested event with this PC's hotspot.</summary>
+    public bool OfferDirectLink(ulong sessionId, string ssid, string passphrase) =>
+        _raw != 0 && NativeMethods.Check(NativeMethods.annex_host_offer_direct_link(_raw, sessionId, ssid, passphrase)) == 1;
+
+    /// <summary>Answers a DirectLinkRequested event that can't be met.</summary>
+    public bool RefuseDirectLink(ulong sessionId, string reason) =>
+        _raw != 0 && NativeMethods.Check(NativeMethods.annex_host_refuse_direct_link(_raw, sessionId, reason)) == 1;
+
     public void Dispose()
     {
         if (_raw != 0)
@@ -203,6 +211,9 @@ public sealed unsafe class HostHandle : IDisposable
         GC.KeepAlive(_core);
     }
 }
+
+/// <summary>Viewer quality choice: a bitrate ceiling for the host (Fast suits Wi-Fi).</summary>
+public enum Quality : uint { Best = 0, Balanced = 1, Fast = 2 }
 
 public sealed unsafe class ViewerHandle : IDisposable
 {
@@ -218,11 +229,11 @@ public sealed unsafe class ViewerHandle : IDisposable
 
     /// <summary>Connects and delivers encoded frames to <paramref name="onFrame"/>.</summary>
     public static ViewerHandle Connect(CoreClient core, string address, string? expectedFingerprint, DisplayInfo display,
-        Action<CoreEvent> onEvent, FrameHandler onFrame, bool extend = false, bool input = false)
+        Action<CoreEvent> onEvent, FrameHandler onFrame, bool extend = false, bool input = false, Quality quality = Quality.Best)
     {
         var v = new ViewerHandle(core, new CallbackTarget(onEvent, onFrame));
         var json = AnnexJson.Serialize(display);
-        var rc = NativeMethods.annex_viewer_connect(core.Raw, address, expectedFingerprint, json, extend, input,
+        var rc = NativeMethods.annex_viewer_connect(core.Raw, address, expectedFingerprint, json, extend, input, (uint)quality,
             CallbackTarget.EventCallback, CallbackTarget.FrameCallback, v._target.Context, out v._raw);
         if (rc < 0)
         {
@@ -236,10 +247,10 @@ public sealed unsafe class ViewerHandle : IDisposable
     /// With <paramref name="input"/>, the window forwards mouse and keyboard once the host allows it
     /// (Ctrl+Alt+Shift+Q then leaves).</summary>
     public static ViewerHandle ConnectWindowed(CoreClient core, string address, string? expectedFingerprint, Action<CoreEvent> onEvent,
-        bool extend = false, bool input = false)
+        bool extend = false, bool input = false, Quality quality = Quality.Best)
     {
         var v = new ViewerHandle(core, new CallbackTarget(onEvent));
-        var rc = NativeMethods.annex_viewer_connect_windowed(core.Raw, address, expectedFingerprint, extend, input,
+        var rc = NativeMethods.annex_viewer_connect_windowed(core.Raw, address, expectedFingerprint, extend, input, (uint)quality,
             CallbackTarget.EventCallback, v._target.Context, out v._raw);
         if (rc < 0)
         {
@@ -252,6 +263,18 @@ public sealed unsafe class ViewerHandle : IDisposable
     public void RequestKeyframe()
     {
         if (_raw != 0) NativeMethods.annex_viewer_request_keyframe(_raw);
+    }
+
+    /// <summary>Asks the host for a direct Wi-Fi link (answered by DirectLinkOffer / DirectLinkUnavailable).</summary>
+    public void RequestDirectLink()
+    {
+        if (_raw != 0) NativeMethods.annex_viewer_request_direct_link(_raw);
+    }
+
+    /// <summary>This PC runs a hotspot: tells the host to join it.</summary>
+    public void OfferDirectLink(string ssid, string passphrase)
+    {
+        if (_raw != 0) NativeMethods.Check(NativeMethods.annex_viewer_offer_direct_link(_raw, ssid, passphrase));
     }
 
     public void FramePresented(uint frameId)

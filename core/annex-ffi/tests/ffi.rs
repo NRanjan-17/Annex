@@ -102,6 +102,7 @@ fn host_and_viewer_through_c_abi() {
                 display.as_ptr(),
                 false,
                 false,
+                0,
                 Some(on_event),
                 Some(on_frame),
                 &*vs as *const Sink as *mut c_void,

@@ -304,6 +304,7 @@ async fn viewer(o: &mut Opts) {
         expected_fingerprint: expected,
         mode,
         input: false,
+        quality: annex_session::Quality::Best,
         latency_csv,
     };
     let v = Arc::new(connect_viewer(core, cfg, events, frames));

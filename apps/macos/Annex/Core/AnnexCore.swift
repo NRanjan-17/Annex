@@ -170,6 +170,11 @@ final class HostHandle {
         annex_host_set_session_stream(raw, session, "h264", UInt32(width), UInt32(height), UInt32(fps))
     }
 
+    /// Answers a direct-link request that this Mac can't meet.
+    func refuseDirectLink(session: UInt64, reason: String) {
+        if let raw { annex_host_refuse_direct_link(raw, session, reason) }
+    }
+
     func endSession(_ session: UInt64) {
         if let raw { annex_host_end_session(raw, session) }
     }
@@ -209,14 +214,15 @@ final class ViewerHandle {
     }()
 
     /// `input`: ask to control the host; `sessionStarted.input` says whether it agreed.
+    /// `quality`: 0 best, 1 balanced, 2 fast (bitrate ceiling for the host).
     init(core: CoreClient, address: String, expectedFingerprint: String?, display: DisplayInfo, extend: Bool = false,
-         input: Bool = false, onEvent: @escaping (CoreEvent) -> Void,
+         input: Bool = false, quality: Int = 0, onEvent: @escaping (CoreEvent) -> Void,
          onFrame: @escaping (UnsafeRawBufferPointer, UInt32, Int64?, Bool) -> Void) throws {
         self.core = core
         box = CallbackBox(onEvent: onEvent, onFrame: onFrame)
         let displayJSON = String(decoding: try Self.encoder.encode(display), as: UTF8.self)
         var out: OpaquePointer?
-        try check(annex_viewer_connect(core.raw, address, expectedFingerprint, displayJSON, extend, input,
+        try check(annex_viewer_connect(core.raw, address, expectedFingerprint, displayJSON, extend, input, UInt32(quality),
                                        eventTrampoline, frameTrampoline, box.context, &out))
         raw = out
     }
@@ -245,6 +251,11 @@ final class ViewerHandle {
 
     func sendScroll(dx: Int32, dy: Int32) {
         if let raw { annex_viewer_send_scroll(raw, dx, dy) }
+    }
+
+    /// Asks the host for a direct Wi-Fi link (answered by directLinkOffer / directLinkUnavailable).
+    func requestDirectLink() {
+        if let raw { annex_viewer_request_direct_link(raw) }
     }
 
     func sendKey(macKeyCode: UInt16, down: Bool) {

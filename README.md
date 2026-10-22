@@ -116,6 +116,19 @@ Every device you pair with a PIN is listed under **Paired Devices**. Remove one 
 enter a PIN again next time. Rename this computer under **General → Device name** (leave it
 empty to use the computer's own name).
 
+### Smoother on Wi-Fi
+
+- **Quality** (Viewing page): *Fast (Wi-Fi)* lowers the bitrate so the picture keeps up on a
+  busy network; *Best* is for a cable or a fast network. Annex also lowers quality by itself as
+  soon as the network delay starts creeping up.
+- **Switch to direct Wi-Fi** (shown while connected, Mac ↔ Windows): the Windows PC starts its
+  own hotspot with a random password, hands it to the Mac inside the encrypted session, the Mac
+  joins it and Annex reconnects. Video then goes straight between the two, one Wi-Fi hop instead
+  of two through the router. When you disconnect, the hotspot stops and the Mac rejoins its usual
+  network. Needs a PC whose Wi-Fi can run Mobile hotspot.
+- On Windows, Annex puts Wi-Fi in *media streaming mode* (no background scans, no power saving)
+  while a session runs.
+
 ### Fastest connection: a cable (USB-C, Thunderbolt or Ethernet)
 
 Annex runs over any cable that makes a **network link** between the two computers, and

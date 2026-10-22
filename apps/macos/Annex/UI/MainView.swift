@@ -536,6 +536,11 @@ private struct ViewerStatusSection: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
+        if let direct = model.directStatus {
+            Section {
+                Row(symbol: "wifi", tint: .blue, title: "Direct Wi-Fi", subtitle: direct) { EmptyView() }
+            }
+        }
         if let status = model.viewerStatus {
             Section {
                 Row(symbol: model.isViewing ? "play.rectangle.fill" : "info.circle", tint: model.isViewing ? .green : .gray,
@@ -550,6 +555,12 @@ private struct ViewerStatusSection: View {
                 if model.isViewing && model.controllingHost {
                     Row(symbol: "keyboard", tint: .orange, title: "Your mouse and keyboard control it",
                         subtitle: "Press ⌃⌥⇧Q in the viewer to leave") { EmptyView() }
+                }
+                if model.isViewing && !model.onDirectWiFi {
+                    Row(symbol: "wifi", tint: .blue, title: "Switch to direct Wi-Fi",
+                        subtitle: "Lag on Wi-Fi? A Windows PC starts its own hotspot and this Mac joins it, so video goes straight between them instead of through the router.") {
+                        Button("Switch") { model.switchToDirectWiFi() }
+                    }
                 }
             }
         }
@@ -734,6 +745,18 @@ private struct ViewingPage: View {
     var body: some View {
         Page(title: "Viewing") {
             Hero(title: "Viewing", text: "How other computers appear on this Mac.", symbol: "play.rectangle.fill", tint: .purple)
+            Section {
+                Row(symbol: "dial.medium", tint: .purple, title: "Quality",
+                    subtitle: "Lower quality uses less bandwidth, so the picture keeps up on Wi-Fi. Applies to the next connection.") {
+                    Picker("", selection: $settings.quality) {
+                        Text("Best").tag(0)
+                        Text("Balanced").tag(1)
+                        Text("Fast (Wi-Fi)").tag(2)
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+            }
             Section {
                 Row(symbol: "arrow.up.left.and.arrow.down.right", tint: .purple, title: "Open in full screen") {
                     Toggle("", isOn: $settings.openFullScreen).toggleStyle(.switch).labelsHidden()

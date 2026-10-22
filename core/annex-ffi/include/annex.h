@@ -119,13 +119,14 @@ int32_t annex_host_start_screen(const AnnexCore *core, uint32_t monitor_index, u
  * instead of mirroring. */
 int32_t annex_viewer_connect(const AnnexCore *core, const char *address,
                              const char *expected_fingerprint, const char *display_json, bool extend,
-                             bool input, AnnexEventCallback on_event, AnnexFrameCallback on_frame, void *ctx,
+                             bool input, uint32_t quality, AnnexEventCallback on_event, AnnexFrameCallback on_frame, void *ctx,
                              AnnexViewer **out);
 #ifdef _WIN32
 /* Windows: decode + render in a full-screen window owned by the core. Esc closes it
  * (Ctrl+Alt+Shift+Q while forwarding input, which the window then does by itself). */
 int32_t annex_viewer_connect_windowed(const AnnexCore *core, const char *address,
                                       const char *expected_fingerprint, bool extend, bool input,
+                                      uint32_t quality,
                                       AnnexEventCallback on_event, void *ctx, AnnexViewer **out);
 #endif
 void annex_viewer_request_keyframe(const AnnexViewer *viewer);
@@ -139,6 +140,13 @@ void annex_viewer_send_mouse_button(const AnnexViewer *viewer, uint32_t button, 
 void annex_viewer_send_scroll(const AnnexViewer *viewer, int32_t dx, int32_t dy);
 /* native_code: macOS virtual key code / Windows scancode. Returns 1 if sent, 0 if unmapped. */
 int32_t annex_viewer_send_key(const AnnexViewer *viewer, uint32_t native_code, bool down);
+/* Direct Wi-Fi link (one side runs a hotspot; credentials travel only inside the session).
+ * quality for connect: 0 best, 1 balanced, 2 fast (bitrate ceiling). */
+void annex_viewer_request_direct_link(const AnnexViewer *viewer);
+int32_t annex_viewer_offer_direct_link(const AnnexViewer *viewer, const char *ssid, const char *passphrase);
+int32_t annex_host_offer_direct_link(const AnnexHost *host, uint64_t session_id, const char *ssid,
+                                     const char *passphrase);
+int32_t annex_host_refuse_direct_link(const AnnexHost *host, uint64_t session_id, const char *reason);
 void annex_viewer_free(AnnexViewer *viewer);
 
 /* ---- Discovery -------------------------------------------------------------------- */

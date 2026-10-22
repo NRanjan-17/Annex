@@ -164,6 +164,11 @@ enum CoreEvent: Equatable {
     case input(sessionId: UInt64, event: InputEvent)
     /// Input was allowed or revoked during a session.
     case inputAllowed(sessionId: UInt64, allowed: Bool)
+    /// Host: the viewer asks for a direct Wi-Fi link.
+    case directLinkRequested(sessionId: UInt64)
+    /// Join this hotspot for a direct link (credentials arrive only inside the session).
+    case directLinkOffer(sessionId: UInt64, ssid: String, passphrase: String)
+    case directLinkUnavailable(sessionId: UInt64, reason: String)
     case sessionEnded(sessionId: UInt64, reason: String)
     case error(message: String)
     case peerFound(PeerInfo)
@@ -187,6 +192,8 @@ enum CoreEvent: Equatable {
     private struct Stream: Decodable { let stream: StreamConfig }
     private struct Input: Decodable { let sessionId: UInt64; let event: InputEvent }
     private struct Allowed: Decodable { let sessionId: UInt64; let allowed: Bool }
+    private struct Offer: Decodable { let sessionId: UInt64; let ssid: String; let passphrase: String }
+    private struct Unavailable: Decodable { let sessionId: UInt64; let reason: String }
 
     static func decode(_ data: Data) -> CoreEvent {
         let d = decoder
@@ -210,6 +217,14 @@ enum CoreEvent: Equatable {
             case "input_allowed":
                 let a = try d.decode(Allowed.self, from: data)
                 return .inputAllowed(sessionId: a.sessionId, allowed: a.allowed)
+            case "direct_link_requested":
+                return .directLinkRequested(sessionId: try d.decode(SessionRef.self, from: data).sessionId)
+            case "direct_link_offer":
+                let o = try d.decode(Offer.self, from: data)
+                return .directLinkOffer(sessionId: o.sessionId, ssid: o.ssid, passphrase: o.passphrase)
+            case "direct_link_unavailable":
+                let u = try d.decode(Unavailable.self, from: data)
+                return .directLinkUnavailable(sessionId: u.sessionId, reason: u.reason)
             case "latency_stats": return .latencyStats(try d.decode(LatencyStats.self, from: data))
             case "session_ended":
                 let e = try d.decode(Ended.self, from: data)

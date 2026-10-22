@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use annex_proto::{Codec, Control, DisplayInfo, InputEvent, Mode, Role, SessionRequest};
+use annex_proto::{Codec, Control, DisplayInfo, InputEvent, Mode, Quality, Role, SessionRequest};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -39,14 +39,21 @@ pub struct ViewerConfig {
     pub mode: Mode,
     /// Ask to control the host with this computer's mouse and keyboard. The host decides.
     pub input: bool,
+    /// Bitrate ceiling the host should respect.
+    pub quality: Quality,
     /// Optional per-frame latency log: `frame_id,capture_local_us,present_us,latency_us`.
     pub latency_csv: Option<PathBuf>,
 }
 
 enum Cmd {
     RequestKeyframe,
-    Presented { frame_id: u32, at_us: i64 },
+    Presented {
+        frame_id: u32,
+        at_us: i64,
+    },
     Input(InputEvent),
+    /// Direct-link messages (request / offer) for the host.
+    Control(Control),
     Disconnect,
 }
 
@@ -68,6 +75,18 @@ impl ViewerHandle {
     /// Forwards one input event to the host. Dropped unless the host currently allows input.
     pub fn send_input(&self, event: InputEvent) {
         let _ = self.cmd.send(Cmd::Input(event));
+    }
+
+    /// Asks the host to set up a direct Wi-Fi link (answered by `direct_link_offer` or
+    /// `direct_link_unavailable`).
+    pub fn request_direct_link(&self) {
+        let _ = self.cmd.send(Cmd::Control(Control::DirectLinkRequest));
+    }
+
+    /// Tells the host to join this hotspot (this computer runs it) for a direct link.
+    pub fn offer_direct_link(&self, ssid: &str, passphrase: &str) {
+        let _ =
+            self.cmd.send(Cmd::Control(Control::DirectLinkOffer { ssid: ssid.into(), passphrase: passphrase.into() }));
     }
 
     /// Sends `Bye`, closes the connection and waits for the session task to finish.
@@ -163,6 +182,7 @@ async fn run(
             display: cfg.display.clone(),
             codecs: cfg.codecs.clone(),
             input: cfg.input,
+            quality: cfg.quality,
         }))
         .await?;
     let (stream, input) = match timeout(ACCEPT_TIMEOUT, reader.next_control()).await?? {
@@ -275,6 +295,12 @@ async fn run(
                         latency.lock().unwrap().clock.add_sample(t_viewer_us, t_host_us, now_us());
                     }
                     Incoming::Control(Control::StreamConfig(stream)) => events(Event::StreamConfig { stream }),
+                    Incoming::Control(Control::DirectLinkOffer { ssid, passphrase }) => {
+                        events(Event::DirectLinkOffer { session_id: 0, ssid, passphrase });
+                    }
+                    Incoming::Control(Control::DirectLinkUnavailable { reason }) => {
+                        events(Event::DirectLinkUnavailable { session_id: 0, reason });
+                    }
                     Incoming::Control(Control::InputAllowed { allowed }) => {
                         input_allowed.store(allowed, std::sync::atomic::Ordering::Release);
                         events(Event::InputAllowed { session_id: 0, allowed });
@@ -337,6 +363,7 @@ async fn run(
                 }
                 c = cmd_rx.recv() => match c {
                     Some(Cmd::RequestKeyframe) => writer.send_control(&Control::KeyframeRequest).await?,
+                    Some(Cmd::Control(c)) => writer.send_control(&c).await?,
                     Some(Cmd::Input(e)) => {
                         // Never send keystrokes to a host that hasn't asked for them.
                         if input_allowed.load(std::sync::atomic::Ordering::Acquire) {

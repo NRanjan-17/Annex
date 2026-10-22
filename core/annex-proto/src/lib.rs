@@ -116,7 +116,23 @@ pub struct SessionRequest {
     /// The viewer wants to control the host with its mouse and keyboard.
     #[serde(default)]
     pub input: bool,
+    /// How hard the host may push the link (bitrate ceiling).
+    #[serde(default)]
+    pub quality: Quality,
 }
+
+/// Viewer preference that caps the host's bitrate: `Fast` suits Wi-Fi, `Best` a cable.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Quality {
+    #[default]
+    Best,
+    Balanced,
+    Fast,
+}
+
+/// Longest Wi-Fi network name (IEEE 802.11).
+pub const MAX_SSID_LEN: usize = 32;
 
 /// Largest value of a normalized pointer coordinate (the right or bottom edge of the stream).
 pub const POINTER_MAX: u16 = u16::MAX;
@@ -218,6 +234,18 @@ pub enum Control {
     InputAllowed {
         allowed: bool,
     },
+    /// Viewer → host: please set up a direct Wi-Fi link (one side runs a hotspot).
+    DirectLinkRequest,
+    /// Either way: join this Wi-Fi network for a direct link, then reconnect. Sent only inside the
+    /// encrypted, mutually authenticated session; the passphrase is random per offer.
+    DirectLinkOffer {
+        ssid: String,
+        passphrase: String,
+    },
+    /// Host → viewer: a direct link isn't possible here (e.g. no hotspot support).
+    DirectLinkUnavailable {
+        reason: String,
+    },
     ClockPing {
         seq: u32,
         t_viewer_us: i64,
@@ -243,6 +271,9 @@ const KNOWN_CONTROL_TYPES: &[&str] = &[
     "receiver_report",
     "input",
     "input_allowed",
+    "direct_link_request",
+    "direct_link_offer",
+    "direct_link_unavailable",
     "pair_confirm",
     "clock_ping",
     "clock_pong",
@@ -299,7 +330,16 @@ impl Control {
                     return Err(ProtoError::InvalidField("stream"));
                 }
             }
-            Control::SessionReject { reason } | Control::Bye { reason } => {
+            Control::DirectLinkOffer { ssid, passphrase } => {
+                // WPA2-PSK: 1–32 byte SSID, 8–63 character passphrase.
+                if ssid.is_empty() || ssid.len() > MAX_SSID_LEN {
+                    return Err(ProtoError::InvalidField("ssid"));
+                }
+                if !(8..=63).contains(&passphrase.len()) {
+                    return Err(ProtoError::InvalidField("passphrase"));
+                }
+            }
+            Control::SessionReject { reason } | Control::Bye { reason } | Control::DirectLinkUnavailable { reason } => {
                 if reason.len() > 256 {
                     return Err(ProtoError::InvalidField("reason"));
                 }
@@ -321,6 +361,7 @@ impl Control {
                 }
             }
             Control::Input(_)
+            | Control::DirectLinkRequest
             | Control::InputAllowed { .. }
             | Control::KeyframeRequest
             | Control::ClockPing { .. }
@@ -364,6 +405,7 @@ mod tests {
                 },
                 codecs: vec![Codec::H264],
                 input: false,
+                quality: Quality::Fast,
             }),
             Control::SessionAccept {
                 stream: StreamConfig { codec: Codec::H264, width: 1920, height: 1080, fps: 60 },
@@ -374,6 +416,9 @@ mod tests {
             Control::Input(InputEvent::Scroll { dx: -3, dy: 120 }),
             Control::Input(InputEvent::Key { usage: 0x04, down: false }),
             Control::InputAllowed { allowed: false },
+            Control::DirectLinkRequest,
+            Control::DirectLinkOffer { ssid: "Annex-ab12".into(), passphrase: "x".repeat(16) },
+            Control::DirectLinkUnavailable { reason: "no_hotspot".into() },
             Control::SessionReject { reason: "busy".into() },
             Control::KeyframeRequest,
             Control::PairSpake { msg: vec![1; 33] },
@@ -452,6 +497,19 @@ mod tests {
         let keys: Vec<&str> = v.as_map().unwrap().iter().filter_map(|(k, _)| k.as_text()).collect();
         assert_eq!(keys, ["t", "k", "usage", "down"]);
         assert!(Control::decode(&Control::Input(InputEvent::Scroll { dx: 0, dy: 200_000 }).encode()).is_err());
+    }
+
+    #[test]
+    fn direct_link_offer_is_validated() {
+        let bad = |ssid: &str, passphrase: &str| {
+            Control::decode(&Control::DirectLinkOffer { ssid: ssid.into(), passphrase: passphrase.into() }.encode())
+                .is_err()
+        };
+        assert!(bad("", "12345678"));
+        assert!(bad(&"s".repeat(33), "12345678"));
+        assert!(bad("Annex", "short"));
+        assert!(bad("Annex", &"p".repeat(64)));
+        assert!(!bad("Annex", "12345678"));
     }
 
     #[test]
