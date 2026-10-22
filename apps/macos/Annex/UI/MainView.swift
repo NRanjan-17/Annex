@@ -51,51 +51,53 @@ private struct Sidebar: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        List(selection: Binding(get: { model.pane }, set: { if let p = $0 { model.pane = p } })) {
+        // Rows draw their own selection (a soft grey, like Music) instead of the List's accent fill.
+        List {
             ThisMacCard(model: model)
                 .listRowInsets(EdgeInsets(top: 6, leading: 6, bottom: 10, trailing: 6))
-                .selectionDisabled()
                 .contentShape(Rectangle())
                 .onTapGesture { model.pane = .general }
                 .help("Rename this Mac in General")
 
             Section {
-                SidebarItem(title: "Share This Mac", symbol: "display.2", tint: .blue,
-                            badge: model.isHosting ? "On" : nil)
-                    .tag(Pane.share)
-                SidebarItem(title: "Connect", symbol: "rectangle.connected.to.line.below", tint: .indigo,
-                            badge: model.isViewing ? "Live" : nil)
-                    .tag(Pane.connect)
+                item("Share This Mac", "display.2", .share, badge: model.isHosting ? "On" : nil)
+                item("Connect", "rectangle.connected.to.line.below", .connect, badge: model.isViewing ? "Live" : nil)
             }
 
             Section("Nearby") {
                 if model.discovered.isEmpty {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small).frame(width: 22)
                         Text("Searching…").foregroundStyle(.secondary)
                     }
-                    .selectionDisabled()
+                    .padding(.horizontal, 8)
                 }
                 ForEach(model.discovered) { peer in
-                    SidebarItem(title: peer.name, symbol: "desktopcomputer", tint: .teal, badge: nil)
-                        .tag(Pane.peer(peer.id))
+                    item(peer.name, "desktopcomputer", .peer(peer.id), badge: nil)
                 }
             }
 
-            Section {
-                SidebarItem(title: "Paired Devices", symbol: "lock.shield.fill", tint: .green,
-                            badge: model.trusted.isEmpty ? nil : "\(model.trusted.count)")
-                    .tag(Pane.devices)
-                SidebarItem(title: "General", symbol: "gearshape.fill", tint: .gray, badge: nil)
-                    .tag(Pane.general)
-                SidebarItem(title: "Viewing", symbol: "play.rectangle.fill", tint: .purple, badge: nil)
-                    .tag(Pane.viewing)
-                SidebarItem(title: "About Annex", symbol: "info.circle.fill", tint: .secondary, badge: nil)
-                    .tag(Pane.about)
+            Section("Annex") {
+                item("Paired Devices", "lock.shield", .devices, badge: model.trusted.isEmpty ? nil : "\(model.trusted.count)")
+                item("General", "gearshape", .general, badge: nil)
+                item("Viewing", "play.rectangle", .viewing, badge: nil)
+                item("About", "info.circle", .about, badge: nil)
             }
         }
         .listStyle(.sidebar)
     }
+
+    private func item(_ title: String, _ symbol: String, _ pane: Pane, badge: String?) -> some View {
+        SidebarItem(title: title, symbol: symbol, badge: badge, selected: model.pane == pane) {
+            model.pane = pane
+        }
+        .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
+    }
+}
+
+/// The Annex purple, from the app icon.
+extension Color {
+    static let annex = Color(red: 0.42, green: 0.36, blue: 0.95)
 }
 
 private struct ThisMacCard: View {
@@ -121,16 +123,38 @@ private struct ThisMacCard: View {
 private struct SidebarItem: View {
     let title: String
     let symbol: String
-    let tint: Color
     let badge: String?
+    let selected: Bool
+    let action: () -> Void
+    @State private var hovered = false
 
     var body: some View {
-        Label {
-            Text(title).lineLimit(1)
-        } icon: {
-            IconTile(symbol: symbol, tint: tint, size: 22)
+        Button(action: action) {
+            HStack(spacing: 10) {
+                // A fixed box keeps every symbol centred on the same column, whatever its shape.
+                Image(systemName: symbol)
+                    .font(.system(size: 15, weight: .regular))
+                    .foregroundStyle(Color.annex)
+                    .frame(width: 22, height: 22)
+                Text(title)
+                    .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if let badge {
+                    Text(badge)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(selected ? 0.11 : hovered ? 0.05 : 0)))
+            .contentShape(Rectangle())
         }
-        .badge(badge.map { Text($0) })
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
     }
 }
 
