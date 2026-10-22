@@ -653,7 +653,7 @@ private struct AboutPage: View {
                     Row(symbol: "ladybug.fill", tint: .red, title: "Report an issue") { Image(systemName: "arrow.up.right").foregroundStyle(.tertiary) }
                 }
             } footer: {
-                Text("MIT License · Copyright © 2026 Annex contributors").font(.caption).foregroundStyle(.secondary)
+                Text("MIT License · Copyright © 2026 Nalinish Ranjan").font(.caption).foregroundStyle(.secondary)
             }
         }
     }

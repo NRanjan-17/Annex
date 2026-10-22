@@ -5,8 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Version>0.1.0</Version>
-    <Company>Annex contributors</Company>
-    <Copyright>Copyright © 2026 Annex contributors. MIT License.</Copyright>
+    <Company>Nalinish Ranjan</Company>
+    <Copyright>Copyright © 2026 Nalinish Ranjan. MIT License.</Copyright>
     <!-- No telemetry from the build either. -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>

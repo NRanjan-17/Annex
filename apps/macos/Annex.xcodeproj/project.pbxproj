@@ -311,7 +311,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Annex;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Annex contributors. MIT License.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Nalinish Ranjan. MIT License.";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				PRODUCT_BUNDLE_IDENTIFIER = "com.nranjan-17.annex";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -330,7 +330,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = Annex;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Annex contributors. MIT License.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Nalinish Ranjan. MIT License.";
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
 				PRODUCT_BUNDLE_IDENTIFIER = "com.nranjan-17.annex";
 				PRODUCT_NAME = "$(TARGET_NAME)";

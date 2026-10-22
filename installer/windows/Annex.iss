@@ -27,7 +27,7 @@
 
 #define AppName "Annex"
 #define AppExe "Annex.exe"
-#define AppPublisher "Annex contributors"
+#define AppPublisher "Nalinish Ranjan"
 #define AppUrl "https://github.com/NRanjan-17/Annex"
 
 [Setup]

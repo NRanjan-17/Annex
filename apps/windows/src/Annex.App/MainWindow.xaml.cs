@@ -416,7 +416,7 @@ public sealed partial class MainWindow : Window
             new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex") }));
         p.Children.Add(Ui.Card("", "Report an issue", null,
             new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex/issues") }));
-        p.Children.Add(Ui.Text("MIT License · Copyright © 2026 Annex contributors", "CaptionTextBlockStyle", Ui.Secondary));
+        p.Children.Add(Ui.Text("MIT License · Copyright © 2026 Nalinish Ranjan", "CaptionTextBlockStyle", Ui.Secondary));
     }
 
     // ---- Helpers ----------------------------------------------------------------------
