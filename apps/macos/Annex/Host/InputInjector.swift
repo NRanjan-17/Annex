@@ -15,10 +15,14 @@ final class InputInjector: @unchecked Sendable {
     private var flags: CGEventFlags = []
     private var lastClick: (button: CGMouseButton, time: TimeInterval, at: CGPoint, count: Int64)?
 
-    static var isTrusted: Bool { AXIsProcessTrusted() }
+    /// Posting input events needs the Accessibility ("Device Control") permission.
+    /// CGPreflightPostEventAccess is the exact check for CGEventPost; AXIsProcessTrusted can stay
+    /// stale until relaunch, so either one saying yes is enough.
+    static var isTrusted: Bool { CGPreflightPostEventAccess() || AXIsProcessTrusted() }
 
     /// Shows the system prompt that sends the user to the Accessibility list (once per launch).
     static func requestTrust() {
+        _ = CGRequestPostEventAccess()
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }

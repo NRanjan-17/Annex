@@ -241,27 +241,35 @@ public sealed partial class MainWindow : Window
     private void SharePage(StackPanel p)
     {
         p.Children.Add(Ui.Hero("", "Share this PC",
-            "Let another computer on your network mirror this screen, or use itself as an extra display for this PC."));
-        p.Children.Add(Ui.Card("", "Sharing", ShareStatus(), Ui.Switch(_host is not null, SetHosting)));
+            "Start sharing to let another computer show this PC's screen, or become an extra display for this PC."));
+        var action = _host is null
+            ? Ui.Button("Start sharing", () => SetHosting(true), accent: true)
+            : Ui.Button("Stop sharing", () => SetHosting(false));
+        action.MinWidth = 140;
+        p.Children.Add(Ui.Card(_host is null ? "" : "", _host is null ? "Sharing is off" : "Sharing is on", ShareStatus(), action));
         if (_monitors.Count > 1)
         {
             var box = new ComboBox { ItemsSource = _monitors.Select(m => m.Label).ToList(), SelectedIndex = _monitorIndex, MinWidth = 220, IsEnabled = _host is null };
             box.SelectionChanged += (_, _) => _monitorIndex = Math.Max(0, box.SelectedIndex);
-            p.Children.Add(Ui.Card("", "Display to share", null, box));
+            p.Children.Add(Ui.Card("", "Screen to share", _host is null ? null : "Stop sharing to pick another screen.", box));
         }
         if (_hostError is not null)
             p.Children.Add(Ui.Info("Sharing problem", _hostError, InfoBarSeverity.Warning));
 
         if (_host is not null)
         {
-            p.Children.Add(Ui.Section("Connect from another computer"));
-            p.Children.Add(Ui.Card("", "Open Annex on the other computer",
-                $"Choose “{_core?.DeviceName}” under Nearby, then Mirror or Extend."));
+            p.Children.Add(Ui.Section("How to connect from the other computer"));
+            p.Children.Add(Ui.Card("", "1. Open Annex on the other computer",
+                $"Go to Connect. “{_core?.DeviceName}” is listed under Nearby."));
+            p.Children.Add(Ui.Card("", "2. Choose what you want",
+                "“Show its screen here” puts this PC's screen on that computer. “Be its extra display” turns that computer into a second screen for this PC."));
+            p.Children.Add(Ui.Card("", "3. First time only: enter the PIN",
+                $"This PC shows a 6-digit PIN to type there. The identity codes should match: {Fingerprint}"));
             var addresses = LocalAddresses();
-            p.Children.Add(Ui.Card("", "Not listed? Connect by address",
+            p.Children.Add(Ui.Card("", "Not listed there?",
                 addresses.Count == 0
                     ? "This PC isn't on a network right now. Connect it to Wi-Fi, Ethernet or a cable."
-                    : "In Connect → Connect by address, type one of these:"));
+                    : "Use Connect by address on the other computer with one of these:"));
             foreach (var (ip, direct) in addresses)
             {
                 var text = _host.Port == DefaultPort ? ip : $"{ip}:{_host.Port}";
@@ -281,19 +289,18 @@ public sealed partial class MainWindow : Window
                 card.Margin = new Thickness(36, 0, 0, 2);
                 p.Children.Add(card);
             }
-            p.Children.Add(Ui.Card("", "First time? Enter the PIN",
-                $"This PC shows a 6-digit PIN. Check that the identity code matches: {Fingerprint}"));
         }
 
         if (_sessions.Count > 0)
         {
-            p.Children.Add(Ui.Section("Connected"));
+            p.Children.Add(Ui.Section("Connected now"));
             foreach (var (_, s) in _sessions)
             {
-                var detail = s.Mode == "extend" ? "Extra display" :
-                    _hostStream is { } st ? $"Mirroring · {st.Width}×{st.Height} at {st.Fps} fps" : "Mirroring";
-                if (s.Input) detail += " · using your mouse and keyboard";
-                p.Children.Add(Ui.Card(s.Mode == "extend" ? "" : "", s.Name, detail));
+                var title = s.Mode == "extend" ? $"{s.Name} is an extra display for this PC" : $"{s.Name} is showing this screen";
+                var detail = s.Mode == "extend" ? "Arrange it in Settings → System → Display" :
+                    _hostStream is { } st ? $"{st.Width}×{st.Height} at {st.Fps} fps" : null;
+                if (s.Input) detail = (detail is null ? "" : detail + " · ") + "using your mouse and keyboard";
+                p.Children.Add(Ui.Card(s.Mode == "extend" ? "" : "", title, detail));
             }
         }
 
@@ -305,33 +312,44 @@ public sealed partial class MainWindow : Window
 
     private string ShareStatus()
     {
-        if (_host is null) return "Off";
+        if (_host is null) return "Other computers can't see this PC.";
         if (_sessions.Count > 0) return $"Connected to {string.Join(", ", _sessions.Values.Select(s => s.Name).Distinct())}";
-        return _host.Port == DefaultPort ? "Waiting for a viewer" : $"Waiting for a viewer · port {_host.Port}";
+        return "Waiting for another computer to connect";
+    }
+
+    /// The two things you can do with another computer, as buttons that say what happens.
+    private StackPanel ConnectButtons(Action<bool> connect)
+    {
+        var show = Ui.Button("Show its screen here", () => connect(false), accent: true);
+        var extend = Ui.Button("Be its extra display", () => connect(true));
+        ToolTipService.SetToolTip(show, "See and use the other computer's screen on this PC");
+        ToolTipService.SetToolTip(extend, "This PC becomes a second screen for the other computer");
+        show.IsEnabled = extend.IsEnabled = _viewer is null;
+        return Ui.Row(show, extend);
     }
 
     private void ConnectPage(StackPanel p)
     {
-        p.Children.Add(Ui.Hero("", "Connect to a computer",
-            "Show another computer's screen on this PC, or let it use this PC as an extra display. Works over Wi-Fi, Ethernet or a cable between the two."));
+        p.Children.Add(Ui.Hero("", "Connect to another computer",
+            "Show another computer's screen on this PC, or use this PC as an extra display for it. Turn on sharing in Annex on that computer first."));
         ViewerStatus(p);
-
-        var mode = new ComboBox { ItemsSource = new[] { "Mirror its screen", "Extra display" }, SelectedIndex = _extend ? 1 : 0, MinWidth = 180 };
-        mode.SelectionChanged += (_, _) => _extend = mode.SelectedIndex == 1;
-        p.Children.Add(Ui.Card("", "Show as", "Extra display: the other computer gets a new display that shows on this PC.", mode));
 
         p.Children.Add(Ui.Section("Nearby"));
         if (_hosts.Count == 0)
             p.Children.Add(Ui.Card("", "Looking for computers…",
-                "Turn on sharing in Annex on the other computer. It appears here automatically.",
+                "Open Annex on the other computer and click Start sharing. It appears here automatically.",
                 new ProgressRing { IsActive = true, Width = 20, Height = 20 }));
         foreach (var h in _hosts)
-            p.Children.Add(Ui.Card("", h.Name, IsPaired(h) ? "Paired" : "Not paired yet · you'll enter a PIN",
-                Ui.Button("Connect", () => ConnectToPeer(h), accent: true)));
+            p.Children.Add(Ui.Card("", h.Name, IsPaired(h) ? "Paired" : "Not paired yet · you'll enter a PIN the first time",
+                ConnectButtons(extend => { _extend = extend; ConnectToPeer(h); })));
 
         p.Children.Add(Ui.Section("Connect by address"));
-        p.Children.Add(Ui.Card("", "Address", "For computers on another subnet, or when discovery is blocked.",
-            Ui.Row(Ui.Reuse(_addressBox), Ui.Button("Connect", ConnectManual))));
+        p.Children.Add(Ui.Card("", "Address", "Shown on the other computer under How to connect. Use it when the computer isn't listed under Nearby.",
+            Ui.Reuse(_addressBox)));
+        var buttons = ConnectButtons(extend => { _extend = extend; ConnectManual(); });
+        buttons.HorizontalAlignment = HorizontalAlignment.Right;
+        buttons.Margin = new Thickness(0, 4, 0, 0);
+        p.Children.Add(buttons);
     }
 
     private void ViewerStatus(StackPanel p)
@@ -349,12 +367,13 @@ public sealed partial class MainWindow : Window
     {
         p.Children.Add(Ui.Hero("", peer.Name, IsPaired(peer)
             ? "Paired with this PC. Connects without a PIN."
-            : $"On your network. The first connection asks for the PIN shown on {peer.Name}."));
+            : $"On your network. The first time, you'll enter the PIN shown on {peer.Name}."));
         ViewerStatus(p);
-        p.Children.Add(Ui.Card("", "Mirror its screen", $"See and use {peer.Name}'s screen on this PC.",
-            Ui.Button("Mirror", () => { _extend = false; ConnectToPeer(peer); }, accent: true)));
-        p.Children.Add(Ui.Card("", "Use this PC as its extra display", $"{peer.Name} gets a new display that shows up here.",
-            Ui.Button("Extend", () => { _extend = true; ConnectToPeer(peer); })));
+        var show = Ui.Button("Show its screen", () => { _extend = false; ConnectToPeer(peer); }, accent: true);
+        var extend = Ui.Button("Be its extra display", () => { _extend = true; ConnectToPeer(peer); });
+        show.IsEnabled = extend.IsEnabled = _viewer is null;
+        p.Children.Add(Ui.Card("", "Show its screen here", $"See and use {peer.Name}'s screen on this PC.", show));
+        p.Children.Add(Ui.Card("", "Be its extra display", $"This PC becomes a second screen for {peer.Name}. Drag windows onto it from there.", extend));
         p.Children.Add(Ui.Section("Details"));
         p.Children.Add(Ui.Card("", "Addresses", $"{string.Join(", ", peer.Addresses)} · port {peer.Port}"));
         if (peer.Fingerprint is { } fp)

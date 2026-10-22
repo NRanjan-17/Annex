@@ -68,7 +68,8 @@ final class AppModel: ObservableObject {
     }
 
     func refreshPermissions() {
-        accessibilityTrusted = InputInjector.isTrusted
+        let trusted = InputInjector.isTrusted
+        if trusted != accessibilityTrusted { accessibilityTrusted = trusted }
         settings.refreshLaunchAtLogin()
     }
 

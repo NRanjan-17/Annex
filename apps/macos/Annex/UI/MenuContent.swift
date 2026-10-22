@@ -82,10 +82,14 @@ private struct ShareCard: View {
                     Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer()
-                Toggle("", isOn: Binding(get: { model.isHosting }, set: { model.setHosting($0) }))
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .controlSize(.small)
+                if model.isHosting {
+                    Button("Stop", role: .destructive) { model.setHosting(false) }
+                        .controlSize(.small)
+                } else {
+                    Button("Start Sharing") { model.setHosting(true) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
             }
             if model.displays.count > 1 {
                 Picker("Display", selection: $model.selectedDisplayID) {
@@ -119,7 +123,7 @@ private struct ShareCard: View {
     }
 
     private var summary: String {
-        guard model.isHosting else { return "Let another computer mirror or extend this screen" }
+        guard model.isHosting else { return "Let another computer show this screen or extend it" }
         let s = model.hostStatus
         if s.viewerName != nil { return "Connected" }
         if s.listeningPort != nil { return "Waiting for a viewer…" }
@@ -139,17 +143,10 @@ private struct ConnectCard: View {
                 IconBadge(systemImage: "macbook.and.iphone", tint: model.isViewing ? .accentColor : .secondary)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Connect to a computer").font(.system(size: 13, weight: .semibold))
-                    Text("Show its screen here, or use this Mac as its extra display")
+                    Text("Show its screen here, or be its extra display")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
-            Picker("", selection: $model.extendMode) {
-                Label("Mirror", systemImage: "rectangle.on.rectangle").tag(false)
-                Label("Extra display", systemImage: "rectangle.split.2x1").tag(true)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
 
             VStack(spacing: 2) {
                 if model.discovered.isEmpty {
@@ -163,32 +160,30 @@ private struct ConnectCard: View {
                     .padding(.horizontal, 6)
                 }
                 ForEach(model.discovered) { peer in
-                    Button {
-                        model.connect(to: peer)
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "desktopcomputer")
-                                .foregroundStyle(Color.accentColor)
-                                .frame(width: 18)
-                            Text(peer.name).lineLimit(1)
-                            Spacer()
-                            if model.trusted.contains(where: { $0.fingerprint == peer.fingerprint }) {
-                                Image(systemName: "checkmark.seal.fill")
-                                    .foregroundStyle(.secondary)
-                                    .help("Paired")
-                            }
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .font(.system(size: 13))
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 8)
-                        .background(RoundedRectangle(cornerRadius: 7)
-                            .fill(hovered == peer.id ? Color.primary.opacity(0.08) : .clear))
-                        .contentShape(Rectangle())
+                    HStack(spacing: 8) {
+                        Image(systemName: "desktopcomputer")
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 18)
+                        Text(peer.name).lineLimit(1)
+                        Spacer()
+                        Button {
+                            model.extendMode = false
+                            model.connect(to: peer)
+                        } label: { Image(systemName: "rectangle.on.rectangle") }
+                        .help("Show its screen here")
+                        Button {
+                            model.extendMode = true
+                            model.connect(to: peer)
+                        } label: { Image(systemName: "rectangle.split.2x1") }
+                        .help("Be its extra display")
                     }
-                    .buttonStyle(.plain)
+                    .font(.system(size: 13))
+                    .controlSize(.small)
+                    .disabled(model.isViewing)
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .background(RoundedRectangle(cornerRadius: 7)
+                        .fill(hovered == peer.id ? Color.primary.opacity(0.06) : .clear))
                     .onHover { hovered = $0 ? peer.id : nil }
                 }
             }

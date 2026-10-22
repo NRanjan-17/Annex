@@ -222,7 +222,10 @@ private struct Row<Trailing: View>: View {
                 }
             }
             Spacer(minLength: 12)
+            // Controls keep their full size; the text on the left wraps instead (no "C…" buttons).
             trailing
+                .fixedSize()
+                .layoutPriority(1)
         }
         .padding(.vertical, 2)
     }
@@ -248,16 +251,35 @@ private struct SharePage: View {
     var body: some View {
         Page(title: "Share This Mac") {
             Hero(title: "Share This Mac",
-                 text: "Let another computer on your network mirror this screen, or use itself as an extra display for this Mac. New devices need the PIN this Mac shows.",
+                 text: "Start sharing to let another computer show this Mac's screen, or become an extra display for this Mac.",
                  symbol: "display.2", tint: .blue)
             Section {
-                Row(symbol: "dot.radiowaves.left.and.right", tint: model.isHosting ? .blue : .gray,
-                    title: "Sharing", subtitle: shareStatus) {
-                    Toggle("", isOn: Binding(get: { model.isHosting }, set: { model.setHosting($0) }))
-                        .toggleStyle(.switch).labelsHidden()
+                HStack(spacing: 12) {
+                    IconTile(symbol: model.isHosting ? "dot.radiowaves.left.and.right" : "pause.fill",
+                             tint: model.isHosting ? .blue : .gray, size: 34)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.isHosting ? "Sharing is on" : "Sharing is off")
+                            .font(.system(size: 15, weight: .semibold))
+                        Text(shareStatus).font(.callout).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if model.isHosting {
+                        Button(role: .destructive) { model.setHosting(false) } label: {
+                            Label("Stop Sharing", systemImage: "stop.fill").padding(.horizontal, 6)
+                        }
+                        .controlSize(.large)
+                    } else {
+                        Button { model.setHosting(true) } label: {
+                            Label("Start Sharing", systemImage: "play.fill").padding(.horizontal, 6)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                    }
                 }
+                .padding(.vertical, 4)
                 if model.displays.count > 1 {
-                    Row(symbol: "display", tint: .blue, title: "Display to mirror") {
+                    Row(symbol: "display", tint: .blue, title: "Screen to share",
+                        subtitle: model.isHosting ? "Stop sharing to pick another screen." : nil) {
                         Picker("", selection: $model.selectedDisplayID) {
                             ForEach(model.displays) { d in Text(d.name).tag(Optional(d.id)) }
                         }
@@ -267,19 +289,21 @@ private struct SharePage: View {
                     }
                 }
             }
-            if model.isHosting, let port = model.hostStatus.listeningPort {
-                HowToConnect(model: model, port: port)
+            if let err = model.hostStatus.error {
+                Section {
+                    Label(err, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                }
             }
             if model.isHosting && model.hostStatus.viewerName != nil {
                 let s = model.hostStatus
-                Section("Connected") {
+                Section("Connected now") {
                     ForEach(s.mirrorViewers, id: \.self) { name in
-                        Row(symbol: "rectangle.on.rectangle", tint: .green, title: name,
-                            subtitle: s.stream.map { "Mirroring · \($0.width)×\($0.height) at \($0.fps) fps" }) { EmptyView() }
+                        Row(symbol: "rectangle.on.rectangle", tint: .green, title: "\(name) is showing this screen",
+                            subtitle: s.stream.map { "\($0.width)×\($0.height) at \($0.fps) fps" }) { EmptyView() }
                     }
                     ForEach(s.extendViewers, id: \.self) { name in
-                        Row(symbol: "rectangle.split.2x1", tint: .green, title: name,
-                            subtitle: "Extra display · arrange it in System Settings → Displays") { EmptyView() }
+                        Row(symbol: "rectangle.split.2x1", tint: .green, title: "\(name) is an extra display for this Mac",
+                            subtitle: "Arrange it in System Settings → Displays") { EmptyView() }
                     }
                     ForEach(s.controllingViewers, id: \.self) { name in
                         Row(symbol: "keyboard", tint: .orange, title: "\(name) is using your mouse and keyboard",
@@ -287,10 +311,8 @@ private struct SharePage: View {
                     }
                 }
             }
-            if let err = model.hostStatus.error {
-                Section {
-                    Label(err, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                }
+            if model.isHosting, let port = model.hostStatus.listeningPort {
+                HowToConnect(model: model, port: port)
             }
             Section {
                 Row(symbol: "cpu", tint: .gray, title: "Hardware video encoder",
@@ -305,10 +327,10 @@ private struct SharePage: View {
     }
 
     private var shareStatus: String {
-        guard model.isHosting else { return "Off" }
+        guard model.isHosting else { return "Other computers can't see this Mac." }
         let s = model.hostStatus
-        if let st = s.stream, s.viewerName != nil { return "Streaming \(st.width)×\(st.height) · \(s.hardwareEncoder ? "hardware" : "software") encoder" }
-        if let port = s.listeningPort { return "Waiting for a viewer · port \(port)" }
+        if s.viewerName != nil { return "Connected · \(s.hardwareEncoder ? "hardware" : "software") encoder" }
+        if s.listeningPort != nil { return "Waiting for another computer to connect" }
         return "Starting…"
     }
 }
@@ -323,13 +345,14 @@ private struct HowToConnect: View {
     var body: some View {
         Section {
             Row(symbol: "1.circle.fill", tint: .blue, title: "Open Annex on the other computer",
-                subtitle: "Choose “\(model.deviceName)” under Nearby, then Mirror or Extend.") { EmptyView() }
-            if addresses.isEmpty {
-                Row(symbol: "2.circle.fill", tint: .blue, title: "Not listed? Connect by address",
-                    subtitle: "This Mac isn't on a network right now. Connect it to Wi-Fi, Ethernet or a cable.") { EmptyView() }
-            } else {
-                Row(symbol: "2.circle.fill", tint: .blue, title: "Not listed? Connect by address",
-                    subtitle: "In Connect → Connect by address, type one of these:") { EmptyView() }
+                subtitle: "Go to Connect. “\(model.deviceName)” is listed under Nearby.") { EmptyView() }
+            Row(symbol: "2.circle.fill", tint: .blue, title: "Choose what you want",
+                subtitle: "“Show its screen here” puts this Mac's screen on that computer. “Be its extra display” turns that computer into a second screen for this Mac.") { EmptyView() }
+            Row(symbol: "3.circle.fill", tint: .blue, title: "First time only: enter the PIN",
+                subtitle: "This Mac shows a 6-digit PIN to type there. The identity codes should match: \(model.fingerprintDisplay)") { EmptyView() }
+            if !addresses.isEmpty {
+                Row(symbol: "questionmark.circle.fill", tint: .gray, title: "Not listed there?",
+                    subtitle: "Use Connect by address on the other computer with one of these:") { EmptyView() }
                 ForEach(addresses, id: \.self) { a in
                     let text = port == Int(annexDefaultPort) ? a.ip : "\(a.ip):\(port)"
                     HStack(spacing: 10) {
@@ -349,11 +372,12 @@ private struct HowToConnect: View {
                     }
                     .padding(.leading, 36)
                 }
+            } else {
+                Row(symbol: "wifi.exclamationmark", tint: .orange, title: "This Mac isn't on a network",
+                    subtitle: "Connect it to Wi-Fi, Ethernet or a cable to the other computer.") { EmptyView() }
             }
-            Row(symbol: "3.circle.fill", tint: .blue, title: "First time? Enter the PIN",
-                subtitle: "This Mac shows a 6-digit PIN. Check that the identity code matches: \(model.fingerprintDisplay)") { EmptyView() }
         } header: {
-            Text("Connect from another computer")
+            Text("How to connect from the other computer")
         }
         .onAppear { addresses = LocalAddresses.current() }
     }
@@ -364,22 +388,32 @@ private let annexDefaultPort: UInt16 = 47800
 
 // MARK: Connect
 
-private struct ModePicker: View {
+/// The two things you can do with another computer, as buttons that say what happens.
+private struct ConnectButtons: View {
     @ObservedObject var model: AppModel
+    let connect: () -> Void
+    var compact = false
 
     var body: some View {
-        Row(symbol: model.extendMode ? "rectangle.split.2x1" : "rectangle.on.rectangle", tint: .indigo,
-            title: "Show as", subtitle: model.extendMode
-                ? "This Mac becomes an extra display for the other computer"
-                : "This Mac shows the other computer's screen") {
-            Picker("", selection: $model.extendMode) {
-                Text("Mirror").tag(false)
-                Text("Extra display").tag(true)
+        HStack(spacing: 8) {
+            Button {
+                model.extendMode = false
+                connect()
+            } label: {
+                Label(compact ? "Show Its Screen" : "Show Its Screen Here", systemImage: "rectangle.on.rectangle")
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
+            .buttonStyle(.borderedProminent)
+            .help("See and use the other computer's screen on this Mac")
+            Button {
+                model.extendMode = true
+                connect()
+            } label: {
+                Label("Be Its Extra Display", systemImage: "rectangle.split.2x1")
+            }
+            .help("This Mac becomes a second screen for the other computer")
         }
+        .fixedSize()
+        .disabled(model.isViewing)
     }
 }
 
@@ -388,15 +422,14 @@ private struct ConnectPage: View {
 
     var body: some View {
         Page(title: "Connect") {
-            Hero(title: "Connect to a Computer",
-                 text: "Show another computer's screen on this Mac, or let it use this Mac as an extra display. Works over Wi-Fi, Ethernet or a cable between the two.",
+            Hero(title: "Connect to Another Computer",
+                 text: "Show another computer's screen on this Mac, or use this Mac as an extra display for it. Turn on sharing in Annex on that computer first.",
                  symbol: "rectangle.connected.to.line.below", tint: .indigo)
             ViewerStatusSection(model: model)
-            Section { ModePicker(model: model) }
             Section("Nearby") {
                 if model.discovered.isEmpty {
                     Row(symbol: "magnifyingglass", tint: .gray, title: "Looking for computers…",
-                        subtitle: "Turn on sharing in Annex on the other computer. It appears here automatically.") {
+                        subtitle: "Open Annex on the other computer and click Start Sharing. It appears here automatically.") {
                         ProgressView().controlSize(.small)
                     }
                 }
@@ -405,18 +438,21 @@ private struct ConnectPage: View {
                 }
             }
             Section {
-                Row(symbol: "network", tint: .gray, title: "Connect by address") {
-                    HStack(spacing: 8) {
-                        InputField(text: $model.manualAddress, placeholder: "192.168.1.20 or host:port",
-                                   onSubmit: { model.connectManual() })
-                            .frame(width: 220)
-                        Button("Connect") { model.connectManual() }
-                            .disabled(model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                    .controlSize(.regular)
+                Row(symbol: "network", tint: .gray, title: "Address",
+                    subtitle: "Shown on the other computer under How to connect.") {
+                    InputField(text: $model.manualAddress, placeholder: "192.168.1.20",
+                               onSubmit: { model.extendMode = false; model.connectManual() })
+                        .frame(width: 200)
                 }
+                HStack {
+                    Spacer()
+                    ConnectButtons(model: model, connect: { model.connectManual() }, compact: true)
+                        .disabled(model.isViewing || model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            } header: {
+                Text("Connect by address")
             } footer: {
-                Text("For computers on another subnet, or when discovery is blocked.")
+                Text("For when the other computer isn't listed under Nearby (guest Wi-Fi, VPNs, other subnets).")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -428,11 +464,13 @@ private struct PeerRow: View {
     let peer: PeerInfo
 
     var body: some View {
-        Row(symbol: "desktopcomputer", tint: .teal, title: peer.name,
-            subtitle: model.isPaired(peer) ? "Paired" : "Not paired yet · you'll enter a PIN") {
-            Button("Connect") { model.connect(to: peer) }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+        VStack(alignment: .leading, spacing: 8) {
+            Row(symbol: "desktopcomputer", tint: .teal, title: peer.name,
+                subtitle: model.isPaired(peer) ? "Paired" : "Not paired yet · you'll enter a PIN the first time") { EmptyView() }
+            HStack {
+                Spacer()
+                ConnectButtons(model: model, connect: { model.connect(to: peer) }, compact: true)
+            }
         }
     }
 }
@@ -447,7 +485,9 @@ private struct ViewerStatusSection: View {
                     title: status,
                     subtitle: model.latency.map { String(format: "Latency %.0f ms (p95 %.0f ms) · %.0f fps", $0.p50Ms, $0.p95Ms, $0.fps) }) {
                     if model.isViewing {
-                        Button("Disconnect", role: .destructive) { model.disconnectViewer() }
+                        Button(role: .destructive) { model.disconnectViewer() } label: {
+                            Label("Disconnect", systemImage: "xmark")
+                        }
                     }
                 }
                 if model.isViewing && model.controllingHost {
@@ -468,24 +508,26 @@ private struct PeerPage: View {
             Hero(title: peer.name,
                  text: model.isPaired(peer)
                     ? "Paired with this Mac. Connects without a PIN."
-                    : "On your network. The first connection asks for the PIN shown on \(peer.name).",
+                    : "On your network. The first time, you'll enter the PIN shown on \(peer.name).",
                  symbol: "desktopcomputer", tint: .teal)
             ViewerStatusSection(model: model)
             Section {
-                Row(symbol: "rectangle.on.rectangle", tint: .indigo, title: "Mirror its screen",
-                    subtitle: "See and use \(peer.name)'s screen on this Mac") {
-                    Button("Mirror") {
+                Row(symbol: "rectangle.on.rectangle", tint: .indigo, title: "Show its screen here",
+                    subtitle: "See and use \(peer.name)'s screen on this Mac.") {
+                    Button("Show Its Screen") {
                         model.extendMode = false
                         model.connect(to: peer)
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(model.isViewing)
                 }
-                Row(symbol: "rectangle.split.2x1", tint: .blue, title: "Use this Mac as its extra display",
-                    subtitle: "\(peer.name) gets a new display that shows up here") {
-                    Button("Extend") {
+                Row(symbol: "rectangle.split.2x1", tint: .blue, title: "Be its extra display",
+                    subtitle: "This Mac becomes a second screen for \(peer.name). Drag windows onto it from there.") {
+                    Button("Be Its Extra Display") {
                         model.extendMode = true
                         model.connect(to: peer)
                     }
+                    .disabled(model.isViewing)
                 }
             }
             Section("Details") {
@@ -528,6 +570,13 @@ private struct DevicesPage: View {
             } footer: {
                 Text("This Mac's identity code: \(model.fingerprintDisplay)")
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+        }
+        // Permission changes in System Settings don't notify apps; look again while this page is open.
+        .task {
+            while !Task.isCancelled {
+                model.refreshPermissions()
+                try? await Task.sleep(for: .seconds(2))
             }
         }
     }
