@@ -7,6 +7,8 @@ struct InputField: NSViewRepresentable {
     var placeholder: String
     /// Return pressed or focus left the field.
     var onCommit: () -> Void = {}
+    /// Return pressed.
+    var onSubmit: () -> Void = {}
 
     func makeNSView(context: Context) -> NSTextField {
         let f = NSTextField()
@@ -39,6 +41,13 @@ struct InputField: NSViewRepresentable {
 
         func controlTextDidEndEditing(_ note: Notification) {
             parent.onCommit()
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            if selector == #selector(NSResponder.insertNewline(_:)) {
+                parent.onSubmit()
+            }
+            return false
         }
     }
 }

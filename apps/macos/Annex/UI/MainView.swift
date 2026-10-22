@@ -355,7 +355,8 @@ private struct ConnectPage: View {
             Section {
                 Row(symbol: "network", tint: .gray, title: "Connect by address") {
                     HStack(spacing: 8) {
-                        InputField(text: $model.manualAddress, placeholder: "192.168.1.20 or host:port")
+                        InputField(text: $model.manualAddress, placeholder: "192.168.1.20 or host:port",
+                                   onSubmit: { model.connectManual() })
                             .frame(width: 220)
                         Button("Connect") { model.connectManual() }
                             .disabled(model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
