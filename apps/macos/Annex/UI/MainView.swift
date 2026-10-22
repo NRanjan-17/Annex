@@ -355,12 +355,8 @@ private struct ConnectPage: View {
             Section {
                 Row(symbol: "network", tint: .gray, title: "Connect by address") {
                     HStack(spacing: 8) {
-                        TextField("", text: $model.manualAddress, prompt: Text("192.168.1.20 or host:port"))
-                            .textFieldStyle(.roundedBorder)
-                            // Forms right-align fields by default; addresses read left to right.
-                            .multilineTextAlignment(.leading)
+                        InputField(text: $model.manualAddress, placeholder: "192.168.1.20 or host:port")
                             .frame(width: 220)
-                            .onSubmit { model.connectManual() }
                         Button("Connect") { model.connectManual() }
                             .disabled(model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
@@ -527,7 +523,6 @@ private struct GeneralPage: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: AppSettings
     @State private var name = ""
-    @FocusState private var editingName: Bool
 
     var body: some View {
         Page(title: "General") {
@@ -536,21 +531,19 @@ private struct GeneralPage: View {
             Section {
                 Row(symbol: "laptopcomputer", tint: .blue, title: "Device name",
                     subtitle: "What other computers see when they find this Mac") {
-                    TextField("", text: $name, prompt: Text(AppModel.systemName))
-                        .textFieldStyle(.roundedBorder)
-                        .multilineTextAlignment(.leading)
-                        .frame(width: 220)
-                        .focused($editingName)
-                        .onSubmit { model.rename(name) }
-                        .onChange(of: editingName) { _, editing in
-                            if !editing && name != model.deviceName { model.rename(name) }
+                    // Empty = the Mac's own name (shown as the placeholder).
+                    InputField(text: $name, placeholder: AppModel.systemName) {
+                        if name.trimmingCharacters(in: .whitespaces) != (settings.customDeviceName ?? "") {
+                            model.rename(name)
                         }
+                    }
+                    .frame(width: 220)
                 }
             } footer: {
                 Text("Leave it empty to use the name from System Settings → General → About.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            .onAppear { name = model.deviceName }
+            .onAppear { name = settings.customDeviceName ?? "" }
             Section {
                 Row(symbol: "power", tint: .blue, title: "Open at login") {
                     Toggle("", isOn: Binding(get: { settings.launchAtLogin }, set: { settings.setLaunchAtLogin($0) }))
