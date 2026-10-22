@@ -161,6 +161,9 @@ jobs:
           path: drivers/windows/packages
           key: wdk-${{ hashFiles('drivers/windows/packages.config') }}
       - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+        with:
+          # The WDK NuGet package ships stampinf only for x64/ARM64 hosts.
+          msbuild-architecture: x64
       - name: EDID unit tests (MSVC)
         shell: cmd
         working-directory: drivers/windows/AnnexIdd/tests
