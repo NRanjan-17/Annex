@@ -4,9 +4,9 @@ Use another computer as an extra or mirrored display, over your local network, e
 encrypted. Mac and Windows, in any combination. Open source (MIT), no cloud, no accounts,
 no telemetry.
 
-> **Status: M1 (mirror, Mac → Windows).** See [docs/PLAN.md](docs/PLAN.md) for the roadmap
-> (hardware codecs and PIN pairing, all directions, real virtual displays, wired/QUIC, input
-> forwarding).
+> **Status: M2 done**: mirror Mac → Windows with hardware encode/decode and PIN pairing.
+> See [docs/PLAN.md](docs/PLAN.md) for the roadmap (all directions, real virtual displays,
+> wired/QUIC, input forwarding).
 
 | | Host (shares its screen) | Viewer (shows the stream) |
 |---|---|---|
@@ -31,12 +31,12 @@ Download from [Releases](https://github.com/NRanjan-17/Annex/releases):
   or drive, for just you or for all users. Uninstalling removes the app **and** all settings,
   identity keys and trusted devices.
 
-## Use it (M1: mirror a Mac on a Windows PC)
+## Use it (mirror a Mac on a Windows PC)
 
 1. **Mac:** menu bar icon → **Share this screen (Mirror)**. Allow Screen Recording when asked.
 2. **Windows:** open Annex from the system tray. Click the Mac under *Hosts on this network*
    (or type its IP address).
-3. Both computers ask you to trust each other. Check that the codes match, then click **Trust**.
+3. The first time, the Mac shows a 6-digit PIN. Type it on the PC to pair (once per device pair).
 4. The Mac's screen appears full screen on the PC. Press **Esc** to disconnect.
 
 Step-by-step manual test plans: [docs/TESTING.md](docs/TESTING.md).

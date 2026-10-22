@@ -1,18 +1,31 @@
-//! H.264 decoding with Microsoft's Media Foundation decoder MFT (software path in M1;
-//! the D3D11-accelerated path arrives in M2).
+//! H.264 decoding with Microsoft's Media Foundation decoder MFT.
+//!
+//! With a D3D11 device the decoder runs on the GPU (DXVA) and returns textures that the
+//! renderer feeds straight into the video processor (no CPU copies). Without one, or if the
+//! GPU path can't be set up, it decodes in software into system memory.
 
+use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Multithread, ID3D11Texture2D};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+use windows::core::Interface;
 
 use super::MediaError;
 
-/// One decoded NV12 picture in system memory.
+/// Where a decoded NV12 picture lives.
+pub enum Picture {
+    /// System memory (software decode).
+    Cpu { data: Vec<u8>, stride: u32 },
+    /// A slice of a decoder texture array (hardware decode). `_sample` keeps the decoder from
+    /// reusing the surface until we're done with it.
+    Gpu { texture: ID3D11Texture2D, subresource: u32, _sample: IMFSample },
+}
+
+/// One decoded NV12 picture.
 pub struct DecodedFrame {
-    pub data: Vec<u8>,
+    pub picture: Picture,
     /// Allocated size (height may be padded, e.g. 1088).
     pub width: u32,
     pub height: u32,
-    pub stride: u32,
     /// Visible area (display aperture).
     pub visible_width: u32,
     pub visible_height: u32,
@@ -20,6 +33,8 @@ pub struct DecodedFrame {
 
 pub struct H264Decoder {
     mft: IMFTransform,
+    /// Present when decoding on the GPU; must outlive the MFT's use of it.
+    _manager: Option<IMFDXGIDeviceManager>,
     width: u32,
     height: u32,
     stride: u32,
@@ -31,7 +46,12 @@ fn unpack_size(v: u64) -> (u32, u32) {
 }
 
 impl H264Decoder {
-    pub fn new() -> Result<Self, MediaError> {
+    pub fn is_hardware(&self) -> bool {
+        self._manager.is_some()
+    }
+
+    /// `device` enables GPU decoding (falls back to software if the decoder refuses it).
+    pub fn new(device: Option<&ID3D11Device>) -> Result<Self, MediaError> {
         unsafe {
             // S_FALSE (already initialised) is fine; RPC_E_CHANGED_MODE means the thread uses STA,
             // which the MFT also tolerates.
@@ -44,12 +64,38 @@ impl H264Decoder {
             let input = MFCreateMediaType()?;
             input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             input.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
+            let manager = device.and_then(|d| match Self::enable_d3d11(&mft, d) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    tracing::warn!("hardware decode unavailable, using software: {e}");
+                    None
+                }
+            });
             mft.SetInputType(0, &input, 0)?;
-            let mut dec = H264Decoder { mft, width: 0, height: 0, stride: 0, visible: (0, 0) };
+            let mut dec = H264Decoder { mft, _manager: manager, width: 0, height: 0, stride: 0, visible: (0, 0) };
             dec.select_output_type()?;
             dec.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             dec.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
             Ok(dec)
+        }
+    }
+
+    unsafe fn enable_d3d11(mft: &IMFTransform, device: &ID3D11Device) -> Result<IMFDXGIDeviceManager, MediaError> {
+        unsafe {
+            let attrs = mft.GetAttributes()?;
+            if attrs.GetUINT32(&MF_SA_D3D11_AWARE).unwrap_or(0) == 0 {
+                return Err(MediaError::Other("decoder is not D3D11-aware".into()));
+            }
+            // The decoder and the renderer share the device across threads.
+            let mt: ID3D11Multithread = device.cast()?;
+            let _ = mt.SetMultithreadProtected(true);
+            let mut token = 0u32;
+            let mut manager = None;
+            MFCreateDXGIDeviceManager(&mut token, &mut manager)?;
+            let manager = manager.ok_or_else(|| MediaError::Other("no DXGI device manager".into()))?;
+            manager.ResetDevice(device, token)?;
+            mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)?;
+            Ok(manager)
         }
     }
 
@@ -162,18 +208,25 @@ impl H264Decoder {
 
     fn read_sample(&self, s: &IMFSample) -> Result<DecodedFrame, MediaError> {
         unsafe {
-            let buf = s.ConvertToContiguousBuffer()?;
-            let mut ptr = std::ptr::null_mut();
-            let mut len = 0u32;
-            buf.Lock(&mut ptr, None, Some(&mut len))?;
-            let data = std::slice::from_raw_parts(ptr, len as usize).to_vec();
-            buf.Unlock()?;
-            let stride = if self.stride == 0 { self.width } else { self.stride };
+            let buf = s.GetBufferByIndex(0)?;
+            let picture = if let Ok(dxgi) = buf.cast::<IMFDXGIBuffer>() {
+                let mut ptr = std::ptr::null_mut();
+                dxgi.GetResource(&ID3D11Texture2D::IID, &mut ptr)?;
+                let texture = ID3D11Texture2D::from_raw(ptr);
+                Picture::Gpu { texture, subresource: dxgi.GetSubresourceIndex()?, _sample: s.clone() }
+            } else {
+                let buf = s.ConvertToContiguousBuffer()?;
+                let mut p = std::ptr::null_mut();
+                let mut len = 0u32;
+                buf.Lock(&mut p, None, Some(&mut len))?;
+                let data = std::slice::from_raw_parts(p, len as usize).to_vec();
+                buf.Unlock()?;
+                Picture::Cpu { data, stride: if self.stride == 0 { self.width } else { self.stride } }
+            };
             Ok(DecodedFrame {
-                data,
+                picture,
                 width: self.width,
                 height: self.height,
-                stride,
                 visible_width: self.visible.0,
                 visible_height: self.visible.1,
             })

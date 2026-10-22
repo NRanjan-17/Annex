@@ -28,7 +28,7 @@ macOS 27.0.1 (Apple Silicon), Xcode 27.1, Rust 1.99.1:
 | macOS app | macOS 27.0.1 build + tests + launch | Live screen capture with a real viewer (needs Screen Recording approval), macOS 14–26 |
 | Windows app | C# compile-checked on macOS; CI builds it | **Running it on Windows 10/11** |
 
-## Manual tests: M1 (Mac host → Windows viewer, LAN, encrypted)
+## Manual tests: M1/M2 (Mac host → Windows viewer, LAN, encrypted, PIN pairing)
 
 These need two machines (or a Windows VM with network bridging). Put both on the same network.
 
@@ -54,7 +54,9 @@ These need two machines (or a Windows VM with network bridging). Put both on the
 3. **Pairing:** the Mac shows a floating panel with a 6-digit PIN; Windows asks for it.
    Type the PIN on Windows and click **Pair**. (Try a wrong PIN once first: both sides must
    report that pairing failed, and nothing is added to *Trusted devices*.)
-4. Expected: a full-screen window on Windows shows the Mac screen within ~1 s. Move a window
+4. Expected: a full-screen window on Windows shows the Mac screen within ~1 s. With a GPU,
+   decoding runs in hardware (D3D11/DXVA). Set `RUST_LOG=info` to see "hardware=true" in the
+   log; VMs without GPU acceleration fall back to software. Move a window
    on the Mac; it moves on Windows. The Windows app shows "Viewing <Mac> — W×H @ 60 fps"
    and a latency line (p50/p95).
 5. Press **Esc** on Windows: the viewer closes, and the Mac menu returns to "Waiting for a viewer".

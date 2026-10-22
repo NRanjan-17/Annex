@@ -9,7 +9,7 @@ use windows::Win32::Graphics::Dxgi::*;
 use windows::core::Interface;
 
 use super::MediaError;
-use super::decoder::DecodedFrame;
+use super::decoder::{DecodedFrame, Picture};
 use crate::geometry::{copy_nv12, fit_rect};
 
 struct Processor {
@@ -81,6 +81,10 @@ impl Renderer {
                 needs_resize: false,
             })
         }
+    }
+
+    pub fn device(&self) -> &ID3D11Device {
+        &self.device
     }
 
     pub fn resized(&mut self) {
@@ -158,30 +162,37 @@ impl Renderer {
                 self.needs_resize = false;
             }
             let (w, h) = (f.width & !1, f.height & !1);
-            self.ensure_upload(w, h)?;
-            let (staging, default, _, _) = self.upload.clone().unwrap();
-
-            let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-            self.context.Map(&staging, 0, D3D11_MAP_WRITE, 0, Some(&mut mapped))?;
-            let dst_pitch = mapped.RowPitch as usize;
-            let dst_len = dst_pitch * h as usize * 3 / 2;
-            let dst = std::slice::from_raw_parts_mut(mapped.pData.cast::<u8>(), dst_len);
-            let src_pitch = f.stride as usize;
-            let ok = copy_nv12(
-                &f.data,
-                src_pitch,
-                src_pitch * f.height as usize,
-                dst,
-                dst_pitch,
-                dst_pitch * h as usize,
-                w as usize,
-                h as usize,
-            );
-            self.context.Unmap(&staging, 0);
-            if !ok {
-                return Err(MediaError::Other("decoded frame smaller than expected".into()));
-            }
-            self.context.CopyResource(&default, &staging);
+            // Input for the video processor: the decoder's own texture (hardware decode) or our
+            // upload texture (software decode).
+            let (input, slice) = match &f.picture {
+                Picture::Gpu { texture, subresource, .. } => (texture.clone(), *subresource),
+                Picture::Cpu { data, stride } => {
+                    self.ensure_upload(w, h)?;
+                    let (staging, default, _, _) = self.upload.clone().unwrap();
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    self.context.Map(&staging, 0, D3D11_MAP_WRITE, 0, Some(&mut mapped))?;
+                    let dst_pitch = mapped.RowPitch as usize;
+                    let dst_len = dst_pitch * h as usize * 3 / 2;
+                    let dst = std::slice::from_raw_parts_mut(mapped.pData.cast::<u8>(), dst_len);
+                    let src_pitch = *stride as usize;
+                    let ok = copy_nv12(
+                        data,
+                        src_pitch,
+                        src_pitch * f.height as usize,
+                        dst,
+                        dst_pitch,
+                        dst_pitch * h as usize,
+                        w as usize,
+                        h as usize,
+                    );
+                    self.context.Unmap(&staging, 0);
+                    if !ok {
+                        return Err(MediaError::Other("decoded frame smaller than expected".into()));
+                    }
+                    self.context.CopyResource(&default, &staging);
+                    (default, 0)
+                }
+            };
 
             let back: ID3D11Texture2D = self.swap_chain.GetBuffer(0)?;
             let mut bdesc = D3D11_TEXTURE2D_DESC::default();
@@ -193,11 +204,11 @@ impl Renderer {
                 FourCC: 0,
                 ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
                 Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
-                    Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: 0 },
+                    Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: slice },
                 },
             };
             let mut in_view = None;
-            self.video_device.CreateVideoProcessorInputView(&default, &p.enumerator, &in_desc, Some(&mut in_view))?;
+            self.video_device.CreateVideoProcessorInputView(&input, &p.enumerator, &in_desc, Some(&mut in_view))?;
             let out_desc = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
                 ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
                 Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 } },

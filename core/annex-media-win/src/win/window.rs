@@ -100,8 +100,11 @@ fn create_window(title: &str) -> Result<HWND, MediaError> {
 }
 
 fn run(rx: Receiver<Msg>, hooks: WindowHooks, hwnd: HWND, mut renderer: Renderer) {
-    let mut decoder = match H264Decoder::new() {
-        Ok(d) => Some(d),
+    let mut decoder = match H264Decoder::new(Some(renderer.device())) {
+        Ok(d) => {
+            tracing::info!(hardware = d.is_hardware(), "H.264 decoder ready");
+            Some(d)
+        }
         Err(e) => {
             tracing::error!("H.264 decoder unavailable: {e}");
             None
