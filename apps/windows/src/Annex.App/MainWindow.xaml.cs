@@ -112,6 +112,16 @@ public sealed partial class MainWindow : Window
         _nameBox.PlaceholderText = Environment.MachineName;
         BuildShell();
         if (_settings.StartSharingAtLaunch) SetHosting(true);
+        if (Environment.GetEnvironmentVariable("ANNEX_SELFTEST") == "1") _ui.TryEnqueue(SelfTest);
+    }
+
+    /// <summary>CI smoke test: opens every page twice (rebuilds reuse long-lived controls), then
+    /// writes selftest-ok to the data folder. Any exception lands in crash.log instead.</summary>
+    private void SelfTest()
+    {
+        foreach (var pane in new[] { "share", "connect", "devices", "general", "viewing", "about", "connect", "general", "share" })
+            Go(pane);
+        File.WriteAllText(Path.Combine(DataDirectory, "selftest-ok"), DateTimeOffset.Now.ToString("O"));
     }
 
     // ---- Shell: title bar + sidebar ---------------------------------------------------

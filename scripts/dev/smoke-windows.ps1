@@ -21,6 +21,10 @@ if (-not (Test-Path $exe)) { Note "FAIL: $exe missing after install"; exit 1 }
 Get-ChildItem $dir | Select-Object Name, Length | Out-File (Join-Path $OutDir "installed-files.txt")
 
 $started = Get-Date
+# Self-test mode: the app also opens every page twice and leaves a marker file when done.
+$env:ANNEX_SELFTEST = "1"
+$marker = "$env:LOCALAPPDATA\Annex\selftest-ok"
+Remove-Item $marker -ErrorAction SilentlyContinue
 $app = Start-Process $exe -PassThru
 Note "Launched Annex.exe (pid $($app.Id))"
 Start-Sleep -Seconds $WaitSeconds
@@ -55,6 +59,8 @@ Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $started.A
     Format-List TimeCreated, ProviderName, Id, Message | Out-File (Join-Path $OutDir "events.txt")
 
 if ($alive) { Stop-Process -Id $app.Id -Force }
-$ok = $alive -and $responding -and ($window -ne 0) -and -not (Test-Path $crash)
+$selftest = Test-Path $marker
+Note "Self-test (every page opened twice): $selftest"
+$ok = $alive -and $responding -and ($window -ne 0) -and $selftest -and -not (Test-Path $crash)
 Note ($ok ? "PASS" : "FAIL")
 exit ($ok ? 0 : 1)

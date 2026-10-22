@@ -97,7 +97,7 @@ internal static class Ui
         {
             fe.VerticalAlignment = VerticalAlignment.Center;
             Grid.SetColumn(fe, 2);
-            grid.Children.Add(fe);
+            Add(grid, fe);
         }
         return new Border
         {
@@ -139,7 +139,7 @@ internal static class Ui
     public static StackPanel Row(params UIElement[] children)
     {
         var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        foreach (var c in children) p.Children.Add(c);
+        foreach (var c in children) Add(p, c);
         return p;
     }
 
@@ -160,10 +160,26 @@ internal static class Ui
         return t;
     }
 
+    // Which panel each element was last added to. FrameworkElement.Parent isn't reliably set for
+    // elements added from code, so long-lived controls are detached through this record.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UIElement, Panel> s_owners = new();
+
+    private static void Add(Panel panel, UIElement child)
+    {
+        panel.Children.Add(child);
+        s_owners.AddOrUpdate(child, panel);
+    }
+
     /// <summary>Detaches a long-lived control (e.g. a text box being typed in) before it joins a rebuilt page.</summary>
     public static T Reuse<T>(T element) where T : FrameworkElement
     {
-        switch (element.Parent)
+        if (s_owners.TryGetValue(element, out var owner))
+        {
+            owner.Children.Remove(element);
+            s_owners.Remove(element);
+        }
+        // Belt and braces: whatever WinUI reports as the parent.
+        switch (element.Parent ?? VisualTreeHelper.GetParent(element))
         {
             case Panel p: p.Children.Remove(element); break;
             case Border b: b.Child = null; break;
