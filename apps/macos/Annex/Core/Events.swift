@@ -47,6 +47,16 @@ struct SessionStarted: Decodable, Equatable {
     let fingerprint: String
     let viewerDisplay: DisplayInfo?
     let stream: StreamConfig
+    /// "quic" or "tcp".
+    let transport: String?
+    /// "direct" (a cable between the computers) or "network".
+    let link: String?
+
+    var connectionDescription: String {
+        let t = transport == "quic" ? "QUIC" : transport == "tcp" ? "TCP" : nil
+        let l = link == "direct" ? "direct cable" : link == "network" ? "network" : nil
+        return [t, l].compactMap { $0 }.joined(separator: " · ")
+    }
 }
 
 struct LatencyStats: Decodable, Equatable {
@@ -69,10 +79,11 @@ struct PeerInfo: Decodable, Identifiable, Hashable {
 
     var id: String { instance }
 
-    /// First address in `host:port` form (IPv6 bracketed).
+    /// Every address as `host:port` (IPv6 bracketed), comma-separated. The core races them and
+    /// prefers a direct cable (link-local address).
     var connectAddress: String? {
-        guard let a = addresses.first else { return nil }
-        return a.contains(":") ? "[\(a)]:\(port)" : "\(a):\(port)"
+        guard !addresses.isEmpty else { return nil }
+        return addresses.map { $0.contains(":") ? "[\($0)]:\(port)" : "\($0):\(port)" }.joined(separator: ",")
     }
 }
 
@@ -94,6 +105,8 @@ enum CoreEvent: Equatable {
     case sessionStarted(SessionStarted)
     case streamConfig(StreamConfig)
     case keyframeRequested(sessionId: UInt64)
+    /// Adaptive bitrate: run this session's encoder at `scalePercent` % of its normal bitrate.
+    case bitrateHint(sessionId: UInt64, scalePercent: Int)
     case latencyStats(LatencyStats)
     case sessionEnded(sessionId: UInt64, reason: String)
     case error(message: String)
@@ -112,6 +125,7 @@ enum CoreEvent: Equatable {
     private struct Address: Decodable { let address: String }
     private struct Ended: Decodable { let sessionId: UInt64; let reason: String }
     private struct SessionRef: Decodable { let sessionId: UInt64 }
+    private struct Hint: Decodable { let sessionId: UInt64; let scalePercent: Int }
     private struct Message: Decodable { let message: String }
     private struct Instance: Decodable { let instance: String }
     private struct Stream: Decodable { let stream: StreamConfig }
@@ -129,6 +143,9 @@ enum CoreEvent: Equatable {
             case "session_started": return .sessionStarted(try d.decode(SessionStarted.self, from: data))
             case "stream_config": return .streamConfig(try d.decode(Stream.self, from: data).stream)
             case "keyframe_requested": return .keyframeRequested(sessionId: try d.decode(SessionRef.self, from: data).sessionId)
+            case "bitrate_hint":
+                let h = try d.decode(Hint.self, from: data)
+                return .bitrateHint(sessionId: h.sessionId, scalePercent: h.scalePercent)
             case "latency_stats": return .latencyStats(try d.decode(LatencyStats.self, from: data))
             case "session_ended":
                 let e = try d.decode(Ended.self, from: data)

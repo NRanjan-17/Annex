@@ -81,6 +81,16 @@ final class H264Encoder {
         }
     }
 
+    /// Changes the target bitrate on the fly (adaptive bitrate).
+    func setBitrate(_ bitrate: Int) {
+        lock.lock()
+        let s = session
+        lock.unlock()
+        guard let s else { return }
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_DataRateLimits, value: [bitrate * 3 / 2 / 8, 1] as CFArray)
+    }
+
     /// Emits any frames the encoder is still holding.
     func flush() {
         lock.lock()

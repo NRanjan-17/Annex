@@ -12,9 +12,22 @@ Version **1.0** (ALPN `annex/1`). Implemented in `core/annex-proto` (format) and
   fields and message types without breaking older peers.
 - Record types are closed in 1.x: an unknown record type is a protocol error.
 
-## Transport (M1)
+## Transports
 
-TCP, default port **47800**, TLS 1.3 only, mutual authentication (both sides present a
+Hosts listen on port **47800** for both:
+
+- **QUIC** (UDP, preferred): TLS 1.3 inside QUIC (same certificates, ALPN and verifiers), BBR
+  congestion control, keep-alive 2 s, idle timeout 15 s. Control messages use the first
+  bidirectional stream (opened by the viewer) with the record framing below. **Video goes as
+  unreliable datagrams with FEC** (see "Video datagrams").
+- **TCP + TLS 1.3** (fallback when UDP is blocked): control and video records on one stream.
+
+A viewer resolves all candidate addresses, sorts link-local ones (a direct cable) first, races
+QUIC handshakes (150 ms stagger, 3 s budget), and falls back to the same race over TCP. Both
+sides report the result in `session_started` as `transport` (`quic`/`tcp`) and `link`
+(`direct`/`network`).
+
+The TCP and QUIC handshakes are both TLS 1.3 with mutual authentication (both sides present a
 certificate). Session resumption, tickets and 0-RTT are disabled. Every connection runs a
 full handshake with fresh ephemeral keys, so captured traffic can't be replayed into a new
 session and each session has its own keys (forward secrecy). Within a session TLS's
@@ -22,7 +35,7 @@ per-record sequence numbers and AEAD (AES-GCM / ChaCha20-Poly1305) reject replay
 or modified records. `annex-session/tests/loopback.rs` checks this with an on-path attacker
 that flips a byte or replays a TLS record.
 
-M5 adds QUIC (same identities, ALPN and control messages; video moves to unreliable datagrams).
+For QUIC the exporter comes from the QUIC connection's TLS session (same label, empty context).
 
 ## Identity and trust
 
@@ -96,6 +109,7 @@ A CBOR map with a text key `t` holding the message type. Field names are snake_c
 | `keyframe_request` | viewer → host | — |
 | `clock_ping` | viewer → host | `seq` u32, `t_viewer_us` i64 |
 | `clock_pong` | host → viewer | `seq` u32, `t_viewer_us` i64 (echoed), `t_host_us` i64 |
+| `receiver_report` | viewer → host, every second | `frames` u32, `lost` u32, `shards` u32, `recovered` u32, `rtt_us` u32 |
 | `bye` | both | `reason` text (`user`, `host_stopped`, `not_trusted`, `pairing_failed`, `pairing_cancelled`, `pairing_locked`, `pairing_timeout`, ...) |
 
 **DisplayInfo**: `width_px`, `height_px` (required); `width_mm`, `height_mm`, `refresh_hz`,
@@ -117,6 +131,37 @@ A CBOR map with a text key `t` holding the message type. Field names are snake_c
 - `capture_ts_us` is on the host's monotonic clock.
 - H.264/HEVC payloads are **Annex B** byte streams (start codes). Keyframes carry SPS/PPS
   (and VPS for HEVC) so decoding can start at any keyframe.
+
+## Video datagrams (QUIC)
+
+Each access unit is split into `data_count` equal shards (the last one zero-padded, even
+length) sized to the path MTU, plus `parity_count` Reed-Solomon parity shards
+(`reed-solomon-simd`). Each datagram carries one shard after a 24-byte header:
+
+```
++-----------+--------------+---------+------------+-------------+--------------+---------------+------------+-----------
+| frame_id:4| capture_us:8 | flags:1 | reserved:1 | shard_idx:2 | data_count:2 | parity_count:2 | frame_len:4 | shard ...
++-----------+--------------+---------+------------+-------------+--------------+---------------+------------+-----------
+```
+
+Any `data_count` shards rebuild the frame. Frames are delivered in order. A frame that is
+still incomplete when a newer frame completes is counted as lost, and the viewer asks for a
+keyframe (at most every 250 ms). Parity starts at 15 % and is adapted between 10 % and 40 %.
+
+## Adaptive bitrate
+
+Every second the viewer sends `receiver_report` with frames delivered, frames lost, datagrams
+received, datagrams rebuilt from parity, and the RTT. The host's controller (`annex-session/src/rate.rs`):
+
+| Condition | Bitrate scale | FEC |
+|---|---|---|
+| a frame lost, > 5 % datagrams rebuilt, or RTT > 2× best + 15 ms | × 0.8 (min 20 %) | +5 points (max 40 %) |
+| 2–5 % datagrams rebuilt | hold | +2 points |
+| clean interval | +5 points (max 150 %) | −1 point (min 10 %) |
+
+Scale changes are delivered to the host app as `bitrate_hint {session_id, scale_percent}`;
+apps set their encoder to that percentage of their normal bitrate (mirror encoders shared by
+several viewers follow the lowest hint).
 
 ## Session flow
 
@@ -170,11 +215,12 @@ JSON objects with a `type` field, delivered through the C ABI (`annex.h`):
 | `pairing_pin` | `request_id`, `pin` (`"123 456"`), `peer_name`, `fingerprint_display`: host shows it; `annex_core_cancel_request` to refuse |
 | `pairing_pin_required` | `request_id`, `peer_name`, `fingerprint_display`: viewer asks the user; answer with `annex_core_submit_pin` |
 | `pairing_finished` | `request_id`, `success`, `peer_name` |
-| `session_started` | `peer_name`, `fingerprint`, `stream`, `viewer_display` (host side only) |
+| `session_started` | `session_id` (0 on viewers), `mode`, `peer_name`, `fingerprint`, `stream`, `transport` (`quic`/`tcp`), `link` (`direct`/`network`), `viewer_display` (host side only) |
 | `stream_config` | `stream` |
-| `keyframe_requested` | — |
+| `keyframe_requested` | `session_id` |
+| `bitrate_hint` | `session_id`, `scale_percent` (host: set the session's encoder bitrate) |
 | `latency_stats` | `frames`, `fps`, `p50_ms`, `p95_ms`, `p99_ms`, `max_ms`, `clock_rtt_ms`? |
-| `session_ended` | `reason` (always the last event of a session) |
+| `session_ended` | `session_id`, `reason` (always the last event of a session) |
 | `error` | `message` |
 | `peer_found` | `instance`, `name`, `addresses`, `port`, `fingerprint`?, `proto_major`? |
 | `peer_lost` | `instance` |

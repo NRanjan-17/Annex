@@ -305,7 +305,8 @@ public sealed partial class MainWindow : Window
                 StatusText.Text = $"Pairing with {f.PeerName} failed: the PIN didn't match or pairing was cancelled.";
                 break;
             case CoreEvent.SessionStarted s:
-                StatusText.Text = s.Mode == "extend" ? $"Extra display for {s.PeerName}" : $"Viewing {s.PeerName}";
+                StatusText.Text = (s.Mode == "extend" ? $"Extra display for {s.PeerName}" : $"Viewing {s.PeerName}")
+                    + (s.ConnectionDescription.Length > 0 ? $" ({s.ConnectionDescription})" : "");
                 _viewingName = s.PeerName;
                 if (_tray is not null) _tray.Tooltip = $"Annex — viewing {s.PeerName}";
                 RefreshTrusted();

@@ -15,9 +15,10 @@ public sealed record LatencyStats(int Frames, double Fps, double P50Ms, double P
 
 public sealed record PeerInfo(string Instance, string Name, string[] Addresses, int Port, string? Fingerprint = null, int? ProtoMajor = null)
 {
-    /// <summary>First address as <c>host:port</c> (IPv6 bracketed).</summary>
+    /// <summary>Every address as <c>host:port</c> (IPv6 bracketed), comma-separated; the core races them and
+    /// prefers a direct cable.</summary>
     public string? ConnectAddress => Addresses.Length == 0 ? null
-        : Addresses[0].Contains(':') ? $"[{Addresses[0]}]:{Port}" : $"{Addresses[0]}:{Port}";
+        : string.Join(",", Addresses.Select(a => a.Contains(':') ? $"[{a}]:{Port}" : $"{a}:{Port}"));
 }
 
 public sealed record TrustedPeer(string Fingerprint, string Name, ulong AddedAt, ulong LastSeen);
@@ -38,9 +39,19 @@ public abstract record CoreEvent
     public sealed record PairingFinished(ulong RequestId, bool Success, string PeerName) : CoreEvent;
     /// <summary><c>SessionId</c> is 0 on the viewer side; <c>Mode</c> is "mirror" or "extend".</summary>
     public sealed record SessionStarted(ulong SessionId, string Mode, string PeerName, string Fingerprint, StreamConfig Stream,
-        DisplayInfo? ViewerDisplay = null) : CoreEvent;
+        DisplayInfo? ViewerDisplay = null, string? Transport = null, string? Link = null) : CoreEvent
+    {
+        /// <summary>e.g. "QUIC · direct cable".</summary>
+        public string ConnectionDescription => string.Join(" · ", new[]
+        {
+            Transport switch { "quic" => "QUIC", "tcp" => "TCP", _ => null },
+            Link switch { "direct" => "direct cable", "network" => "network", _ => null },
+        }.Where(s => s is not null));
+    }
     public sealed record StreamChanged(StreamConfig Stream) : CoreEvent;
     public sealed record KeyframeRequested(ulong SessionId) : CoreEvent;
+    /// <summary>Adaptive bitrate: run the session's encoder at ScalePercent % of its normal bitrate.</summary>
+    public sealed record BitrateHint(ulong SessionId, uint ScalePercent) : CoreEvent;
     public sealed record Latency(LatencyStats Stats) : CoreEvent;
     public sealed record SessionEnded(ulong SessionId, string Reason) : CoreEvent;
     public sealed record Error(string Message) : CoreEvent;
@@ -72,6 +83,7 @@ public abstract record CoreEvent
                 "session_started" => Get<SessionStarted>(json),
                 "stream_config" => new StreamChanged(Get<StreamWrapper>(json).Stream),
                 "keyframe_requested" => Get<KeyframeRequested>(json),
+                "bitrate_hint" => Get<BitrateHint>(json),
                 "latency_stats" => new Latency(Get<LatencyStats>(json)),
                 "session_ended" => Get<SessionEnded>(json),
                 "error" => new Error(Get<MessageDto>(json).Message),
@@ -113,6 +125,7 @@ internal sealed record InstanceDto(string Instance);
 [JsonSerializable(typeof(StreamWrapper))]
 [JsonSerializable(typeof(CoreEvent.SessionEnded))]
 [JsonSerializable(typeof(CoreEvent.KeyframeRequested))]
+[JsonSerializable(typeof(CoreEvent.BitrateHint))]
 [JsonSerializable(typeof(MessageDto))]
 [JsonSerializable(typeof(PortDto))]
 [JsonSerializable(typeof(AddressDto))]

@@ -4,9 +4,9 @@ Use another computer as an extra or mirrored display, over your local network, e
 encrypted. Mac and Windows, in any combination. Open source (MIT), no cloud, no accounts,
 no telemetry.
 
-> **Status: M3 done**: mirroring works in all four directions (Mac↔Windows, Mac↔Mac,
-> Windows↔Windows) with hardware codecs and PIN pairing. See [docs/PLAN.md](docs/PLAN.md) for
-> the roadmap (real virtual displays, wired/QUIC, input forwarding).
+> **Status:** mirror and extend in all four directions, hardware codecs, PIN pairing, QUIC with
+> FEC and adaptive bitrate, wired (direct cable) links. Remaining (M6): input forwarding and a
+> settings window. Roadmap: [docs/PLAN.md](docs/PLAN.md).
 
 | | Host (shares its screen) | Viewer (shows the stream) |
 |---|---|---|
@@ -15,7 +15,8 @@ no telemetry.
 
 ## How it works
 
-A Rust core (`core/`) does the protocol, encryption, discovery and sessions; native apps do
+A Rust core (`core/`) does the protocol, encryption, discovery and sessions (QUIC with
+forward error correction and adaptive bitrate, TCP fallback); native apps do
 capture, encoding, decoding and UI: SwiftUI menu bar app on macOS (`apps/macos`), WinUI 3
 tray app on Windows (`apps/windows`). Devices find each other with mDNS, connect over
 **TLS 1.3 with mutual authentication**, and must be explicitly trusted once. After that their
@@ -41,6 +42,14 @@ Download from [Releases](https://github.com/NRanjan-17/Annex/releases):
    type its IP address).
 3. The first time, the host shows a 6-digit PIN. Type it on the viewer (once per pair of devices).
 4. The host's screen appears full screen on the viewer. Press **Esc** to disconnect.
+
+**Extra display (Extend):** on the viewer choose *Use as extra display* before connecting. The host
+gets a new "Annex Display" in System Settings → Displays (Mac) or Settings → Display (Windows,
+needs the optional Extend-mode driver from the installer); arrange it, pick its resolution, and
+drag windows onto it.
+
+**Cable:** connect the computers with USB-Ethernet adapters or Thunderbolt for the lowest latency;
+see [docs/CABLES.md](docs/CABLES.md).
 
 Step-by-step manual test plans: [docs/TESTING.md](docs/TESTING.md).
 

@@ -40,6 +40,7 @@ unsafe impl Send for Inner {}
 
 pub struct HostPipeline {
     inner: Arc<Mutex<Inner>>,
+    base_bitrate: u32,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     hardware: bool,
     _capture: SendCapture,
@@ -130,11 +131,20 @@ impl HostPipeline {
             )?
         };
         tracing::info!(hardware, width = cfg.width, height = cfg.height, "Windows host pipeline started");
-        Ok(HostPipeline { inner, clock, hardware, _capture: SendCapture(capture) })
+        Ok(HostPipeline { inner, base_bitrate: cfg.bitrate, clock, hardware, _capture: SendCapture(capture) })
     }
 
     pub fn is_hardware(&self) -> bool {
         self.hardware
+    }
+
+    /// Adaptive bitrate: run the encoder at `percent` % of the configured bitrate.
+    pub fn set_bitrate_scale(&self, percent: u32) {
+        let bitrate = (self.base_bitrate as u64 * percent as u64 / 100).clamp(500_000, u32::MAX as u64) as u32;
+        match &self.inner.lock().unwrap().encoder {
+            Encoder::Hardware(h) => h.set_bitrate(bitrate),
+            Encoder::Software { enc, .. } => enc.set_bitrate(bitrate),
+        }
     }
 
     /// Forces an IDR and, because a static screen produces no new frames, re-encodes the last one.

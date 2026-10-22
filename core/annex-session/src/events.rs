@@ -3,6 +3,17 @@ use std::sync::Arc;
 use annex_proto::{DisplayInfo, Mode, StreamConfig};
 use serde::Serialize;
 
+pub use crate::transport::TransportKind;
+
+/// "direct": the peers talk over a link-local address (a cable between the two computers);
+/// "network": through the LAN.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkKind {
+    Direct,
+    Network,
+}
+
 use crate::LatencyStats;
 
 /// Everything the native UI needs to know, delivered as JSON through the FFI.
@@ -45,12 +56,19 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         viewer_display: Option<DisplayInfo>,
         stream: StreamConfig,
+        transport: TransportKind,
+        link: LinkKind,
     },
     StreamConfig {
         stream: StreamConfig,
     },
     KeyframeRequested {
         session_id: u64,
+    },
+    /// Host: adaptive bitrate. Set the session's encoder to `scale_percent` % of its normal bitrate.
+    BitrateHint {
+        session_id: u64,
+        scale_percent: u32,
     },
     LatencyStats {
         #[serde(flatten)]

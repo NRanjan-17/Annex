@@ -25,6 +25,9 @@ final class HostController {
     private var encoder: H264Encoder?
     private let lastFrame = LockedBox<CVPixelBuffer>()
     private var mirrorSessions: [UInt64: String] = [:]
+    /// Latest adaptive-bitrate hint per mirror session; the shared encoder follows the lowest.
+    private var mirrorScales: [UInt64: Int] = [:]
+    private var mirrorBaseBitrate = 0
     private var extendSessions: [UInt64: ExtendSession] = [:]
     private(set) var status = Status() { didSet { onStatus?(status) } }
 
@@ -83,12 +86,24 @@ final class HostController {
         case .sessionEnded(let id, _):
             if let ext = extendSessions.removeValue(forKey: id) {
                 ext.stop()
-            } else if mirrorSessions.removeValue(forKey: id) != nil, mirrorSessions.isEmpty {
-                stopMirrorCapture()
-                status.stream = nil
+            } else if mirrorSessions.removeValue(forKey: id) != nil {
+                mirrorScales.removeValue(forKey: id)
+                if mirrorSessions.isEmpty {
+                    stopMirrorCapture()
+                    status.stream = nil
+                } else {
+                    applyMirrorBitrate()
+                }
             }
         case .keyframeRequested(let id):
             if let ext = extendSessions[id] { ext.requestKeyframe() } else { requestMirrorKeyframe() }
+        case .bitrateHint(let id, let scale):
+            if let ext = extendSessions[id] {
+                ext.setBitrateScale(scale)
+            } else if mirrorSessions[id] != nil {
+                mirrorScales[id] = scale
+                applyMirrorBitrate()
+            }
         default:
             break
         }
@@ -111,6 +126,12 @@ final class HostController {
         }
     }
 
+    private func applyMirrorBitrate() {
+        guard mirrorBaseBitrate > 0 else { return }
+        let scale = mirrorScales.values.min() ?? 100
+        encoder?.setBitrate(mirrorBaseBitrate * scale / 100)
+    }
+
     private func requestMirrorKeyframe() {
         encoder?.requestKeyframe()
         // If the screen is static SCK sends no new frames; re-encode the last one.
@@ -125,6 +146,7 @@ final class HostController {
         generation += 1
         let gen = generation
         let bitrate = max(4_000_000, stream.width * stream.height * stream.fps / 10)
+        mirrorBaseBitrate = bitrate
         let preferHardware = self.preferHardware
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = Result {
@@ -149,6 +171,7 @@ final class HostController {
         }
         status.hardwareEncoder = enc.usingHardware
         let host = self.host
+        if let scale = mirrorScales.values.min(), scale != 100 { enc.setBitrate(mirrorBaseBitrate * scale / 100) }
         enc.onEncoded = { data, key, ts in
             host?.submit(data, captureMicros: ts, keyframe: key)
         }

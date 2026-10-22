@@ -124,6 +124,24 @@ pub struct StreamConfig {
     pub fps: u32,
 }
 
+/// Reception statistics for one reporting interval.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReceiverReport {
+    /// Frames delivered to the decoder.
+    pub frames: u32,
+    /// Frames given up on (couldn't be rebuilt).
+    pub lost: u32,
+    /// Video datagrams received (QUIC only).
+    #[serde(default)]
+    pub shards: u32,
+    /// Datagrams rebuilt from FEC parity (QUIC only): a measure of packet loss.
+    #[serde(default)]
+    pub recovered: u32,
+    /// Smoothed round-trip time in microseconds.
+    #[serde(default)]
+    pub rtt_us: u32,
+}
+
 /// Control messages. Encoded as a CBOR map whose `t` key holds the snake_case type name.
 /// Unknown keys are ignored and unknown types are skipped, so minor versions can add both.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -149,6 +167,8 @@ pub enum Control {
         #[serde(with = "serde_bytes")]
         mac: Vec<u8>,
     },
+    /// Viewer → host, about once a second: how the last interval went (drives adaptive bitrate).
+    ReceiverReport(ReceiverReport),
     ClockPing {
         seq: u32,
         t_viewer_us: i64,
@@ -171,6 +191,7 @@ const KNOWN_CONTROL_TYPES: &[&str] = &[
     "stream_config",
     "keyframe_request",
     "pair_spake",
+    "receiver_report",
     "pair_confirm",
     "clock_ping",
     "clock_pong",
@@ -242,7 +263,10 @@ impl Control {
                     return Err(ProtoError::InvalidField("mac"));
                 }
             }
-            Control::KeyframeRequest | Control::ClockPing { .. } | Control::ClockPong { .. } => {}
+            Control::KeyframeRequest
+            | Control::ClockPing { .. }
+            | Control::ClockPong { .. }
+            | Control::ReceiverReport(_) => {}
         }
         Ok(())
     }
@@ -288,6 +312,7 @@ mod tests {
             Control::PairSpake { msg: vec![1; 33] },
             Control::PairConfirm { mac: vec![2; 32] },
             Control::ClockPing { seq: 7, t_viewer_us: -5 },
+            Control::ReceiverReport(ReceiverReport { frames: 60, lost: 1, shards: 900, recovered: 12, rtt_us: 4000 }),
             Control::ClockPong { seq: 7, t_viewer_us: -5, t_host_us: 123_456_789 },
             Control::Bye { reason: "user".into() },
         ];

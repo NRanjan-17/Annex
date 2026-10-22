@@ -9,9 +9,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use annex_crypto::peer_fingerprint;
 use annex_proto::{Codec, Control, DisplayInfo, Mode, Role, StreamConfig, VideoFlags, VideoHeader};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -20,7 +19,47 @@ use crate::clock::now_us;
 use crate::conn::{Incoming, Reader, Writer, check_hello, hello};
 use crate::events::{Event, EventSink};
 use crate::pairing::{PairContext, pair_as_host};
+use crate::transport::{
+    BoxRead, BoxWrite, Established, TransportKind, accept_quic, accept_tcp, is_link_local, quic_server_config,
+};
 use crate::{Core, SessionError};
+
+/// FEC overhead for datagram video (percent of data shards). Adjusted by receiver reports.
+const DEFAULT_FEC_PERCENT: u32 = 15;
+
+/// Where a session's video goes.
+enum VideoOut {
+    /// Video records on the control stream (TCP).
+    Stream,
+    /// FEC-protected datagrams (QUIC). The FEC level follows receiver reports.
+    Datagrams { conn: quinn::Connection, fec_percent: AtomicU32 },
+}
+
+impl VideoOut {
+    async fn send(&self, writer: &mut Writer<BoxWrite>, header: VideoHeader, data: &[u8]) -> Result<(), SessionError> {
+        match self {
+            VideoOut::Stream => writer.send_video(header, data).await,
+            VideoOut::Datagrams { conn, fec_percent } => {
+                let max = conn.max_datagram_size().unwrap_or(1200).min(1400);
+                let grams = annex_proto::fragment::fragment(
+                    header.frame_id,
+                    header.capture_ts_us,
+                    header.flags,
+                    data,
+                    max,
+                    fec_percent.load(Ordering::Relaxed),
+                )?;
+                for g in grams {
+                    // A full datagram queue drops the oldest datagrams; FEC and keyframe requests recover.
+                    if let Err(e) = conn.send_datagram(g.into()) {
+                        return Err(SessionError::Io(std::io::Error::other(e)));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Long enough for the user on the viewer side to type the pairing PIN.
@@ -221,6 +260,15 @@ pub async fn start_host(core: Arc<Core>, cfg: HostConfig, events: EventSink) -> 
     let listener = TcpListener::bind(("0.0.0.0", cfg.port)).await?;
     let port = listener.local_addr()?.port();
     let tls = tokio_rustls::TlsAcceptor::from(Arc::new(annex_crypto::server_config(core.identity())?));
+    // QUIC on the same port number (UDP). If UDP can't be bound, viewers fall back to TCP.
+    let quic = match quinn::Endpoint::server(quic_server_config(&core)?, (std::net::Ipv4Addr::UNSPECIFIED, port).into())
+    {
+        Ok(e) => Some(e),
+        Err(e) => {
+            tracing::warn!("QUIC unavailable, TCP only: {e}");
+            None
+        }
+    };
     let (shutdown, shutdown_rx) = watch::channel(false);
     let shared = Arc::new(Shared {
         core,
@@ -232,67 +280,85 @@ pub async fn start_host(core: Arc<Core>, cfg: HostConfig, events: EventSink) -> 
         next_id: AtomicU64::new(1),
     });
     events(Event::Listening { port });
-    let task = tokio::spawn(accept_loop(listener, tls, shared.clone(), shutdown_rx));
+    let task = tokio::spawn(accept_loop(listener, tls, quic, shared.clone(), shutdown_rx));
     Ok(HostHandle { shared, port, shutdown, task: Mutex::new(Some(task)) })
 }
 
 async fn accept_loop(
     listener: TcpListener,
     tls: tokio_rustls::TlsAcceptor,
+    quic: Option<quinn::Endpoint>,
     shared: Arc<Shared>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut sessions = tokio::task::JoinSet::new();
+    let quic_accept = async |q: &Option<quinn::Endpoint>| match q {
+        Some(e) => e.accept().await,
+        None => std::future::pending().await,
+    };
     loop {
         tokio::select! {
             r = listener.accept() => match r {
                 Ok((sock, addr)) => {
-                    tracing::info!(%addr, "incoming connection");
-                    sessions.spawn(handle_conn(sock, tls.clone(), shared.clone(), shutdown.clone()));
+                    tracing::info!(%addr, "incoming TCP connection");
+                    let (tls, shared, shutdown) = (tls.clone(), shared.clone(), shutdown.clone());
+                    sessions.spawn(async move {
+                        match accept_tcp(sock, tls).await {
+                            Ok(est) => handle_conn(est, shared, shutdown).await,
+                            Err(e) => tracing::info!("TCP handshake failed: {e}"),
+                        }
+                    });
                 }
                 Err(e) => tracing::warn!("accept failed: {e}"),
             },
+            Some(incoming) = quic_accept(&quic) => {
+                tracing::info!(addr = %incoming.remote_address(), "incoming QUIC connection");
+                let (shared, shutdown) = (shared.clone(), shutdown.clone());
+                sessions.spawn(async move {
+                    match accept_quic(incoming).await {
+                        Ok(est) => handle_conn(est, shared, shutdown).await,
+                        Err(e) => tracing::info!("QUIC handshake failed: {e}"),
+                    }
+                });
+            }
             _ = shutdown.changed() => break,
             Some(_) = sessions.join_next(), if !sessions.is_empty() => {}
         }
     }
     while sessions.join_next().await.is_some() {}
+    if let Some(q) = quic {
+        q.close(0u32.into(), b"host stopped");
+        let _ = timeout(Duration::from_millis(500), q.wait_idle()).await;
+    }
 }
 
-async fn handle_conn(
-    sock: TcpStream,
-    tls: tokio_rustls::TlsAcceptor,
-    shared: Arc<Shared>,
-    shutdown: watch::Receiver<bool>,
-) {
-    let _ = sock.set_nodelay(true);
-    let stream = match timeout(HANDSHAKE_TIMEOUT, tls.accept(sock)).await {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => return tracing::info!("tls handshake failed: {e}"),
-        Err(_) => return tracing::info!("tls handshake timed out"),
+async fn handle_conn(est: Established, shared: Arc<Shared>, shutdown: watch::Receiver<bool>) {
+    let Established { kind, reader, writer, fingerprint: fp, exporter, remote, quic } = est;
+    let mut reader = Reader::new(reader);
+    let mut writer = Writer::new(writer);
+    let video = match (&quic, kind) {
+        (Some(conn), TransportKind::Quic) if conn.max_datagram_size().is_some() => {
+            VideoOut::Datagrams { conn: conn.clone(), fec_percent: AtomicU32::new(DEFAULT_FEC_PERCENT) }
+        }
+        _ => VideoOut::Stream,
     };
-    let Some(fp) = peer_fingerprint(stream.get_ref().1.peer_certificates()) else {
-        return tracing::warn!("peer sent no certificate");
-    };
-    let Ok(exporter) =
-        stream.get_ref().1.export_keying_material([0u8; 32], annex_crypto::pairing::EXPORTER_LABEL, None)
-    else {
-        return tracing::warn!("tls exporter unavailable");
-    };
-    let (r, w) = tokio::io::split(stream);
-    let mut reader = Reader::new(r);
-    let mut writer = Writer::new(w);
 
     // Claim a slot before asking anyone for a PIN.
     if shared.claimed.fetch_add(1, Ordering::AcqRel) >= MAX_SESSIONS {
         shared.claimed.fetch_sub(1, Ordering::AcqRel);
         let _ = writer.send_control(&Control::SessionReject { reason: "busy".into() }).await;
         writer.shutdown().await;
+        if let Some(conn) = quic {
+            // Dropping the connection would discard the unsent reject; wait for the viewer to hang up.
+            let _ = timeout(Duration::from_millis(500), conn.closed()).await;
+        }
         return;
     }
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     let mut started = false;
-    let result = run_session(&mut reader, &mut writer, &fp, &exporter, &shared, shutdown, id, &mut started).await;
+    let link = Link { transport: kind, direct: is_link_local(&remote) };
+    let result =
+        run_session(&mut reader, &mut writer, &fp, &exporter, &shared, shutdown, id, link, &video, &mut started).await;
     shared.sessions.lock().unwrap().remove(&id);
     shared.claimed.fetch_sub(1, Ordering::AcqRel);
     let reason = match result {
@@ -301,6 +367,11 @@ async fn handle_conn(
         Err(e) => e.to_string(),
     };
     writer.shutdown().await;
+    if let Some(conn) = quic {
+        // Let the bye reach the viewer before tearing the connection down.
+        let _ = timeout(Duration::from_millis(500), conn.closed()).await;
+        conn.close(0u32.into(), b"bye");
+    }
     if started {
         (shared.events)(Event::SessionEnded { session_id: id, reason });
     } else {
@@ -308,21 +379,25 @@ async fn handle_conn(
     }
 }
 
+#[derive(Clone, Copy)]
+struct Link {
+    transport: TransportKind,
+    direct: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
-async fn run_session<R, W>(
-    reader: &mut Reader<R>,
-    writer: &mut Writer<W>,
+async fn run_session(
+    reader: &mut Reader<BoxRead>,
+    writer: &mut Writer<BoxWrite>,
     fp: &str,
     exporter: &[u8],
     shared: &Arc<Shared>,
     mut shutdown: watch::Receiver<bool>,
     id: SessionId,
+    link: Link,
+    video: &VideoOut,
     started: &mut bool,
-) -> Result<String, SessionError>
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-    W: tokio::io::AsyncWrite + Unpin,
-{
+) -> Result<String, SessionError> {
     if fp == shared.core.fingerprint() {
         return Err(SessionError::Violation("peer uses our own identity".into()));
     }
@@ -385,6 +460,8 @@ where
         fingerprint: fp.to_string(),
         viewer_display: Some(req.display.clone()),
         stream,
+        transport: link.transport,
+        link: if link.direct { crate::events::LinkKind::Direct } else { crate::events::LinkKind::Network },
     });
     shared.request_keyframe(&slot);
 
@@ -407,11 +484,12 @@ where
         // so a `Bye` followed by EOF is reported as the `Bye` reason, not as "closed".
         std::future::pending::<()>().await
     };
+    let mut rate = crate::rate::RateController::default();
     let main = async {
         loop {
             tokio::select! {
                 f = frame_rx.recv() => match f {
-                    Some(f) => writer.send_video(f.header, &f.data).await?,
+                    Some(f) => video.send(writer, f.header, &f.data).await?,
                     None => return Ok("stopped".to_string()),
                 },
                 _ = slot.ended.notified() => {
@@ -420,6 +498,15 @@ where
                 },
                 c = ctl_rx.recv() => match c {
                     Some(Ok(Control::KeyframeRequest)) => shared.request_keyframe(&slot),
+                    Some(Ok(Control::ReceiverReport(r))) => {
+                        let d = rate.on_report(&r);
+                        if let VideoOut::Datagrams { fec_percent, .. } = video {
+                            fec_percent.store(d.fec_percent, Ordering::Relaxed);
+                        }
+                        if d.scale_changed {
+                            (shared.events)(Event::BitrateHint { session_id: id, scale_percent: d.scale_percent });
+                        }
+                    }
                     Some(Ok(Control::ClockPing { seq, t_viewer_us })) => {
                         writer.send_control(&Control::ClockPong { seq, t_viewer_us, t_host_us: now_us() }).await?;
                     }

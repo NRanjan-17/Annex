@@ -61,6 +61,10 @@ final class AnnexBTests: XCTestCase {
         let peer = #"{"type":"peer_found","instance":"A._annex._tcp.local.","name":"A","addresses":["fe80::1"],"port":47800,"fingerprint":null,"proto_major":1}"#
         guard case .peerFound(let p) = CoreEvent.decode(Data(peer.utf8)) else { return XCTFail("wrong case") }
         XCTAssertEqual(p.connectAddress, "[fe80::1]:47800")
+        let multi = PeerInfo(instance: "x", name: "x", addresses: ["192.168.1.5", "169.254.3.4"], port: 9, fingerprint: nil, protoMajor: nil)
+        XCTAssertEqual(multi.connectAddress, "192.168.1.5:9,169.254.3.4:9")
+        let hint = #"{"type":"bitrate_hint","session_id":2,"scale_percent":80}"#
+        XCTAssertEqual(CoreEvent.decode(Data(hint.utf8)), .bitrateHint(sessionId: 2, scalePercent: 80))
         XCTAssertEqual(CoreEvent.decode(Data(#"{"type":"from_future"}"#.utf8)), .unknown(type: "from_future"))
         let pin = #"{"type":"pairing_pin","request_id":4,"pin":"123 456","peer_name":"PC","fingerprint_display":"AB12"}"#
         XCTAssertEqual(CoreEvent.decode(Data(pin.utf8)),

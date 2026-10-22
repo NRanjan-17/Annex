@@ -4,7 +4,7 @@
 
 | Suite | Command | Covers |
 |---|---|---|
-| Rust core | `cd core && cargo test --workspace` | protocol (incl. proptest fuzzing), crypto, trust store, sessions over real TLS, tamper/replay attacks, FFI ABI, discovery parsing |
+| Rust core | `cd core && cargo test --workspace` | protocol (incl. proptest fuzzing), crypto, PIN pairing, sessions over QUIC and TLS/TCP, tamper/replay attacks, FEC through a 5 %-loss UDP proxy, adaptive bitrate under 17 % loss, FFI ABI, discovery parsing |
 | Live mDNS | `cd core && cargo test -p annex-discovery -- --ignored` | advertise + browse on this machine (needs multicast) |
 | macOS app | `xcodebuild test -project apps/macos/Annex.xcodeproj -scheme Annex -destination 'platform=macOS'` | Annex B ↔ AVCC, VideoToolbox encode → decode round trip (HW and SW), Swift ↔ core loopback session |
 | .NET interop | `ANNEX_NATIVE_DIR=core/target/debug dotnet test apps/windows/tests/Annex.Interop.Tests` | event parsing, full session through P/Invoke |
@@ -81,6 +81,18 @@ Repeat section 2 with the roles swapped. Pass criteria are the same: pairing, pi
 Also check on the Windows host: change the screen's resolution in Settings → Display while
 streaming (the stream continues, letterboxed), and cover the screen with a fast-moving video
 (no stalls; the latency line on the viewer stays under ~80 ms on 5 GHz Wi-Fi).
+
+### 2c. M5: wired link, QUIC and adaptive bitrate
+
+1. Connect the two computers with a cable from [CABLES.md](CABLES.md) (USB-Ethernet adapters work everywhere).
+   Keep Wi-Fi on. Connect from the viewer: the status line must say **"QUIC · direct cable"**.
+2. Unplug the cable while streaming: the session ends ("connection lost"). Reconnect: it uses Wi-Fi ("QUIC · network").
+3. Block UDP 47800 on the host's firewall (or test through a network that blocks UDP): the
+   viewer connects anyway and shows **"TCP"**.
+4. On Wi-Fi, walk away from the access point while streaming: the picture gets softer (lower bitrate)
+   instead of freezing, and recovers sharpness when you come back.
+5. macOS has a "Network Link Conditioner" (Xcode Additional Tools) to add loss/latency on purpose:
+   5 % loss should only cause the occasional brief smear, not a stall.
 
 ### 3. Tray behaviour (Windows)
 

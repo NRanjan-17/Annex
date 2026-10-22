@@ -65,6 +65,7 @@ public class LoopbackTests
         var started = WaitFor<CoreEvent.SessionStarted>(hostEvents);
         Assert.Equal("C# Viewer", started.PeerName);
         Assert.Equal("mirror", started.Mode);
+        Assert.Equal("quic", started.Transport);
         Assert.True(started.SessionId > 0);
         Assert.Equal(1920, started.ViewerDisplay!.WidthPx);
         Assert.Equal(new StreamConfig("h264", 1280, 720, 60), WaitFor<CoreEvent.StreamChanged>(viewerEvents).Stream);

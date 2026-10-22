@@ -611,6 +611,8 @@ mod win_host {
         host: OnceLock<Weak<HostHandle>>,
         mirror: Mutex<Option<HostPipeline>>,
         mirror_sessions: Mutex<HashSet<u64>>,
+        /// Latest adaptive-bitrate hint per mirror session; the shared encoder follows the lowest.
+        mirror_scales: Mutex<HashMap<u64, u32>>,
         driver: Option<Arc<VirtualDisplayDriver>>,
         extends: Mutex<HashMap<u64, ExtendSession>>,
     }
@@ -769,6 +771,7 @@ mod win_host {
                 }
                 Event::SessionEnded { session_id, .. } => {
                     if self.mirror_sessions.lock().unwrap().remove(session_id) {
+                        self.mirror_scales.lock().unwrap().remove(session_id);
                         if self.mirror_sessions.lock().unwrap().is_empty() {
                             self.mirror.lock().unwrap().take();
                         }
@@ -776,6 +779,26 @@ mod win_host {
                         let me = self.clone();
                         let id = *session_id;
                         std::thread::spawn(move || me.end_extend(id));
+                    }
+                }
+                Event::BitrateHint { session_id, scale_percent } => {
+                    let extend = self.extends.lock().unwrap().get(session_id).map(|e| e.pipeline.clone());
+                    match extend {
+                        Some(p) => {
+                            if let Some(p) = p.lock().unwrap().as_ref() {
+                                p.set_bitrate_scale(*scale_percent);
+                            }
+                        }
+                        None => {
+                            let lowest = {
+                                let mut scales = self.mirror_scales.lock().unwrap();
+                                scales.insert(*session_id, *scale_percent);
+                                scales.values().copied().min().unwrap_or(100)
+                            };
+                            if let Some(p) = self.mirror.lock().unwrap().as_ref() {
+                                p.set_bitrate_scale(lowest);
+                            }
+                        }
                     }
                 }
                 Event::KeyframeRequested { session_id } => {
@@ -830,6 +853,7 @@ mod win_host {
             host: OnceLock::new(),
             mirror: Mutex::new(None),
             mirror_sessions: Mutex::new(HashSet::new()),
+            mirror_scales: Mutex::new(HashMap::new()),
             extends: Mutex::new(HashMap::new()),
             driver,
         });

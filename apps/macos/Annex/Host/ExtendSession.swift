@@ -97,6 +97,15 @@ final class ExtendSession {
         UInt32(fingerprint.prefix(8), radix: 16) ?? 1
     }
 
+    private var bitrateScale = 100
+    private var baseBitrate = 0
+
+    /// Adaptive bitrate from the viewer's reports.
+    func setBitrateScale(_ percent: Int) {
+        bitrateScale = percent
+        if baseBitrate > 0 { encoder?.setBitrate(baseBitrate * percent / 100) }
+    }
+
     func requestKeyframe() {
         encoder?.requestKeyframe()
         if let pb = lastFrame.value { encoder?.encode(pb, captureMicros: Annex.nowMicros()) }
@@ -137,6 +146,7 @@ final class ExtendSession {
         host.setStream(session: sessionID, width: size.0, height: size.1, fps: fps)
         let (fps, preferHardware, capturer) = (self.fps, self.preferHardware, self.capturer)
         let bitrate = max(6_000_000, size.0 * size.1 * fps / 8)
+        baseBitrate = bitrate
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = Result { try H264Encoder(width: size.0, height: size.1, fps: fps, bitrate: bitrate, preferHardware: preferHardware) }
             await self?.encoderReady(result, generation: gen, size: size, capturer: capturer, displayID: id)
@@ -155,6 +165,7 @@ final class ExtendSession {
         case .failure(let e): onError?(e.localizedDescription); return
         }
         hardwareEncoder = enc.usingHardware
+        if bitrateScale != 100 { enc.setBitrate(baseBitrate * bitrateScale / 100) }
         let (host, session) = (self.host, sessionID)
         enc.onEncoded = { data, key, ts in host.submit(data, session: session, captureMicros: ts, keyframe: key) }
         encoder = enc

@@ -111,6 +111,14 @@ unsafe fn configure(mft: &IMFTransform, cfg: EncoderConfig) -> Result<(), MediaE
     }
 }
 
+fn set_mean_bitrate(mft: &IMFTransform, bitrate: u32) {
+    if let Ok(api) = mft.cast::<ICodecAPI>() {
+        unsafe {
+            let _ = api.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var_u32(bitrate));
+        }
+    }
+}
+
 /// SPS/PPS (Annex B) the encoder reports in its output type, if any.
 unsafe fn sequence_header(mft: &IMFTransform) -> Vec<u8> {
     unsafe {
@@ -161,6 +169,11 @@ impl SoftwareEncoder {
 
     pub fn request_keyframe(&self) {
         self.force_key.store(true, Ordering::Release);
+    }
+
+    /// Changes the target bitrate mid-stream (adaptive bitrate).
+    pub fn set_bitrate(&self, bitrate: u32) {
+        set_mean_bitrate(&self.mft, bitrate);
     }
 
     /// `nv12` is a tightly packed NV12 image (`width * height * 3 / 2` bytes).
@@ -319,6 +332,11 @@ impl HardwareEncoder {
 
     pub fn request_keyframe(&self) {
         self.force_key.store(true, Ordering::Release);
+    }
+
+    /// Changes the target bitrate mid-stream (adaptive bitrate).
+    pub fn set_bitrate(&self, bitrate: u32) {
+        set_mean_bitrate(&self.mft, bitrate);
     }
 
     /// Queues an NV12 texture (stream size). If the encoder is busy, the previous queued frame

@@ -31,6 +31,9 @@ public class EventTests
         var p = Assert.IsType<CoreEvent.PeerFound>(CoreEvent.Parse("""{"type":"peer_found","instance":"x","name":"Studio","addresses":["fe80::1"],"port":47800,"fingerprint":null,"proto_major":1}"""));
         Assert.Equal("[fe80::1]:47800", p.Peer.ConnectAddress);
         Assert.Equal("10.0.0.2:5", (p.Peer with { Addresses = ["10.0.0.2"], Port = 5 }).ConnectAddress);
+        Assert.Equal("10.0.0.2:5,[fe80::2]:5", (p.Peer with { Addresses = ["10.0.0.2", "fe80::2"], Port = 5 }).ConnectAddress);
+        var hint = Assert.IsType<CoreEvent.BitrateHint>(CoreEvent.Parse("""{"type":"bitrate_hint","session_id":3,"scale_percent":80}"""));
+        Assert.Equal(80u, hint.ScalePercent);
     }
 
     [Fact]

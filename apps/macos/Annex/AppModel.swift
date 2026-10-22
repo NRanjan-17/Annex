@@ -152,7 +152,8 @@ final class AppModel: ObservableObject {
     private func handleViewerEvent(_ e: CoreEvent) {
         switch e {
         case .sessionStarted(let s):
-            viewerStatus = s.mode == "extend" ? "Extending \(s.peerName)" : "Viewing \(s.peerName)"
+            let via = s.connectionDescription.isEmpty ? "" : " (\(s.connectionDescription))"
+            viewerStatus = (s.mode == "extend" ? "Extending \(s.peerName)" : "Viewing \(s.peerName)") + via
             viewerWindow?.show(fullScreen: true)
         case .streamConfig(let s):
             viewerStatus = "Viewing — \(s.width)×\(s.height) @ \(s.fps) fps"

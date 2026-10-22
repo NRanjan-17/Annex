@@ -569,3 +569,131 @@ async fn replayed_record_is_rejected() {
     let reason = run_attack(Attack::ReplayRecord).await;
     assert!(reason.to_lowercase().contains("decrypt"), "{reason}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_use_quic_with_datagram_video() {
+    let (hev, mut hrx) = channel_sink();
+    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
+    let (fs, got) = frame_counter();
+    let (vev, mut vrx) = channel_sink();
+    let viewer = connect_viewer(viewer_core("V"), viewer_cfg(host.port()), vev, fs);
+    let Event::SessionStarted { transport, link, .. } =
+        wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(transport, TransportKind::Quic);
+    assert_eq!(link, LinkKind::Network, "127.0.0.1 is not a direct (link-local) link");
+    let Event::SessionStarted { transport, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(transport, TransportKind::Quic);
+    // A 200 KB keyframe spans ~170 datagrams.
+    let big = vec![7u8; 200_000];
+    assert_eq!(host.submit_frame(&big, clock::now_us(), true), SubmitResult::Sent);
+    eventually(|| got.lock().unwrap().len() == 1).await;
+    assert_eq!(got.lock().unwrap()[0], big);
+    viewer.disconnect().await;
+    host.stop().await;
+}
+
+/// UDP relay that drops every `drop_every`-th host→viewer packet once the handshake is done.
+async fn lossy_udp_proxy(target: std::net::SocketAddr, drop_every: usize) -> u16 {
+    use tokio::net::UdpSocket;
+    let front = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let back = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    back.connect(target).await.unwrap();
+    let port = front.local_addr().unwrap().port();
+    let client: Arc<Mutex<Option<std::net::SocketAddr>>> = Arc::default();
+    {
+        let (front, back, client) = (front.clone(), back.clone(), client.clone());
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 65536];
+            while let Ok((n, from)) = front.recv_from(&mut buf).await {
+                *client.lock().unwrap() = Some(from);
+                let _ = back.send(&buf[..n]).await;
+            }
+        });
+    }
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 65536];
+        let mut count = 0usize;
+        while let Ok(n) = back.recv(&mut buf).await {
+            count += 1;
+            if count > 50 && count.is_multiple_of(drop_every) {
+                continue;
+            }
+            let to = *client.lock().unwrap();
+            if let Some(to) = to {
+                let _ = front.send_to(&buf[..n], to).await;
+            }
+        }
+    });
+    port
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fec_carries_frames_through_packet_loss() {
+    let (hev, mut hrx) = channel_sink();
+    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
+    let proxy = lossy_udp_proxy(format!("127.0.0.1:{}", host.port()).parse().unwrap(), 20).await;
+    let (fs, got) = frame_counter();
+    let (vev, _vrx) = channel_sink();
+    let viewer = connect_viewer(viewer_core("V"), viewer_cfg(proxy), vev, fs);
+    let Event::SessionStarted { transport, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(transport, TransportKind::Quic);
+    let frame = vec![3u8; 30_000];
+    let mut sent = 0;
+    for i in 0..100 {
+        // Keyframe every 10 frames so a lost frame doesn't stall delivery for long.
+        if host.submit_frame(&frame, clock::now_us(), i % 10 == 0) == SubmitResult::Sent {
+            sent += 1;
+        }
+        tokio::time::sleep(Duration::from_millis(16)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let delivered = got.lock().unwrap().len();
+    assert!(sent >= 90, "only {sent} frames were sent");
+    // Without FEC, 5 % loss over ~26 datagrams per frame would deliver about a quarter of them.
+    assert!(delivered * 100 >= sent * 75, "only {delivered} of {sent} frames survived 5 % loss");
+    assert!(got.lock().unwrap().iter().all(|f| *f == frame));
+    viewer.disconnect().await;
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn heavy_loss_triggers_a_lower_bitrate_hint() {
+    let (hev, mut hrx) = channel_sink();
+    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
+    // Every 6th packet lost (~17 %): beyond what 15 % FEC rebuilds for long.
+    let proxy = lossy_udp_proxy(format!("127.0.0.1:{}", host.port()).parse().unwrap(), 6).await;
+    let (vev, _vrx) = channel_sink();
+    let viewer = connect_viewer(viewer_core("V"), viewer_cfg(proxy), vev, Arc::new(|_| {}));
+    let Event::SessionStarted { session_id, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
+    else {
+        unreachable!()
+    };
+    let feeder = tokio::spawn(async move {
+        for i in 0..200 {
+            host.submit_frame(&[1u8; 30_000], clock::now_us(), i % 30 == 0);
+            tokio::time::sleep(Duration::from_millis(16)).await;
+        }
+        host
+    });
+    let Event::BitrateHint { session_id: hinted, scale_percent } =
+        wait_for(&mut hrx, |e| matches!(e, Event::BitrateHint { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(hinted, session_id);
+    assert!(scale_percent < 100, "loss must lower the bitrate, got {scale_percent} %");
+    viewer.disconnect().await;
+    feeder.await.unwrap().stop().await;
+}

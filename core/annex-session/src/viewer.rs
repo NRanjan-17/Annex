@@ -7,29 +7,28 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use annex_crypto::peer_fingerprint;
 use annex_proto::{Codec, Control, DisplayInfo, Mode, Role, SessionRequest};
-use rustls::pki_types::ServerName;
-use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use crate::clock::{ClockSync, now_us};
 use crate::conn::{Incoming, Reader, Writer, check_hello, hello};
+use crate::events::LinkKind;
 use crate::events::{Event, EventSink, FrameOut, FrameSink};
 use crate::pairing::{PairContext, pair_as_viewer};
 use crate::stats::LatencyWindow;
+use crate::transport::{Established, connect_quic, connect_tcp, is_link_local};
 use crate::{Core, SessionError};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(130);
 const STATS_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct ViewerConfig {
-    /// `host`, `host:port`, `ip` or `ip:port`.
+    /// `host`, `host:port`, `ip` or `ip:port`; several comma-separated candidates are raced
+    /// (direct-cable addresses first, QUIC before TCP).
     pub address: String,
     pub display: DisplayInfo,
     pub codecs: Vec<Codec>,
@@ -119,29 +118,15 @@ async fn run(
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
 ) -> Result<String, SessionError> {
     events(Event::Connecting { address: cfg.address.clone() });
-    let addr = resolve(&cfg.address).await?;
-    let sock =
-        timeout(CONNECT_TIMEOUT, TcpStream::connect(addr)).await.map_err(|_| SessionError::Timeout("connect"))??;
-    sock.set_nodelay(true)?;
-    let tls_cfg = annex_crypto::client_config(core.identity(), cfg.expected_fingerprint.clone())?;
-    let connector = tokio_rustls::TlsConnector::from(Arc::new(tls_cfg));
-    let name = ServerName::try_from(annex_crypto::SERVER_NAME).expect("valid server name");
-    let tls =
-        timeout(HANDSHAKE_TIMEOUT, connector.connect(name, sock)).await.map_err(|_| SessionError::Timeout("tls"))??;
-    let fp = peer_fingerprint(tls.get_ref().1.peer_certificates())
-        .ok_or_else(|| SessionError::Violation("host sent no certificate".into()))?;
-    let exporter = tls
-        .get_ref()
-        .1
-        .export_keying_material([0u8; 32], annex_crypto::pairing::EXPORTER_LABEL, None)
-        .map_err(|e| SessionError::Violation(format!("tls exporter: {e}")))?;
+    let est = connect_best(&core, &cfg).await?;
+    let Established { kind, reader, writer, fingerprint: fp, exporter, remote, quic } = est;
     if fp == core.fingerprint() {
         return Err(SessionError::Violation("host uses our own identity".into()));
     }
-
-    let (r, w) = tokio::io::split(tls);
-    let mut reader = Reader::new(r);
-    let mut writer = Writer::new(w);
+    let link = if is_link_local(&remote) { LinkKind::Direct } else { LinkKind::Network };
+    tracing::info!(%remote, ?kind, ?link, "connected");
+    let mut reader = Reader::new(reader);
+    let mut writer = Writer::new(writer);
     let knows = core.knows(&fp);
     writer.send_control(&hello(&core, vec![Role::Viewer], knows, &["h264"])).await?;
     let peer = match timeout(HANDSHAKE_TIMEOUT, reader.next_control()).await?? {
@@ -184,6 +169,8 @@ async fn run(
         fingerprint: fp.clone(),
         viewer_display: None,
         stream: stream.clone(),
+        transport: kind,
+        link,
     });
     events(Event::StreamConfig { stream });
 
@@ -197,27 +184,80 @@ async fn run(
         None => None,
     };
 
+    // Hands a received frame to the app and remembers it for latency accounting.
+    let deliver = {
+        let latency = latency.clone();
+        move |frame_id: u32, capture_ts_us: i64, keyframe: bool, data: &[u8]| {
+            let local = latency.lock().unwrap().clock.to_local(capture_ts_us);
+            if let Some(ts) = local {
+                let mut l = latency.lock().unwrap();
+                if l.pending.len() >= 256 {
+                    l.pending.pop_front();
+                }
+                l.pending.push_back((frame_id, ts));
+            }
+            frames(FrameOut { frame_id, capture_ts_local_us: local, keyframe, data });
+        }
+    };
+
+    // Counters for receiver reports (adaptive bitrate on the host).
+    #[derive(Default)]
+    struct Counters {
+        frames: std::sync::atomic::AtomicU32,
+        lost: std::sync::atomic::AtomicU32,
+        shards: std::sync::atomic::AtomicU32,
+        recovered: std::sync::atomic::AtomicU32,
+    }
+    let counters = Arc::new(Counters::default());
+    let deliver = {
+        let counters = counters.clone();
+        let inner = deliver;
+        move |frame_id: u32, capture_ts_us: i64, keyframe: bool, data: &[u8]| {
+            counters.frames.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            inner(frame_id, capture_ts_us, keyframe, data)
+        }
+    };
+
+    // QUIC: video arrives as FEC-protected datagrams; a lost frame triggers a keyframe request.
+    let (lost_tx, mut lost_rx) = mpsc::unbounded_channel::<()>();
+    let datagrams = {
+        let deliver = deliver.clone();
+        let quic = quic.clone();
+        let counters = counters.clone();
+        async move {
+            let Some(conn) = quic else { return std::future::pending::<()>().await };
+            let mut reassembler = annex_proto::fragment::Reassembler::default();
+            while let Ok(d) = conn.read_datagram().await {
+                counters.shards.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let recovered_before = reassembler.shards_recovered;
+                match reassembler.push(&d) {
+                    Ok(out) => {
+                        let rebuilt = (reassembler.shards_recovered - recovered_before) as u32;
+                        counters.recovered.fetch_add(rebuilt, std::sync::atomic::Ordering::Relaxed);
+                        if !out.lost.is_empty() {
+                            counters.lost.fetch_add(out.lost.len() as u32, std::sync::atomic::Ordering::Relaxed);
+                            let _ = lost_tx.send(());
+                        }
+                        for f in out.frames {
+                            deliver(f.frame_id, f.capture_ts_us, f.flags.keyframe(), &f.data);
+                        }
+                    }
+                    Err(e) => tracing::debug!("bad video datagram: {e}"),
+                }
+            }
+            std::future::pending::<()>().await
+        }
+    };
+
     let reader_fut = {
         let latency = latency.clone();
         let events = events.clone();
+        let deliver = deliver.clone();
         async move {
             loop {
                 match reader.next().await? {
                     Incoming::Video(f) => {
-                        let local = latency.lock().unwrap().clock.to_local(f.header.capture_ts_us);
-                        if let Some(ts) = local {
-                            let mut l = latency.lock().unwrap();
-                            if l.pending.len() >= 256 {
-                                l.pending.pop_front();
-                            }
-                            l.pending.push_back((f.header.frame_id, ts));
-                        }
-                        frames(FrameOut {
-                            frame_id: f.header.frame_id,
-                            capture_ts_local_us: local,
-                            keyframe: f.header.flags.keyframe(),
-                            data: &f.data,
-                        });
+                        deliver(f.header.frame_id, f.header.capture_ts_us, f.header.flags.keyframe(), &f.data);
                     }
                     Incoming::Control(Control::ClockPong { t_viewer_us, t_host_us, .. }) => {
                         latency.lock().unwrap().clock.add_sample(t_viewer_us, t_host_us, now_us());
@@ -232,10 +272,13 @@ async fn run(
 
     let main = async {
         let mut seq = 0u32;
+        let mut last_keyframe_request = std::time::Instant::now() - Duration::from_secs(1);
         // Ping quickly at first so the clock offset converges, then settle down.
         let mut ping = tokio::time::interval(Duration::from_millis(250));
         let mut stats = tokio::time::interval(STATS_INTERVAL);
         stats.tick().await;
+        let mut report = tokio::time::interval(Duration::from_secs(1));
+        report.tick().await;
         loop {
             tokio::select! {
                 _ = ping.tick() => {
@@ -254,6 +297,28 @@ async fn run(
                         events(Event::LatencyStats { stats: s, clock_rtt_ms: rtt });
                     }
                 }
+                _ = report.tick() => {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    let rtt_us = match &quic {
+                        Some(c) => c.rtt().as_micros().min(u32::MAX as u128) as u32,
+                        None => latency.lock().unwrap().clock.rtt_us().unwrap_or(0).clamp(0, u32::MAX as i64) as u32,
+                    };
+                    let r = annex_proto::ReceiverReport {
+                        frames: counters.frames.swap(0, Relaxed),
+                        lost: counters.lost.swap(0, Relaxed),
+                        shards: counters.shards.swap(0, Relaxed),
+                        recovered: counters.recovered.swap(0, Relaxed),
+                        rtt_us,
+                    };
+                    writer.send_control(&Control::ReceiverReport(r)).await?;
+                }
+                Some(()) = lost_rx.recv() => {
+                    // At most a few requests per second; the host answers with one IDR anyway.
+                    if last_keyframe_request.elapsed() > Duration::from_millis(250) {
+                        last_keyframe_request = std::time::Instant::now();
+                        writer.send_control(&Control::KeyframeRequest).await?;
+                    }
+                }
                 c = cmd_rx.recv() => match c {
                     Some(Cmd::RequestKeyframe) => writer.send_control(&Control::KeyframeRequest).await?,
                     Some(Cmd::Presented { frame_id, at_us }) => {
@@ -269,6 +334,11 @@ async fn run(
                     Some(Cmd::Disconnect) | None => {
                         let _ = writer.send_control(&Control::Bye { reason: "user".into() }).await;
                         writer.shutdown().await;
+                        if let Some(conn) = &quic {
+                            // Give the bye time to arrive before closing the QUIC connection.
+                            let _ = timeout(Duration::from_millis(300), conn.closed()).await;
+                            conn.close(0u32.into(), b"bye");
+                        }
                         return Ok::<String, SessionError>("user".into());
                     }
                 },
@@ -279,5 +349,55 @@ async fn run(
     tokio::select! {
         r = main => r,
         r = reader_fut => r,
+        _ = datagrams => unreachable!("datagram reader never completes"),
     }
+}
+
+/// Resolves every candidate address and races connections: direct-cable (link-local) addresses
+/// first, QUIC first, falling back to TCP if no QUIC handshake succeeds.
+async fn connect_best(core: &Arc<Core>, cfg: &ViewerConfig) -> Result<Established, SessionError> {
+    let mut addrs = Vec::new();
+    for part in cfg.address.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        match resolve(part).await {
+            Ok(a) => addrs.push(a),
+            Err(e) => tracing::info!("{part}: {e}"),
+        }
+    }
+    if addrs.is_empty() {
+        return Err(SessionError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "address did not resolve")));
+    }
+    addrs.sort_by_key(|a| !is_link_local(a));
+    addrs.dedup();
+    let mut last_err = None;
+    for quic in [true, false] {
+        let mut tries = tokio::task::JoinSet::new();
+        for (i, addr) in addrs.iter().copied().enumerate() {
+            let (core, expected) = (core.clone(), cfg.expected_fingerprint.clone());
+            tries.spawn(async move {
+                // Give earlier (preferred) candidates a small head start.
+                tokio::time::sleep(Duration::from_millis(150 * i as u64)).await;
+                if quic { connect_quic(&core, addr, expected).await } else { connect_tcp(&core, addr, expected).await }
+            });
+        }
+        let deadline = tokio::time::sleep(if quic { Duration::from_secs(3) } else { Duration::from_secs(8) });
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                r = tries.join_next() => match r {
+                    Some(Ok(Ok(est))) => {
+                        tries.abort_all();
+                        return Ok(est);
+                    }
+                    Some(Ok(Err(e))) => last_err = Some(e),
+                    Some(Err(_)) => {}
+                    None => break,
+                },
+                _ = &mut deadline => {
+                    tries.abort_all();
+                    break;
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or(SessionError::Timeout("connect")))
 }
