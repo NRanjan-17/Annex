@@ -62,6 +62,9 @@ char *annex_core_device_name(const AnnexCore *core);
 char *annex_core_trusted_peers_json(const AnnexCore *core);
 /* Returns 1 if removed, 0 if not trusted. */
 int32_t annex_core_untrust(const AnnexCore *core, const char *fingerprint);
+/* Lists this device under "Nearby" on other computers while Annex is open (as not sharing until a
+ * host starts). Call once at startup and again after a rename. */
+int32_t annex_core_set_presence(const AnnexCore *core, bool visible);
 /* Renames this device; returns the stored name (free with annex_string_free). Advertisements
  * update when hosting restarts. */
 char *annex_core_set_device_name(const AnnexCore *core, const char *name);
@@ -98,6 +101,10 @@ int32_t annex_host_set_session_stream(const AnnexHost *host, uint64_t session_id
 /* Ends one session; its viewer is told "host_ended_session". */
 void annex_host_end_session(const AnnexHost *host, uint64_t session_id);
 void annex_host_free(AnnexHost *host);
+#ifdef _WIN32
+/* Windows: why Extend is or isn't available here (driver state, test signing). JSON; free it. */
+char *annex_win_extend_status_json(void);
+#endif
 #ifdef _WIN32
 /* Windows: JSON array of monitors [{index, name, width, height, refresh_hz, primary}]. */
 char *annex_win_monitors_json(void);

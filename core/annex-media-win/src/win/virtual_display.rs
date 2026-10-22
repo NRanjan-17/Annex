@@ -251,3 +251,80 @@ fn gdi_name_for_connector(connector: u32) -> Option<String> {
 pub fn monitor_size(name: &str) -> Option<(u32, u32)> {
     monitors().into_iter().find(|m| m.name.eq_ignore_ascii_case(name)).map(|m| (m.width, m.height))
 }
+
+/// Why Extend is or isn't available on this PC (for the app to explain).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverState {
+    /// Installed and running: Extend works.
+    Ready,
+    /// The device exists but Windows didn't start it. `problem` is its Device Manager problem code
+    /// (52 = signature not accepted, typical without test signing).
+    NotRunning { problem: u32 },
+    NotInstalled,
+}
+
+/// The AnnexIdd device's state and whether Windows test signing is on.
+pub fn driver_state() -> (DriverState, bool) {
+    use windows::Win32::Devices::DeviceAndDriverInstallation::{
+        CM_DEVNODE_STATUS_FLAGS, CM_Get_DevNode_Status, CM_PROB, CR_SUCCESS, GUID_DEVCLASS_DISPLAY,
+        SETUP_DI_GET_CLASS_DEVS_FLAGS, SP_DEVINFO_DATA, SPDRP_HARDWAREID, SetupDiDestroyDeviceInfoList,
+        SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW,
+    };
+    let test_signing = test_signing_enabled();
+    if VirtualDisplayDriver::available() {
+        return (DriverState::Ready, test_signing);
+    }
+    let mut state = DriverState::NotInstalled;
+    unsafe {
+        let Ok(set) =
+            SetupDiGetClassDevsW(Some(&GUID_DEVCLASS_DISPLAY), PCWSTR::null(), None, SETUP_DI_GET_CLASS_DEVS_FLAGS(0))
+        else {
+            return (state, test_signing);
+        };
+        for i in 0.. {
+            let mut info = SP_DEVINFO_DATA { cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32, ..Default::default() };
+            if SetupDiEnumDeviceInfo(set, i, &mut info).is_err() {
+                break;
+            }
+            let mut buf = [0u8; 1024];
+            if SetupDiGetDeviceRegistryPropertyW(set, &info, SPDRP_HARDWAREID, None, Some(&mut buf), None).is_err() {
+                continue;
+            }
+            let wide: Vec<u16> = buf.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            if !String::from_utf16_lossy(&wide).split('\0').any(|id| id.eq_ignore_ascii_case("Root\\AnnexIdd")) {
+                continue;
+            }
+            let mut status = CM_DEVNODE_STATUS_FLAGS(0);
+            let mut problem = CM_PROB(0);
+            let problem = if CM_Get_DevNode_Status(&mut status, &mut problem, info.DevInst, 0) == CR_SUCCESS {
+                problem.0
+            } else {
+                0
+            };
+            state = DriverState::NotRunning { problem };
+            break;
+        }
+        let _ = SetupDiDestroyDeviceInfoList(set);
+    }
+    (state, test_signing)
+}
+
+/// `bcdedit /set testsigning on` shows up as TESTSIGNING in the boot options.
+fn test_signing_enabled() -> bool {
+    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
+    let mut buf = [0u16; 512];
+    let mut size = (buf.len() * 2) as u32;
+    let ok = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            windows::core::w!("SYSTEM\\CurrentControlSet\\Control"),
+            windows::core::w!("SystemStartOptions"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    }
+    .is_ok();
+    ok && String::from_utf16_lossy(&buf[..(size as usize / 2)]).to_ascii_uppercase().contains("TESTSIGNING")
+}

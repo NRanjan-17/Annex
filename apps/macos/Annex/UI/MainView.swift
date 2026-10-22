@@ -386,6 +386,28 @@ private struct HowToConnect: View {
 /// The port hosts use unless it's taken.
 private let annexDefaultPort: UInt16 = 47800
 
+/// Shown while nothing that's sharing has been found: what usually blocks discovery.
+private struct NotShowingUp: View {
+    var body: some View {
+        Section("Not showing up?") {
+            Row(symbol: "wifi", tint: .gray, title: "Both computers on the same network",
+                subtitle: "Same Wi-Fi or router, or a cable between them. Guest Wi-Fi and VPNs often block computers from seeing each other.") { EmptyView() }
+            Row(symbol: "network", tint: .gray, title: "Allow Local Network access",
+                subtitle: "Annex needs it to find other computers. Make sure Annex is on in Privacy & Security → Local Network.") {
+                Button("Open Settings") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+            Row(symbol: "shield", tint: .gray, title: "On a Windows PC: allow Annex through the firewall",
+                subtitle: "In Annex on that PC, open Connect and click Allow under Not showing up.") { EmptyView() }
+            Row(symbol: "keyboard", tint: .gray, title: "Still nothing?",
+                subtitle: "Use Connect by address below with an address the other computer shows.") { EmptyView() }
+        }
+    }
+}
+
 // MARK: Connect
 
 /// The two things you can do with another computer, as buttons that say what happens.
@@ -393,6 +415,7 @@ private struct ConnectButtons: View {
     @ObservedObject var model: AppModel
     let connect: () -> Void
     var compact = false
+    var peer: PeerInfo?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -410,10 +433,13 @@ private struct ConnectButtons: View {
             } label: {
                 Label("Be Its Extra Display", systemImage: "rectangle.split.2x1")
             }
-            .help("This Mac becomes a second screen for the other computer")
+            .help(peer?.canExtend == false
+                  ? "It can't add an extra display (on Windows it needs the Annex display driver)"
+                  : "This Mac becomes a second screen for the other computer")
+            .disabled(peer?.canExtend == false)
         }
         .fixedSize()
-        .disabled(model.isViewing)
+        .disabled(model.isViewing || peer?.isSharing == false)
     }
 }
 
@@ -436,6 +462,9 @@ private struct ConnectPage: View {
                 ForEach(model.discovered) { peer in
                     PeerRow(model: model, peer: peer)
                 }
+            }
+            if model.discovered.allSatisfy({ !$0.isSharing }) {
+                NotShowingUp()
             }
             Section {
                 Row(symbol: "network", tint: .gray, title: "Address",
@@ -465,13 +494,18 @@ private struct PeerRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Row(symbol: "desktopcomputer", tint: .teal, title: peer.name,
-                subtitle: model.isPaired(peer) ? "Paired" : "Not paired yet · you'll enter a PIN the first time") { EmptyView() }
+            Row(symbol: "desktopcomputer", tint: peer.isSharing ? .teal : .gray, title: peer.name, subtitle: subtitle) { EmptyView() }
             HStack {
                 Spacer()
-                ConnectButtons(model: model, connect: { model.connect(to: peer) }, compact: true)
+                ConnectButtons(model: model, connect: { model.connect(to: peer) }, compact: true, peer: peer)
             }
         }
+    }
+
+    private var subtitle: String {
+        guard peer.isSharing else { return "Annex is open there, but it isn't sharing. Click Start Sharing on it first." }
+        return (model.isPaired(peer) ? "Paired" : "Not paired yet · you'll enter a PIN the first time")
+            + (peer.canExtend ? "" : " · can't be extended (no display driver)")
     }
 }
 
@@ -511,6 +545,12 @@ private struct PeerPage: View {
                     : "On your network. The first time, you'll enter the PIN shown on \(peer.name).",
                  symbol: "desktopcomputer", tint: .teal)
             ViewerStatusSection(model: model)
+            if !peer.isSharing {
+                Section {
+                    Label("Annex is open on \(peer.name), but it isn't sharing. Click Start Sharing there, then come back.",
+                          systemImage: "info.circle")
+                }
+            }
             Section {
                 Row(symbol: "rectangle.on.rectangle", tint: .indigo, title: "Show its screen here",
                     subtitle: "See and use \(peer.name)'s screen on this Mac.") {
@@ -519,7 +559,7 @@ private struct PeerPage: View {
                         model.connect(to: peer)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.isViewing)
+                    .disabled(model.isViewing || !peer.isSharing)
                 }
                 Row(symbol: "rectangle.split.2x1", tint: .blue, title: "Be its extra display",
                     subtitle: "This Mac becomes a second screen for \(peer.name). Drag windows onto it from there.") {
@@ -527,7 +567,7 @@ private struct PeerPage: View {
                         model.extendMode = true
                         model.connect(to: peer)
                     }
-                    .disabled(model.isViewing)
+                    .disabled(model.isViewing || !peer.isSharing || !peer.canExtend)
                 }
             }
             Section("Details") {

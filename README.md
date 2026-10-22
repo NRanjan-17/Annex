@@ -65,16 +65,20 @@ computers can't find this PC.
 
 You need two computers on the **same network** (Wi-Fi or Ethernet), or joined by a cable.
 
-**On the computer you want to see (the one sharing):**
+Open Annex on both. Each computer shows the other under **Nearby** within a few seconds
+(marked *not sharing* until it shares).
 
-1. Open Annex → **Share This Mac** / **Share this PC** → turn **Sharing** on.
-2. Annex now shows *Connect from another computer* with this computer's name and its
+**On the computer whose screen you want to use (the one sharing):**
+
+1. **Share This Mac** / **Share this PC** → click **Start Sharing**.
+2. Annex shows *How to connect from the other computer*, with this computer's name and its
    addresses (for example `192.168.1.20`).
 
-**On the computer you're sitting at:**
+**On the other computer:**
 
-1. Open Annex. The other computer appears in the sidebar under **Nearby**. Click it.
-2. Click **Mirror** to see its screen, or **Extend** to use this computer as its extra display.
+1. **Connect** (or the computer's name under **Nearby**), then choose:
+   - **Show its screen here**: see and use the sharing computer's screen.
+   - **Be its extra display**: this computer becomes a second screen for the sharing one.
 3. **The first time only**, the sharing computer shows a **6-digit PIN**. Type it here and
    check that the *identity code* matches on both screens. After that the two connect without a PIN.
 
@@ -112,11 +116,18 @@ Every device you pair with a PIN is listed under **Paired Devices**. Remove one 
 enter a PIN again next time. Rename this computer under **General → Device name** (leave it
 empty to use the computer's own name).
 
-### Fastest connection: a cable
+### Fastest connection: a cable (USB-C, Thunderbolt or Ethernet)
 
-For the lowest delay, connect the two computers directly: Thunderbolt/USB-C cable between
-two Macs, or USB-Ethernet adapters / an Ethernet cable. Annex prefers a direct cable
-automatically when one is plugged in. See [docs/CABLES.md](docs/CABLES.md).
+Annex runs over any cable that makes a **network link** between the two computers, and
+prefers it automatically when one is plugged in (shown as *direct cable*):
+
+| Computers | Cable |
+|---|---|
+| Mac ↔ Mac | Thunderbolt / USB4 cable (macOS sets up *Thunderbolt Bridge* by itself) |
+| Mac ↔ Windows, Windows ↔ Windows | An Ethernet cable, with a USB-C/USB-Ethernet adapter on any computer without a port. Thunderbolt/USB4 networking also works between PCs that support it. |
+
+A plain USB-A or USB-C *charging/data* cable between two computers is **not** a network link,
+so it doesn't work. Details: [docs/CABLES.md](docs/CABLES.md).
 
 ### Extend on Windows
 
@@ -146,7 +157,9 @@ Details: [docs/SECURITY.md](docs/SECURITY.md) · [docs/PROTOCOL.md](docs/PROTOCO
 
 | Problem | Try this |
 |---|---|
-| The other computer doesn't show under **Nearby** | Same network? Turn sharing on there. Use **Connect by address** with an address it shows. Allow Annex through the Windows firewall (private networks). |
+| The other computer doesn't show under **Nearby** | Same network (not guest Wi-Fi or a VPN)? On Windows: **Connect → Not showing up? → Allow** (firewall) and set the network to *Private*. On Mac: allow Annex in **Privacy & Security → Local Network**. Or use **Connect by address**. |
+| It shows *not sharing* | Click **Start Sharing** on that computer. |
+| "Be its extra display" is greyed out, or "can't add an extra display" | A Windows PC needs the Extend-mode display driver *and* test signing. **Share this PC** on that PC says which is missing. |
 | Black screen when mirroring a Mac | Allow Screen Recording for Annex (System Settings → Privacy & Security), then turn sharing off and on. |
 | "Annex can't be opened" on Mac | System Settings → Privacy & Security → **Open Anyway** (see Install). |
 | Mouse/keyboard does nothing on the other computer | It must allow your device under **Paired Devices**, and on a Mac have Accessibility permission. Turn on **Viewing → Control the other computer** on your side. |

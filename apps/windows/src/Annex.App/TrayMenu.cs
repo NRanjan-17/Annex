@@ -114,7 +114,7 @@ internal sealed partial class TrayMenu : Window
         if (m.Nearby.Count == 0)
             stack.Children.Add(Item("", "Looking for computers…", null));
         foreach (var peer in m.Nearby.Take(6))
-            stack.Children.Add(PeerItem(peer, m.Viewing is null, a));
+            stack.Children.Add(PeerItem(peer, m.Viewing is null && peer.Sharing, a));
 
         stack.Children.Add(new MenuFlyoutSeparator());
         stack.Children.Add(Item("", "Open Annex", () => { Hide(); a.Open(); }));
@@ -147,13 +147,14 @@ internal sealed partial class TrayMenu : Window
         var icon = Ui.Glyph("", 16);
         icon.VerticalAlignment = VerticalAlignment.Center;
         row.Children.Add(icon);
-        var name = Ui.Text(peer.Name, wrap: false);
+        var name = Ui.Text(peer.Sharing ? peer.Name : $"{peer.Name} (not sharing)", wrap: false, brush: peer.Sharing ? null : Ui.Secondary);
         name.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(name, 1);
         row.Children.Add(name);
         var show = IconButton("", "Show its screen here", () => a.Connect(peer, false));
         var extend = IconButton("", "Be its extra display", () => a.Connect(peer, true));
-        show.IsEnabled = extend.IsEnabled = enabled;
+        show.IsEnabled = enabled;
+        extend.IsEnabled = enabled && peer.Extend != false;
         var buttons = Ui.Row(show, extend);
         buttons.Spacing = 2;
         Grid.SetColumn(buttons, 2);

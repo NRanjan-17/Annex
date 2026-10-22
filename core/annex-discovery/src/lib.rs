@@ -1,7 +1,9 @@
 //! LAN discovery over mDNS / DNS-SD.
 //!
-//! Hosts advertise `_annex._tcp.local.` with TXT records `v` (protocol major), `id` (certificate
-//! fingerprint), `name` (device name) and `role`. The fingerprint is public information (it is
+//! Every running Annex advertises `_annex._tcp.local.` with TXT records `v` (protocol major), `id`
+//! (certificate fingerprint), `name` (device name), `role`, `sharing` (`1` while it accepts
+//! viewers) and `extend` (`1` if it can add an extra display), so devices see each other as soon as
+//! the app is open. The fingerprint is public information (it is
 //! what users compare), never a secret; pairing secrets are never put in TXT records.
 //! Discovery is only a convenience: the TLS handshake and trust store decide who is genuine.
 
@@ -32,6 +34,10 @@ pub struct PeerInfo {
     pub port: u16,
     pub fingerprint: Option<String>,
     pub proto_major: Option<u16>,
+    /// Accepting viewers now. Peers that don't say (older versions) only advertised while sharing.
+    pub sharing: bool,
+    /// Can add an extra display for a viewer (Extend). `None` if the peer doesn't say.
+    pub extend: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -70,6 +76,8 @@ pub fn peer_from_parts<'a>(
         port,
         fingerprint,
         proto_major: txt("v").and_then(|v| v.parse().ok()),
+        sharing: txt("sharing") != Some("0"),
+        extend: txt("extend").map(|v| v == "1"),
     }
 }
 
@@ -113,12 +121,32 @@ impl Discovery {
         Ok(Discovery { daemon: ServiceDaemon::new()?, own_fingerprint: own_fingerprint.to_string() })
     }
 
-    /// Advertises this device as a host on all interfaces.
+    /// Advertises this device as a host that is sharing, on all interfaces.
     pub fn advertise_host(&self, device_name: &str, port: u16) -> Result<Advertisement, DiscoveryError> {
+        self.advertise(device_name, port, true, false)
+    }
+
+    /// Advertises this device. `sharing`: accepting viewers on `port`; otherwise it's just present
+    /// (listed as "not sharing"). `extend`: can add extra displays.
+    pub fn advertise(
+        &self,
+        device_name: &str,
+        port: u16,
+        sharing: bool,
+        extend: bool,
+    ) -> Result<Advertisement, DiscoveryError> {
         let label = instance_label(device_name, &self.own_fingerprint);
         let host = format!("annex-{}.local.", &self.own_fingerprint[..8]);
         let v = annex_proto::PROTOCOL_MAJOR.to_string();
-        let props = [("v", v.as_str()), ("id", self.own_fingerprint.as_str()), ("name", device_name), ("role", "host")];
+        let flag = |b: bool| if b { "1" } else { "0" };
+        let props = [
+            ("v", v.as_str()),
+            ("id", self.own_fingerprint.as_str()),
+            ("name", device_name),
+            ("role", if sharing { "host" } else { "idle" }),
+            ("sharing", flag(sharing)),
+            ("extend", flag(sharing && extend)),
+        ];
         let info = ServiceInfo::new(MDNS_SERVICE_TCP, &label, &host, "", port, &props[..])?.enable_addr_auto();
         let fullname = info.get_fullname().to_string();
         self.daemon.register(info)?;
@@ -196,6 +224,15 @@ mod tests {
         assert_eq!(p.fingerprint.as_deref(), Some("ab".repeat(32).as_str()));
         assert_eq!(p.name, "Studio");
         assert_eq!(p.proto_major, Some(1));
+        assert!(p.sharing, "peers without the flag only advertised while sharing");
+        assert_eq!(p.extend, None);
+        let idle = peer_from_parts("I._annex._tcp.local.", 47800, [], |k| match k {
+            "sharing" => Some("0"),
+            "extend" => Some("1"),
+            _ => None,
+        });
+        assert!(!idle.sharing);
+        assert_eq!(idle.extend, Some(true));
 
         let bad = peer_from_parts("X._annex._tcp.local.", 1, [], |k| (k == "id").then_some("nothex"));
         assert_eq!(bad.fingerprint, None);

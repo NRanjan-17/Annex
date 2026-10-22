@@ -14,7 +14,7 @@ pub use display::{Monitor, monitors, primary_display_info};
 pub use encoder::{EncoderConfig, OutputFn, SoftwareEncoder};
 pub use input::Injector;
 pub use screen_host::{EncodedFrame, HostPipeline, HostPipelineConfig, stream_size};
-pub use virtual_display::{VirtualDisplayDriver, monitor_size};
+pub use virtual_display::{DriverState, VirtualDisplayDriver, driver_state, monitor_size};
 pub use window::{VideoWindow, WindowHooks};
 
 #[derive(Debug, thiserror::Error)]

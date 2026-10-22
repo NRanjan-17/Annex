@@ -168,9 +168,46 @@ pub struct AnnexCore {
     rt: tokio::runtime::Runtime,
     core: Arc<Core>,
     discovery: Mutex<Option<Arc<Discovery>>>,
+    /// The "Annex is open here" advertisement (not sharing), while enabled and no host advertises.
+    presence: Mutex<Presence>,
+}
+
+#[derive(Default)]
+struct Presence {
+    enabled: bool,
+    /// A host is advertising this device (as sharing) instead.
+    hosting: bool,
+    advert: Option<Advertisement>,
 }
 
 impl AnnexCore {
+    /// (Re-)registers or drops the not-sharing advertisement to match the current state.
+    fn refresh_presence(&self) {
+        let mut p = self.presence.lock().unwrap();
+        // Unregister first: the record has the same name as a host's, and a fresh one picks up renames.
+        p.advert = None;
+        if p.enabled && !p.hosting {
+            match self.discovery() {
+                Ok(d) => {
+                    p.advert = d.advertise(&self.core.device_name(), annex_session::DEFAULT_PORT, false, false).ok();
+                }
+                Err((_, e)) => tracing::warn!("presence advertisement failed: {e}"),
+            }
+        }
+    }
+
+    /// A host starts advertising this device as sharing: drop the presence record first.
+    fn begin_hosting(&self) {
+        let mut p = self.presence.lock().unwrap();
+        p.hosting = true;
+        p.advert = None;
+    }
+
+    fn end_hosting(&self) {
+        self.presence.lock().unwrap().hosting = false;
+        self.refresh_presence();
+    }
+
     fn discovery(&self) -> Result<Arc<Discovery>, (i32, String)> {
         let mut d = self.discovery.lock().unwrap();
         if let Some(d) = d.as_ref() {
@@ -212,7 +249,7 @@ fn new_core(core: Arc<Core>, out: *mut *mut AnnexCore) -> Result<i32, (i32, Stri
         .enable_all()
         .build()
         .map_err(failed)?;
-    let boxed = Box::new(AnnexCore { rt, core, discovery: Mutex::new(None) });
+    let boxed = Box::new(AnnexCore { rt, core, discovery: Mutex::new(None), presence: Mutex::default() });
     // SAFETY: checked non-null by callers.
     unsafe { *out = Box::into_raw(boxed) };
     Ok(ANNEX_OK)
@@ -311,6 +348,18 @@ pub unsafe extern "C" fn annex_core_set_device_name(core: *const AnnexCore, name
         Ok(n) => out_string(&c.core.set_device_name(n)),
         Err(_) => std::ptr::null_mut(),
     }
+}
+
+/// Shows this device under "Nearby" on other computers while Annex is open (as "not sharing"
+/// until a host starts). Call with `visible = true` once at startup, and again after a rename.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_set_presence(core: *const AnnexCore, visible: bool) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        c.presence.lock().unwrap().enabled = visible;
+        c.refresh_presence();
+        Ok(ANNEX_OK)
+    })
 }
 
 /// `AB12 CD34 ...` form of a fingerprint, for display.
@@ -425,7 +474,9 @@ pub unsafe extern "C" fn annex_host_start(
         let handle =
             c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, callbacks.event_sink())).map_err(failed)?;
         let advert = if advertise {
-            Some(c.discovery()?.advertise_host(&c.core.device_name(), handle.port()).map_err(failed)?)
+            c.begin_hosting();
+            let d = c.discovery()?;
+            Some(d.advertise(&c.core.device_name(), handle.port(), true, extend).map_err(failed)?)
         } else {
             None
         };
@@ -554,10 +605,17 @@ pub unsafe extern "C" fn annex_host_free(host: *mut AnnexHost) {
     if let Some(s) = &h.screen {
         s.stop();
     }
+    let advertised = h._advert.is_some();
     if let Some(c) = unsafe { h.core.as_ref() } {
         c.rt.block_on(h.handle.stop());
     }
     h.callbacks.clear();
+    let core = h.core;
+    drop(h);
+    // Back to "open, not sharing" on other computers' Nearby lists.
+    if advertised && let Some(c) = unsafe { core.as_ref() } {
+        c.end_hosting();
+    }
 }
 
 /// Windows: JSON array of monitors `[{index, name, width, height, refresh_hz, primary}]`,
@@ -576,6 +634,20 @@ pub extern "C" fn annex_win_monitors_json() -> *mut c_char {
         })
         .collect();
     out_string(&serde_json::Value::Array(list).to_string())
+}
+
+/// Windows: why Extend (this PC as a host adding extra displays) is or isn't available:
+/// `{"state": "ready" | "not_running" | "not_installed", "problem": <Device Manager code>, "test_signing": bool}`.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+pub extern "C" fn annex_win_extend_status_json() -> *mut c_char {
+    let (state, test_signing) = annex_media_win::driver_state();
+    let (state, problem) = match state {
+        annex_media_win::DriverState::Ready => ("ready", 0),
+        annex_media_win::DriverState::NotRunning { problem } => ("not_running", problem),
+        annex_media_win::DriverState::NotInstalled => ("not_installed", 0),
+    };
+    out_string(&serde_json::json!({ "state": state, "problem": problem, "test_signing": test_signing }).to_string())
 }
 
 /// Windows: host a monitor. The core captures (Windows.Graphics.Capture), encodes (hardware
@@ -607,7 +679,9 @@ pub unsafe extern "C" fn annex_host_start_screen(
         let (host, screen) =
             win_host::start(c, monitor, port, prefer_hardware, callbacks.event_sink()).map_err(failed)?;
         let advert = if advertise {
-            Some(c.discovery()?.advertise_host(&c.core.device_name(), host.port()).map_err(failed)?)
+            c.begin_hosting();
+            let d = c.discovery()?;
+            Some(d.advertise(&c.core.device_name(), host.port(), true, host.extend_supported()).map_err(failed)?)
         } else {
             None
         };

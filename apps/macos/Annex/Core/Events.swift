@@ -78,8 +78,14 @@ struct PeerInfo: Decodable, Identifiable, Hashable {
     let port: Int
     let fingerprint: String?
     let protoMajor: Int?
+    /// Accepting viewers now; false = Annex is open there but not sharing. Older peers omit it.
+    let sharing: Bool?
+    /// Can add an extra display (Extend); nil if it doesn't say.
+    let extend: Bool?
 
     var id: String { instance }
+    var isSharing: Bool { sharing ?? true }
+    var canExtend: Bool { extend ?? true }
 
     /// Every address as `host:port` (IPv6 bracketed), comma-separated. The core races them and
     /// prefers a direct cable (link-local address).

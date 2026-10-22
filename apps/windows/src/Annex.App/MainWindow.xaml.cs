@@ -41,6 +41,9 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<ulong, (string Name, string Mode, bool Input)> _sessions = [];
     private StreamConfig? _hostStream;
     private string? _hostError;
+    private ExtendStatus? _extendStatus;
+    /// <summary>null = not checked yet.</summary>
+    private bool? _firewallAllowed;
 
     // Viewer state.
     private bool _extend;
@@ -104,6 +107,10 @@ public sealed partial class MainWindow : Window
             _discovery = new DiscoveryHandle(_core, e => _ui.TryEnqueue(() => OnDiscovery(e)));
             _trusted = [.. _core.TrustedPeers];
             RefreshMonitors();
+            // Show up under Nearby on other computers as soon as Annex is open.
+            _core.SetPresence(true);
+            _extendStatus = TryExtendStatus();
+            _ = CheckFirewallAsync();
         }
         catch (Exception ex)
         {
@@ -274,6 +281,7 @@ public sealed partial class MainWindow : Window
         }
         if (_hostError is not null)
             p.Children.Add(Ui.Info("Sharing problem", _hostError, InfoBarSeverity.Warning));
+        ExtendCard(p);
 
         if (_host is not null)
         {
@@ -329,6 +337,43 @@ public sealed partial class MainWindow : Window
             Ui.Switch(_settings.PreferHardwareEncoder, on => { _settings.PreferHardwareEncoder = on; _settings.Save(); }, enabled: _host is null)));
     }
 
+    private static ExtendStatus? TryExtendStatus()
+    {
+        try { return AnnexNative.ExtendStatus(); }
+        catch (Exception e) when (e is AnnexException or EntryPointNotFoundException) { return null; }
+    }
+
+    /// <summary>Whether other computers can be an extra display for this PC, and what to do if not.</summary>
+    private void ExtendCard(StackPanel p)
+    {
+        if (_extendStatus is not { } x) return;
+        switch (x.State)
+        {
+            case "ready":
+                p.Children.Add(Ui.Card("", "Extra displays: ready",
+                    "Other computers can choose “Be its extra display” to become a second screen for this PC."));
+                break;
+            case "not_installed":
+                p.Children.Add(Ui.Card("", "Extra displays: not set up",
+                    "To let another computer be a second screen for this PC, run the Annex installer again and tick “Install the Extend-mode display driver”. Showing this PC's screen works without it."));
+                break;
+            default:
+                var why = x.TestSigning
+                    ? $"The Annex display driver is installed but not running (Device Manager problem code {x.Problem}). Restart the PC; if it stays, reinstall the driver."
+                    : "The Annex display driver is installed, but Windows only loads it with test signing on (it isn't signed by Microsoft yet). In an administrator terminal run  bcdedit /set testsigning on  and restart. Showing this PC's screen works without it.";
+                var copy = new Button { Content = "Copy command" };
+                copy.Click += (_, _) =>
+                {
+                    var data = new DataPackage();
+                    data.SetText("bcdedit /set testsigning on");
+                    Clipboard.SetContent(data);
+                    copy.Content = "Copied";
+                };
+                p.Children.Add(Ui.Card("", "Extra displays: driver not loaded", why, x.TestSigning ? null : copy));
+                break;
+        }
+    }
+
     private string ShareStatus()
     {
         if (_host is null) return "Other computers can't see this PC.";
@@ -337,15 +382,100 @@ public sealed partial class MainWindow : Window
     }
 
     /// The two things you can do with another computer, as buttons that say what happens.
-    private StackPanel ConnectButtons(Action<bool> connect)
+    private StackPanel ConnectButtons(Action<bool> connect, PeerInfo? peer = null)
     {
         var show = Ui.Button("Show its screen here", () => connect(false), accent: true);
         var extend = Ui.Button("Be its extra display", () => connect(true));
         ToolTipService.SetToolTip(show, "See and use the other computer's screen on this PC");
-        ToolTipService.SetToolTip(extend, "This PC becomes a second screen for the other computer");
-        show.IsEnabled = extend.IsEnabled = _viewer is null;
+        ToolTipService.SetToolTip(extend, peer?.Extend == false
+            ? $"{peer.Name} can't add an extra display (on Windows it needs the Annex display driver)"
+            : "This PC becomes a second screen for the other computer");
+        var sharing = peer?.Sharing ?? true;
+        show.IsEnabled = _viewer is null && sharing;
+        extend.IsEnabled = _viewer is null && sharing && peer?.Extend != false;
         return Ui.Row(show, extend);
     }
+
+    private string PeerSubtitle(PeerInfo h) =>
+        !h.Sharing ? "Annex is open there, but it isn't sharing. Click Start sharing on it first."
+        : (IsPaired(h) ? "Paired" : "Not paired yet · you'll enter a PIN the first time")
+          + (h.Extend == false ? " · can't be extended (no display driver)" : "");
+
+    /// <summary>Shown while nothing (or nothing sharing) is found: what usually blocks discovery.</summary>
+    private void NotShowingUp(StackPanel p)
+    {
+        p.Children.Add(Ui.Section("Not showing up?"));
+        p.Children.Add(Ui.Card("", "Both computers on the same network",
+            "Same Wi-Fi or router, or a cable between them. Guest Wi-Fi and VPNs often block computers from seeing each other."));
+        if (_firewallAllowed != true)
+        {
+            var allow = Ui.Button("Allow", () => _ = AllowThroughFirewallAsync());
+            p.Children.Add(Ui.Card("", "Allow Annex through Windows Firewall",
+                _firewallAllowed == false
+                    ? "Windows Firewall is blocking Annex, so this PC can't find other computers or be found. Click Allow and confirm the prompt."
+                    : "If Windows asked whether to allow Annex and it was dismissed, other computers stay hidden.", allow));
+        }
+        var network = Ui.Button("Open", () => _ = Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:network-status")));
+        p.Children.Add(Ui.Card("", "Network set to Private",
+            "On a Public network Windows hides this PC. Open your network's properties and choose Private.", network));
+        p.Children.Add(Ui.Card("", "Still nothing?", "Use Connect by address below with an address the other computer shows."));
+    }
+
+    private const string FirewallRule = "Annex";
+
+    private static async Task<bool> RunNetshAsync(string args, bool elevated)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("netsh", args)
+            {
+                UseShellExecute = elevated,
+                Verb = elevated ? "runas" : "",
+                CreateNoWindow = true,
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            if (proc is null) return false;
+            await proc.WaitForExitAsync();
+            return proc.ExitCode == 0;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return false; // UAC prompt declined
+        }
+    }
+
+    private async Task CheckFirewallAsync()
+    {
+        var ok = await RunNetshAsync($"advfirewall firewall show rule name=\"{FirewallRule}\"", elevated: false);
+        _ui.TryEnqueue(() =>
+        {
+            _firewallAllowed = ok;
+            RenderIf("connect", "share");
+        });
+    }
+
+    private async Task AllowThroughFirewallAsync()
+    {
+        var exe = Environment.ProcessPath ?? "";
+        await RunNetshAsync($"advfirewall firewall add rule name=\"{FirewallRule}\" dir=in action=allow program=\"{exe}\" profile=private,domain enable=yes", elevated: true);
+        await CheckFirewallAsync();
+    }
+
+    /// <summary>Session-end codes from the core, in words.</summary>
+    private static string FriendlyReason(string reason, string peer) => reason switch
+    {
+        "extend_not_supported" => $"{peer} can't add an extra display. On Windows it needs the Annex display driver (see Share this PC on that computer). Try “Show its screen here” instead.",
+        "busy" => $"{peer} is already sharing with 4 computers.",
+        "pairing_failed" => "The PIN didn't match. Try again and type the PIN shown on the other computer.",
+        "pairing_cancelled" => "Pairing was cancelled on the other computer.",
+        "pairing_locked" => "Too many wrong PINs. Pairing is paused for 10 minutes.",
+        "host_stopped" => $"{peer} stopped sharing.",
+        "host_ended_session" => $"{peer} ended the session.",
+        _ when reason.Contains("refused", StringComparison.OrdinalIgnoreCase) || reason.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+            => $"Couldn't reach {peer}. Check that it's sharing and that both are on the same network ({reason}).",
+        _ => reason,
+    };
 
     private void ConnectPage(StackPanel p)
     {
@@ -359,8 +489,10 @@ public sealed partial class MainWindow : Window
                 "Open Annex on the other computer and click Start sharing. It appears here automatically.",
                 new ProgressRing { IsActive = true, Width = 20, Height = 20 }));
         foreach (var h in _hosts)
-            p.Children.Add(Ui.Card("", h.Name, IsPaired(h) ? "Paired" : "Not paired yet · you'll enter a PIN the first time",
-                ConnectButtons(extend => { _extend = extend; ConnectToPeer(h); })));
+            p.Children.Add(Ui.Card("", h.Name, PeerSubtitle(h),
+                ConnectButtons(extend => { _extend = extend; ConnectToPeer(h); }, h)));
+        if (_hosts.Count == 0 || _hosts.All(h => !h.Sharing))
+            NotShowingUp(p);
 
         p.Children.Add(Ui.Section("Connect by address"));
         p.Children.Add(Ui.Card("", "Address", "Shown on the other computer under How to connect. Use it when the computer isn't listed under Nearby.",
@@ -388,9 +520,12 @@ public sealed partial class MainWindow : Window
             ? "Paired with this PC. Connects without a PIN."
             : $"On your network. The first time, you'll enter the PIN shown on {peer.Name}."));
         ViewerStatus(p);
+        if (!peer.Sharing)
+            p.Children.Add(Ui.Info("Not sharing", $"Annex is open on {peer.Name}, but it isn't sharing. Click Start sharing there, then come back.", InfoBarSeverity.Informational));
         var show = Ui.Button("Show its screen", () => { _extend = false; ConnectToPeer(peer); }, accent: true);
         var extend = Ui.Button("Be its extra display", () => { _extend = true; ConnectToPeer(peer); });
-        show.IsEnabled = extend.IsEnabled = _viewer is null;
+        show.IsEnabled = _viewer is null && peer.Sharing;
+        extend.IsEnabled = _viewer is null && peer.Sharing && peer.Extend != false;
         p.Children.Add(Ui.Card("", "Show its screen here", $"See and use {peer.Name}'s screen on this PC.", show));
         p.Children.Add(Ui.Card("", "Be its extra display", $"This PC becomes a second screen for {peer.Name}. Drag windows onto it from there.", extend));
         p.Children.Add(Ui.Section("Details"));
@@ -529,6 +664,7 @@ public sealed partial class MainWindow : Window
         var stored = _core.SetDeviceName(trimmed.Length == 0 ? Environment.MachineName : trimmed);
         _settings.DeviceName = trimmed.Length == 0 ? null : stored;
         _settings.Save();
+        _core.SetPresence(true);
         _nameBox.Text = _settings.DeviceName ?? "";
         // Discovery advertises the name: re-advertise if sharing and nobody is connected.
         if (_host is not null && _sessions.Count == 0)
@@ -779,7 +915,7 @@ public sealed partial class MainWindow : Window
                 _latency = $"Latency {l.P50Ms:F0} ms (p95 {l.P95Ms:F0} ms) · {l.Fps:F0} fps";
                 break;
             case CoreEvent.SessionEnded(_, var reason):
-                _viewerStatus = reason == "user" ? null : $"Disconnected: {reason}";
+                _viewerStatus = reason == "user" ? null : FriendlyReason(reason, _viewingName);
                 _latency = null;
                 _controlling = false;
                 if (_tray is not null) _tray.Tooltip = "Annex";

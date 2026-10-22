@@ -86,6 +86,10 @@ final class CoreClient {
     var fingerprint: String { takeString(annex_core_fingerprint(raw)) }
     var deviceName: String { takeString(annex_core_device_name(raw)) }
 
+    /// Lists this device under Nearby on other computers while Annex is open (as not sharing until
+    /// hosting starts). Call at startup and after a rename.
+    func setPresence(_ visible: Bool) { annex_core_set_presence(raw, visible) }
+
     /// Renames this device; returns the name as stored (cleaned and shortened).
     @discardableResult
     func setDeviceName(_ name: String) -> String { takeString(annex_core_set_device_name(raw, name)) }

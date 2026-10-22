@@ -164,7 +164,9 @@ private struct ConnectCard: View {
                         Image(systemName: "desktopcomputer")
                             .foregroundStyle(Color.accentColor)
                             .frame(width: 18)
-                        Text(peer.name).lineLimit(1)
+                        Text(peer.isSharing ? peer.name : "\(peer.name) (not sharing)")
+                            .lineLimit(1)
+                            .foregroundStyle(peer.isSharing ? .primary : .secondary)
                         Spacer()
                         Button {
                             model.extendMode = false
@@ -176,10 +178,11 @@ private struct ConnectCard: View {
                             model.connect(to: peer)
                         } label: { Image(systemName: "rectangle.split.2x1") }
                         .help("Be its extra display")
+                        .disabled(!peer.canExtend)
                     }
                     .font(.system(size: 13))
                     .controlSize(.small)
-                    .disabled(model.isViewing)
+                    .disabled(model.isViewing || !peer.isSharing)
                     .padding(.vertical, 4)
                     .padding(.horizontal, 8)
                     .background(RoundedRectangle(cornerRadius: 7)

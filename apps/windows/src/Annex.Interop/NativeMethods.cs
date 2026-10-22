@@ -88,6 +88,12 @@ internal static unsafe partial class NativeMethods
     /// <summary>Windows only.</summary>
     [LibraryImport(Lib)] public static partial nint annex_win_monitors_json();
 
+    /// <summary>Windows only.</summary>
+    [LibraryImport(Lib)] public static partial nint annex_win_extend_status_json();
+
+    [LibraryImport(Lib)]
+    public static partial int annex_core_set_presence(nint core, [MarshalAs(UnmanagedType.U1)] bool visible);
+
     /// <summary>Windows only: the core captures and encodes the monitor while a viewer is connected.</summary>
     [LibraryImport(Lib)]
     public static partial int annex_host_start_screen(nint core, uint monitorIndex, ushort port,

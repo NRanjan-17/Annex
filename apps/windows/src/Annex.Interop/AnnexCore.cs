@@ -71,6 +71,10 @@ public static class AnnexNative
     /// <summary>Windows only: connected monitors, main display first.</summary>
     public static IReadOnlyList<MonitorInfo> Monitors() =>
         AnnexJson.Deserialize<MonitorInfo[]>(NativeMethods.TakeString(NativeMethods.annex_win_monitors_json()));
+
+    /// <summary>Windows only: whether this PC can add extra displays for viewers (Extend), and why not.</summary>
+    public static ExtendStatus ExtendStatus() =>
+        AnnexJson.Deserialize<ExtendStatus>(NativeMethods.TakeString(NativeMethods.annex_win_extend_status_json()));
 }
 
 /// <summary>Identity and trust store. Create one per process.</summary>
@@ -101,6 +105,10 @@ public sealed class CoreClient : IDisposable
         AnnexJson.Deserialize<TrustedPeer[]>(NativeMethods.TakeString(NativeMethods.annex_core_trusted_peers_json(Raw)));
 
     public bool Untrust(string fingerprint) => NativeMethods.Check(NativeMethods.annex_core_untrust(Raw, fingerprint)) == 1;
+
+    /// <summary>Lists this device under Nearby on other computers while Annex is open (as not sharing until
+    /// a host starts). Call at startup and after a rename.</summary>
+    public void SetPresence(bool visible) => NativeMethods.Check(NativeMethods.annex_core_set_presence(Raw, visible));
 
     /// <summary>Renames this device; returns the name as stored (cleaned and shortened).</summary>
     public string SetDeviceName(string name) => NativeMethods.TakeString(NativeMethods.annex_core_set_device_name(Raw, name));

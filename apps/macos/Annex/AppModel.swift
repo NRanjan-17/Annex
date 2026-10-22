@@ -83,6 +83,8 @@ final class AppModel: ObservableObject {
             let core = try CoreClient(dataDirectory: Self.dataDirectory, deviceName: name)
             self.core = core
             deviceName = core.deviceName
+            // Show up under Nearby on other computers as soon as Annex is open.
+            core.setPresence(true)
             fingerprintDisplay = Annex.displayFingerprint(core.fingerprint)
             discovery = try DiscoveryHandle(core: core) { [weak self] e in
                 DispatchQueue.main.async { self?.handleDiscovery(e) }
@@ -103,6 +105,7 @@ final class AppModel: ObservableObject {
         let stored = core.setDeviceName(trimmed.isEmpty ? Self.systemName : trimmed)
         settings.customDeviceName = trimmed.isEmpty ? nil : stored
         deviceName = stored
+        core.setPresence(true)
         // Discovery advertises the name; re-advertise if we're sharing.
         if isHosting, hostStatus.viewerName == nil {
             stopHosting()
@@ -223,7 +226,7 @@ final class AppModel: ObservableObject {
         case .latencyStats(let l):
             latency = l
         case .sessionEnded(_, let reason):
-            viewerStatus = reason == "user" ? nil : "Disconnected: \(reason)"
+            viewerStatus = reason == "user" ? nil : Self.friendlyReason(reason, peer: viewerPeerName)
             viewer = nil
             let w = viewerWindow
             viewerWindow = nil
@@ -302,6 +305,26 @@ final class AppModel: ObservableObject {
         _ = try? core?.setAllowInput(peer.fingerprint, allow)
         refreshTrusted()
         refreshPermissions()
+    }
+
+    /// Session-end codes from the core, in words.
+    static func friendlyReason(_ reason: String, peer: String) -> String {
+        switch reason {
+        case "extend_not_supported":
+            return "\(peer) can't add an extra display. On Windows it needs the Annex display driver (see Share this PC there). Try Show Its Screen instead."
+        case "busy": return "\(peer) is already sharing with 4 computers."
+        case "pairing_failed": return "The PIN didn't match. Try again with the PIN shown on the other computer."
+        case "pairing_cancelled": return "Pairing was cancelled on the other computer."
+        case "pairing_locked": return "Too many wrong PINs. Pairing is paused for 10 minutes."
+        case "host_stopped": return "\(peer) stopped sharing."
+        case "host_ended_session": return "\(peer) ended the session."
+        default:
+            let r = reason.lowercased()
+            if r.contains("refused") || r.contains("timed out") || r.contains("timeout") {
+                return "Couldn't reach \(peer). Check that it's sharing and on the same network (\(reason))."
+            }
+            return reason
+        }
     }
 
     func revoke(_ peer: TrustedPeer) {

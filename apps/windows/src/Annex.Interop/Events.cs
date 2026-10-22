@@ -13,13 +13,20 @@ public sealed record DisplayInfo(
 
 public sealed record LatencyStats(int Frames, double Fps, double P50Ms, double P95Ms, double P99Ms, double MaxMs, double? ClockRttMs = null);
 
-public sealed record PeerInfo(string Instance, string Name, string[] Addresses, int Port, string? Fingerprint = null, int? ProtoMajor = null)
+/// <summary><c>Sharing</c>: accepting viewers now (false = Annex is open there but not sharing).
+/// <c>Extend</c>: it can add an extra display (null if it doesn't say).</summary>
+public sealed record PeerInfo(string Instance, string Name, string[] Addresses, int Port, string? Fingerprint = null, int? ProtoMajor = null,
+    bool Sharing = true, bool? Extend = null)
 {
     /// <summary>Every address as <c>host:port</c> (IPv6 bracketed), comma-separated; the core races them and
     /// prefers a direct cable.</summary>
     public string? ConnectAddress => Addresses.Length == 0 ? null
         : string.Join(",", Addresses.Select(a => a.Contains(':') ? $"[{a}]:{Port}" : $"{a}:{Port}"));
 }
+
+/// <summary>Windows: <c>State</c> is "ready", "not_running" (installed but not loaded; <c>Problem</c> is the
+/// Device Manager code) or "not_installed".</summary>
+public sealed record ExtendStatus(string State, uint Problem, bool TestSigning);
 
 /// <summary><c>AllowInput</c>: host side, the device may control this PC's mouse and keyboard.</summary>
 public sealed record TrustedPeer(string Fingerprint, string Name, ulong AddedAt, ulong LastSeen, bool AllowInput = false);
@@ -124,6 +131,7 @@ internal sealed record InstanceDto(string Instance);
 [JsonSerializable(typeof(CoreEvent.PairingFinished))]
 [JsonSerializable(typeof(CoreEvent.SessionStarted))]
 [JsonSerializable(typeof(CoreEvent.InputAllowed))]
+[JsonSerializable(typeof(ExtendStatus))]
 [JsonSerializable(typeof(LatencyStats))]
 [JsonSerializable(typeof(PeerInfo))]
 [JsonSerializable(typeof(DisplayInfo))]

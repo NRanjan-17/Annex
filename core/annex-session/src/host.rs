@@ -184,6 +184,11 @@ impl HostHandle {
         }
     }
 
+    /// Whether this host accepts Extend sessions (it can create virtual displays).
+    pub fn extend_supported(&self) -> bool {
+        self.shared.extend
+    }
+
     pub fn has_session(&self) -> bool {
         !self.shared.sessions.lock().unwrap().is_empty()
     }
