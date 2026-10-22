@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT
-#include <initguid.h>  // defines GUID_DEVINTERFACE_ANNEX_IDD in this translation unit
-
 #include "Driver.h"
 
 #include <algorithm>
 #include <cstring>
+
+// Define (not just declare) our interface GUID in this one translation unit. initguid.h comes after every other
+// header so the SDK's own DEFINE_GUIDs (e.g. winioctl.h) stay declarations.
+#include <initguid.h>
+DEFINE_GUID(GUID_DEVINTERFACE_ANNEX_IDD, ANNEX_IDD_INTERFACE_GUID);
 
 using Microsoft::WRL::ComPtr;
 
