@@ -411,6 +411,5 @@ impl Drop for HardwareEncoder {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        unsafe {}
     }
 }
