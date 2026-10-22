@@ -259,7 +259,9 @@ pub enum DriverState {
     Ready,
     /// The device exists but Windows didn't start it. `problem` is its Device Manager problem code
     /// (52 = signature not accepted, typical without test signing).
-    NotRunning { problem: u32 },
+    NotRunning {
+        problem: u32,
+    },
     NotInstalled,
 }
 
@@ -282,7 +284,8 @@ pub fn driver_state() -> (DriverState, bool) {
             return (state, test_signing);
         };
         for i in 0.. {
-            let mut info = SP_DEVINFO_DATA { cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32, ..Default::default() };
+            let mut info =
+                SP_DEVINFO_DATA { cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32, ..Default::default() };
             if SetupDiEnumDeviceInfo(set, i, &mut info).is_err() {
                 break;
             }
@@ -290,7 +293,7 @@ pub fn driver_state() -> (DriverState, bool) {
             if SetupDiGetDeviceRegistryPropertyW(set, &info, SPDRP_HARDWAREID, None, Some(&mut buf), None).is_err() {
                 continue;
             }
-            let wide: Vec<u16> = buf.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            let wide: Vec<u16> = buf.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
             if !String::from_utf16_lossy(&wide).split('\0').any(|id| id.eq_ignore_ascii_case("Root\\AnnexIdd")) {
                 continue;
             }

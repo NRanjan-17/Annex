@@ -61,7 +61,15 @@ final class AnnexBTests: XCTestCase {
         let peer = #"{"type":"peer_found","instance":"A._annex._tcp.local.","name":"A","addresses":["fe80::1"],"port":47800,"fingerprint":null,"proto_major":1}"#
         guard case .peerFound(let p) = CoreEvent.decode(Data(peer.utf8)) else { return XCTFail("wrong case") }
         XCTAssertEqual(p.connectAddress, "[fe80::1]:47800")
-        let multi = PeerInfo(instance: "x", name: "x", addresses: ["192.168.1.5", "169.254.3.4"], port: 9, fingerprint: nil, protoMajor: nil)
+        // Older peers don't send the flags: they only advertised while sharing.
+        XCTAssertTrue(p.isSharing)
+        XCTAssertTrue(p.canExtend)
+        let idle = #"{"type":"peer_found","instance":"B","name":"B","addresses":[],"port":47800,"fingerprint":null,"proto_major":1,"sharing":false,"extend":false}"#
+        guard case .peerFound(let q) = CoreEvent.decode(Data(idle.utf8)) else { return XCTFail("wrong case") }
+        XCTAssertFalse(q.isSharing)
+        XCTAssertFalse(q.canExtend)
+        let multi = PeerInfo(instance: "x", name: "x", addresses: ["192.168.1.5", "169.254.3.4"], port: 9, fingerprint: nil,
+                             protoMajor: nil, sharing: true, extend: nil)
         XCTAssertEqual(multi.connectAddress, "192.168.1.5:9,169.254.3.4:9")
         let hint = #"{"type":"bitrate_hint","session_id":2,"scale_percent":80}"#
         XCTAssertEqual(CoreEvent.decode(Data(hint.utf8)), .bitrateHint(sessionId: 2, scalePercent: 80))
