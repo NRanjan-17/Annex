@@ -183,10 +183,13 @@ impl AnnexCore {
 }
 
 pub struct AnnexHost {
-    handle: HostHandle,
+    handle: Arc<HostHandle>,
     callbacks: Arc<Callbacks>,
     _advert: Option<Advertisement>,
     core: *const AnnexCore,
+    /// Windows: the capture/encode pipeline owned by the core (annex_host_start_screen).
+    #[cfg(windows)]
+    screen: Option<Arc<win_host::ScreenState>>,
 }
 
 pub struct AnnexViewer {
@@ -384,7 +387,14 @@ pub unsafe extern "C" fn annex_host_start(
         } else {
             None
         };
-        let host = Box::new(AnnexHost { handle, callbacks, _advert: advert, core });
+        let host = Box::new(AnnexHost {
+            handle: Arc::new(handle),
+            callbacks,
+            _advert: advert,
+            core,
+            #[cfg(windows)]
+            screen: None,
+        });
         unsafe { *out = Box::into_raw(host) };
         Ok(ANNEX_OK)
     })
@@ -446,10 +456,154 @@ pub unsafe extern "C" fn annex_host_free(host: *mut AnnexHost) {
         return;
     }
     let h = unsafe { Box::from_raw(host) };
+    #[cfg(windows)]
+    if let Some(s) = &h.screen {
+        s.stop();
+    }
     if let Some(c) = unsafe { h.core.as_ref() } {
         c.rt.block_on(h.handle.stop());
     }
     h.callbacks.clear();
+}
+
+/// Windows: JSON array of monitors `[{index, name, width, height, refresh_hz, primary}]`,
+/// primary first.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+pub extern "C" fn annex_win_monitors_json() -> *mut c_char {
+    let list: Vec<serde_json::Value> = annex_media_win::monitors()
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            serde_json::json!({
+                "index": i, "name": m.name, "width": m.width, "height": m.height,
+                "refresh_hz": m.refresh_hz, "primary": m.primary,
+            })
+        })
+        .collect();
+    out_string(&serde_json::Value::Array(list).to_string())
+}
+
+/// Windows: host a monitor. The core captures (Windows.Graphics.Capture), encodes (hardware
+/// H.264 when available) and streams while a viewer is connected. Events are the same as
+/// annex_host_start's.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn annex_host_start_screen(
+    core: *const AnnexCore,
+    monitor_index: u32,
+    port: u16,
+    advertise: bool,
+    prefer_hardware: bool,
+    on_event: AnnexEventCallback,
+    ctx: *mut c_void,
+    out: *mut *mut AnnexHost,
+) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        if out.is_null() {
+            return Err(invalid("out is null"));
+        }
+        let monitor = annex_media_win::monitors()
+            .into_iter()
+            .nth(monitor_index as usize)
+            .ok_or_else(|| invalid("no such monitor"))?;
+        let callbacks = Callbacks::new(on_event, None, ctx);
+        let (host, screen) =
+            win_host::start(c, monitor, port, prefer_hardware, callbacks.event_sink()).map_err(failed)?;
+        let advert = if advertise {
+            Some(c.discovery()?.advertise_host(c.core.device_name(), host.port()).map_err(failed)?)
+        } else {
+            None
+        };
+        let h = Box::new(AnnexHost { handle: host, callbacks, _advert: advert, core, screen: Some(screen) });
+        unsafe { *out = Box::into_raw(h) };
+        Ok(ANNEX_OK)
+    })
+}
+
+#[cfg(windows)]
+mod win_host {
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+    use annex_media_win::{HostPipeline, HostPipelineConfig, Monitor, stream_size};
+    use annex_session::{Codec, Event, EventSink, HostConfig, HostHandle, StreamConfig};
+
+    use crate::AnnexCore;
+
+    /// Pipeline lifecycle follows the session: started on `session_started`, dropped on
+    /// `session_ended`, asked for an IDR on `keyframe_requested`.
+    pub struct ScreenState {
+        cfg: HostPipelineConfig,
+        host: OnceLock<Weak<HostHandle>>,
+        pipeline: Mutex<Option<HostPipeline>>,
+    }
+
+    impl ScreenState {
+        fn start_pipeline(self: &Arc<Self>) {
+            let Some(host) = self.host.get().and_then(|w| w.upgrade()) else { return };
+            let clock: Arc<dyn Fn() -> i64 + Send + Sync> = Arc::new(annex_session::clock::now_us);
+            let output = Arc::new(move |f: annex_media_win::EncodedFrame| {
+                host.submit_frame(&f.data, f.capture_us, f.keyframe);
+            });
+            match HostPipeline::start(self.cfg.clone(), clock, output) {
+                Ok(p) => *self.pipeline.lock().unwrap() = Some(p),
+                Err(e) => tracing::error!("screen capture failed to start: {e}"),
+            }
+        }
+
+        pub fn stop(&self) {
+            self.pipeline.lock().unwrap().take();
+        }
+
+        fn on_event(self: &Arc<Self>, e: &Event) {
+            match e {
+                Event::SessionStarted { .. } => {
+                    // Capture setup touches COM/WinRT; keep it off the async runtime threads.
+                    let me = self.clone();
+                    std::thread::spawn(move || me.start_pipeline());
+                }
+                Event::SessionEnded { .. } => self.stop(),
+                Event::KeyframeRequested => {
+                    if let Some(p) = self.pipeline.lock().unwrap().as_ref() {
+                        p.request_keyframe();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn start(
+        c: &AnnexCore,
+        monitor: Monitor,
+        port: u16,
+        prefer_hardware: bool,
+        app_events: EventSink,
+    ) -> Result<(Arc<HostHandle>, Arc<ScreenState>), annex_session::SessionError> {
+        // Hardware encoders handle 1440p60 comfortably; the software fallback is sized for 1080p.
+        let (max_w, max_h) = if prefer_hardware { (2560, 1600) } else { (1920, 1200) };
+        let (width, height) = stream_size(monitor.width, monitor.height, max_w, max_h);
+        let fps = monitor.refresh_hz.clamp(30, 60);
+        let bitrate = (width * height * fps / 8).clamp(4_000_000, 40_000_000);
+        let state = Arc::new(ScreenState {
+            cfg: HostPipelineConfig { monitor, width, height, fps, bitrate, prefer_hardware },
+            host: OnceLock::new(),
+            pipeline: Mutex::new(None),
+        });
+        let events: EventSink = {
+            let state = state.clone();
+            Arc::new(move |e: Event| {
+                state.on_event(&e);
+                app_events(e);
+            })
+        };
+        let cfg = HostConfig { port, stream: StreamConfig { codec: Codec::H264, width, height, fps } };
+        let handle = Arc::new(c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, events))?);
+        let _ = state.host.set(Arc::downgrade(&handle));
+        Ok((handle, state))
+    }
 }
 
 // ---------------------------------------------------------------------------------------

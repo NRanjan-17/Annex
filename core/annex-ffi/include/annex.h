@@ -79,6 +79,13 @@ int32_t annex_host_set_stream(const AnnexHost *host, const char *codec, uint32_t
 int32_t annex_host_submit_frame(const AnnexHost *host, const uint8_t *data, size_t len,
                                 int64_t capture_ts_us, bool keyframe);
 void annex_host_free(AnnexHost *host);
+#ifdef _WIN32
+/* Windows: JSON array of monitors [{index, name, width, height, refresh_hz, primary}]. */
+char *annex_win_monitors_json(void);
+/* Windows: host a monitor; the core captures and encodes while a viewer is connected. */
+int32_t annex_host_start_screen(const AnnexCore *core, uint32_t monitor_index, uint16_t port, bool advertise,
+                                bool prefer_hardware, AnnexEventCallback on_event, void *ctx, AnnexHost **out);
+#endif
 
 /* ---- Viewer ----------------------------------------------------------------------- */
 /* address: "host", "host:port", "ip" or "ip:port". expected_fingerprint and display_json
