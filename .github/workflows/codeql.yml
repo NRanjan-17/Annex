@@ -19,6 +19,8 @@ jobs:
   analyze:
     name: CodeQL (${{ matrix.language }})
     runs-on: ${{ matrix.os }}
+    # Swift support lags new Xcode releases; don't let it fail the scan of the other languages.
+    continue-on-error: ${{ matrix.language == 'swift' }}
     permissions:
       contents: read
       # The analyze step reads its own workflow run (required on private repositories).
@@ -42,8 +44,11 @@ jobs:
         if: matrix.language == 'swift'
         run: |
           rustup show active-toolchain || rustup toolchain install
-          xcodebuild build -project apps/macos/Annex.xcodeproj -scheme Annex -destination 'platform=macOS' \
-            -derivedDataPath apps/macos/build/DerivedData
+          # A clean, non-explicit-modules build: CodeQL's Swift extractor can't follow explicit
+          # module builds (Xcode 16+ default) or sources skipped by an incremental build.
+          xcodebuild clean build -project apps/macos/Annex.xcodeproj -scheme Annex -destination 'platform=macOS' \
+            -derivedDataPath apps/macos/build/DerivedData \
+            SWIFT_ENABLE_EXPLICIT_MODULES=NO COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGNING_ALLOWED=NO
       - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: /language:${{ matrix.language }}
