@@ -3,9 +3,9 @@ use std::process::Command;
 
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
     DICD_GENERATE_ID, DIF_REGISTERDEVICE, DiUninstallDevice, GUID_DEVCLASS_DISPLAY, HDEVINFO, INSTALLFLAG_FORCE,
-    SETUP_DI_GET_CLASS_DEVS_FLAGS, SP_DEVINFO_DATA, SPDRP_HARDWAREID, SetupDiCallClassInstaller,
-    SetupDiCreateDeviceInfoList, SetupDiCreateDeviceInfoW, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
-    SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW, SetupDiSetDeviceRegistryPropertyW,
+    INSTALLFLAG_NONINTERACTIVE, SETUP_DI_GET_CLASS_DEVS_FLAGS, SP_DEVINFO_DATA, SPDRP_HARDWAREID,
+    SetupDiCallClassInstaller, SetupDiCreateDeviceInfoList, SetupDiCreateDeviceInfoW, SetupDiDestroyDeviceInfoList,
+    SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiGetDeviceRegistryPropertyW, SetupDiSetDeviceRegistryPropertyW,
     UpdateDriverForPlugAndPlayDevicesW,
 };
 use windows::Win32::Foundation::HWND;
@@ -101,11 +101,12 @@ fn install(inf: &Path) -> Result<(), String> {
             None,
             &HSTRING::from(HARDWARE_ID),
             &HSTRING::from(inf_path.as_str()),
-            INSTALLFLAG_FORCE,
+            // Never show "can't verify the publisher": fail instead (a dialog would hang silent installs).
+            INSTALLFLAG_FORCE | INSTALLFLAG_NONINTERACTIVE,
             Some(&mut reboot),
         )
         .map_err(|e| {
-            format!("installing the driver failed: {e} (is test signing on, or is the package attestation-signed?)")
+            format!("installing the driver failed: {e} (is the package signed for this PC? see driver-trust.ps1)")
         })?;
         println!("installed{}", if reboot.as_bool() { " (restart required)" } else { "" });
     }

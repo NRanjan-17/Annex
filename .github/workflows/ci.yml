@@ -164,6 +164,7 @@ jobs:
       # Installs the real installer and launches Annex the way a user would: it must start, keep
       # responding and show its window. Logs, stacks and a screenshot are kept either way.
       - name: Smoke test (install and launch)
+        timeout-minutes: 12
         shell: pwsh
         run: scripts/dev/smoke-windows.ps1 -Installer (Get-ChildItem dist/Annex-Setup-*-x64.exe).FullName -OutDir smoke
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

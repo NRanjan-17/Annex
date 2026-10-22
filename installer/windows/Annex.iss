@@ -102,8 +102,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: 
 
 [Run]
 #ifexist SourceDir + "\driver\AnnexIdd.inf"
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\driver\driver-trust.ps1"" -Action install -Package ""{app}\driver"""; Flags: runhidden waituntilterminated; Tasks: extenddriver; StatusMsg: "Signing the Extend-mode display driver for this PC..."
-Filename: "{app}\annex-driver.exe"; Parameters: "install ""{app}\driver\AnnexIdd.inf"""; Flags: runhidden waituntilterminated; Tasks: extenddriver; StatusMsg: "Installing the Extend-mode display driver..."
+; Signs the driver for this PC, then installs it (only if signing worked).
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\driver\driver-trust.ps1"" -Action install -Package ""{app}\driver"""; Flags: runhidden waituntilterminated; Tasks: extenddriver; StatusMsg: "Installing the Extend-mode display driver..."
 #endif
 ; Firewall: allow Annex on private networks (discovery + incoming sessions). All-users installs only;
 ; per-user installs get the standard Windows prompt on first use instead.

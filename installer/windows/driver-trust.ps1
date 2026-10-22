@@ -16,6 +16,9 @@
   trusting it can't be abused. Its thumbprint is kept in HKLM\SOFTWARE\Annex so uninstall can
   remove it.
 
+  With -Action install it then installs the driver (annex-driver.exe, non-interactive), and only if
+  signing worked, so an unsigned install can never be attempted.
+
 .EXAMPLE
   driver-trust.ps1 -Action install -Package "C:\Program Files\Annex\driver"
   driver-trust.ps1 -Action uninstall
@@ -29,7 +32,13 @@ $RegPath = "HKLM:\SOFTWARE\Annex"
 $RegValue = "DriverCertThumbprint"
 $Log = Join-Path $env:ProgramData "Annex\driver-trust.log"
 New-Item -ItemType Directory -Force (Split-Path $Log) | Out-Null
-function Note([string] $Text) { "[$(Get-Date -Format o)] $Text" | Add-Content $Log }
+Start-Transcript -Path $Log -Append | Out-Null
+function Note([string] $Text) { Write-Output "[$(Get-Date -Format o)] $Text" }
+trap {
+    Note "FAILED: $_"
+    Stop-Transcript | Out-Null
+    exit 1
+}
 
 function Remove-Trust {
     $thumb = (Get-ItemProperty $RegPath -Name $RegValue -ErrorAction SilentlyContinue).$RegValue
@@ -44,6 +53,7 @@ function Remove-Trust {
 
 if ($Action -eq "uninstall") {
     Remove-Trust
+    Stop-Transcript | Out-Null
     exit 0
 }
 
@@ -61,7 +71,8 @@ $cert = New-SelfSignedCertificate -Type CodeSigningCert `
 try {
     # The catalog covers AnnexIdd.dll and AnnexIdd.inf, so signing it signs the package.
     $result = Set-AuthenticodeSignature -FilePath $catalog -Certificate $cert -HashAlgorithm SHA256
-    if (-not $result.SignerCertificate) { throw "signing the catalog failed: $($result.StatusMessage)" }
+    Note "Set-AuthenticodeSignature: $($result.Status) $($result.StatusMessage)"
+    if (-not $result.SignerCertificate) { throw "signing the catalog failed: $($result.Status) $($result.StatusMessage)" }
 
     $cer = Join-Path $env:TEMP "annex-driver-$($cert.Thumbprint).cer"
     Export-Certificate -Cert $cert -FilePath $cer | Out-Null
@@ -78,5 +89,13 @@ New-Item -Path $RegPath -Force | Out-Null
 Set-ItemProperty $RegPath -Name $RegValue -Value $cert.Thumbprint
 
 $check = Get-AuthenticodeSignature -FilePath $catalog
-Note "signed $catalog with $($cert.Thumbprint): $($check.Status)"
-if ($check.Status -ne "Valid") { throw "catalog signature not valid after trusting: $($check.Status) $($check.StatusMessage)" }
+Note "signed $catalog with $($cert.Thumbprint): $($check.Status) $($check.StatusMessage)"
+
+# Install only now. annex-driver installs non-interactively: a bad signature fails instead of prompting.
+$tool = Join-Path (Split-Path $Package) "annex-driver.exe"
+$inf = Join-Path $Package "AnnexIdd.inf"
+$output = & $tool install $inf 2>&1
+$code = $LASTEXITCODE
+Note "annex-driver install (exit $code): $output"
+Stop-Transcript | Out-Null
+exit $code

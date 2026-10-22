@@ -15,8 +15,12 @@ function Note($text) { $text | Tee-Object -FilePath $log -Append }
 
 Note "Installing $Installer"
 # All users (the runner is an administrator) with the Extend-mode driver, like a full install.
-$p = Start-Process $Installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/ALLUSERS", "/TASKS=`"extenddriver`"", "/DIR=`"$dir`"", "/LOG=`"$OutDir\install.log`"" -Wait -PassThru
+$p = Start-Process $Installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/ALLUSERS", "/TASKS=`"extenddriver`"", "/DIR=`"$dir`"", "/LOG=`"$OutDir\install.log`"" -PassThru
+# Never wait forever: a hidden dialog would hang the job.
+if (-not $p.WaitForExit(300000)) { Note "FAIL: installer still running after 5 minutes"; Stop-Process -Id $p.Id -Force }
 Note "Installer exit code: $($p.ExitCode)"
+$trustLog = "$env:ProgramData\Annex\driver-trust.log"
+if (Test-Path $trustLog) { Copy-Item $trustLog $OutDir; Get-Content $trustLog | Select-String "\] " | ForEach-Object { Note ("driver: " + $_.Line) } }
 $exe = Join-Path $dir "Annex.exe"
 if (-not (Test-Path $exe)) { Note "FAIL: $exe missing after install"; exit 1 }
 Get-ChildItem $dir | Select-Object Name, Length | Out-File (Join-Path $OutDir "installed-files.txt")
@@ -62,8 +66,6 @@ Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $started.A
 if ($alive) { Stop-Process -Id $app.Id -Force }
 $selftest = Test-Path $marker
 # Extend-mode driver: did signing work, and does Windows run it?
-$trustLog = "$env:ProgramData\Annex\driver-trust.log"
-if (Test-Path $trustLog) { Copy-Item $trustLog $OutDir; Note ("Driver signing: " + (Get-Content $trustLog -Tail 1)) } else { Note "Driver signing: no log (driver not in this installer?)" }
 $extend = "$env:LOCALAPPDATA\Annex\selftest-extend.json"
 if (Test-Path $extend) { Note ("Extend status: " + (Get-Content $extend -Raw)) }
 pnputil /enum-devices /class Display 2>&1 | Out-File (Join-Path $OutDir "display-devices.txt")
