@@ -10,9 +10,11 @@ struct MainView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        NavigationSplitView {
+        // The sidebar is the app's navigation; it always stays visible.
+        NavigationSplitView(columnVisibility: .constant(.all)) {
             Sidebar(model: model)
                 .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 280)
+                .toolbar(removing: .sidebarToggle)
         } detail: {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
