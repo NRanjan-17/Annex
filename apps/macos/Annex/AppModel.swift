@@ -17,6 +17,8 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var discovered: [PeerInfo] = []
     @Published var manualAddress = ""
+    /// Viewer: ask hosts for a new virtual display instead of mirroring their screen.
+    @Published var extendMode = false
     @Published private(set) var viewerStatus: String?
     @Published private(set) var latency: LatencyStats?
     @Published private(set) var trusted: [TrustedPeer] = []
@@ -123,6 +125,7 @@ final class AppModel: ObservableObject {
         do {
             let v = try ViewerHandle(
                 core: core, address: address, expectedFingerprint: expectedFingerprint, display: Displays.mainDisplayInfo(),
+                extend: extendMode,
                 onEvent: { [weak self] e in DispatchQueue.main.async { self?.handleViewerEvent(e) } },
                 onFrame: { [weak window] buf, id, _, key in
                     window?.enqueue(Data(buf), frameID: id, keyframe: key)
@@ -149,13 +152,13 @@ final class AppModel: ObservableObject {
     private func handleViewerEvent(_ e: CoreEvent) {
         switch e {
         case .sessionStarted(let s):
-            viewerStatus = "Viewing \(s.peerName)"
+            viewerStatus = s.mode == "extend" ? "Extending \(s.peerName)" : "Viewing \(s.peerName)"
             viewerWindow?.show(fullScreen: true)
         case .streamConfig(let s):
             viewerStatus = "Viewing — \(s.width)×\(s.height) @ \(s.fps) fps"
         case .latencyStats(let l):
             latency = l
-        case .sessionEnded(let reason):
+        case .sessionEnded(_, let reason):
             viewerStatus = reason == "user" ? nil : "Disconnected: \(reason)"
             viewer = nil
             let w = viewerWindow

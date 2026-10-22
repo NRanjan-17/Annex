@@ -22,6 +22,7 @@
             <TextBlock x:Name="HostStatusText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
 
             <TextBlock Text="View another computer" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,12,0,0" />
+            <ToggleSwitch x:Name="ExtendToggle" Header="Use this PC as an extra display (Extend)" OffContent="Mirror its screen" OnContent="Extra display" />
             <TextBlock x:Name="NoHostsText" Text="Looking for hosts…" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
             <ListView x:Name="HostsList" SelectionMode="None" IsItemClickEnabled="True"
                       ItemClick="HostsList_ItemClick" DisplayMemberPath="Name" MaxHeight="220" />

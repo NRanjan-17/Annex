@@ -5,7 +5,7 @@
 //! annex peers [remove <fingerprint>]  list or revoke trusted devices
 //! annex discover [--seconds N]        list hosts on the LAN
 //! annex host [--port P] [--replay file.h264 | --synthetic] [--fps N] [--no-advertise]
-//! annex viewer <address> [--dump file.h264] [--expect <fingerprint>] [--seconds N]
+//! annex viewer <address> [--extend] [--dump file.h264] [--expect <fingerprint>] [--seconds N]
 //! ```
 //! Common options: `--data-dir DIR` (default: a separate "Annex CLI" data folder), `--name NAME`,
 //! `--trust-all` (skip PIN pairing and accept anyone; for automated tests only).
@@ -212,10 +212,13 @@ async fn host(o: &mut Opts) {
         None => die("host needs --replay <file.h264> or --synthetic (live capture is in the desktop apps)"),
     };
     let events = event_printer(core.clone());
-    let handle =
-        start_host(core.clone(), HostConfig { port, stream: StreamConfig { codec, width: w, height: h, fps } }, events)
-            .await
-            .unwrap_or_else(|e| die(&e.to_string()));
+    let handle = start_host(
+        core.clone(),
+        HostConfig { port, stream: StreamConfig { codec, width: w, height: h, fps }, extend: false },
+        events,
+    )
+    .await
+    .unwrap_or_else(|e| die(&e.to_string()));
     let _ad = if advertise {
         let d = annex_discovery::Discovery::new(core.fingerprint()).unwrap_or_else(|e| die(&e.to_string()));
         let ad = d.advertise_host(core.device_name(), handle.port()).unwrap_or_else(|e| die(&e.to_string()));
@@ -267,6 +270,7 @@ async fn viewer(o: &mut Opts) {
     let expected = o.value("--expect");
     let secs: u64 = o.num("--seconds", 0);
     let latency_csv = o.value("--latency-csv").map(PathBuf::from);
+    let mode = if o.flag("--extend") { Mode::Extend } else { Mode::Mirror };
     let file = dump.map(|p| {
         Arc::new(Mutex::new(std::fs::File::create(&p).unwrap_or_else(|e| die(&format!("{}: {e}", p.display())))))
     });
@@ -298,6 +302,7 @@ async fn viewer(o: &mut Opts) {
         },
         codecs: vec![Codec::H264, Codec::Raw],
         expected_fingerprint: expected,
+        mode,
         latency_csv,
     };
     let v = Arc::new(connect_viewer(core, cfg, events, frames));

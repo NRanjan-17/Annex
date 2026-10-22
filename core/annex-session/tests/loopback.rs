@@ -21,8 +21,13 @@ fn viewer_cfg(port: u16) -> ViewerConfig {
         display: display(),
         codecs: vec![Codec::H264],
         expected_fingerprint: None,
+        mode: Mode::Mirror,
         latency_csv: None,
     }
+}
+
+fn host_cfg() -> HostConfig {
+    HostConfig { port: 0, stream: stream(), extend: true }
 }
 
 fn channel_sink() -> (EventSink, mpsc::UnboundedReceiver<Event>) {
@@ -53,7 +58,7 @@ async fn mirror_session_delivers_frames_and_stats() {
     let host_core = Core::ephemeral("Host", TrustPolicy::AcceptAllInsecure).unwrap();
     let viewer_core = Core::ephemeral("Viewer", TrustPolicy::AcceptAllInsecure).unwrap();
     let (hev, mut hrx) = channel_sink();
-    let host = start_host(host_core.clone(), HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
+    let host = start_host(host_core.clone(), host_cfg(), hev).await.unwrap();
 
     let received = Arc::new(Mutex::new(Vec::<(u32, bool, Vec<u8>)>::new()));
     let (vev, mut vrx) = channel_sink();
@@ -79,7 +84,7 @@ async fn mirror_session_delivers_frames_and_stats() {
     let Event::SessionStarted { peer_name, viewer_display, .. } = started else { unreachable!() };
     assert_eq!(peer_name, "Viewer");
     assert_eq!(viewer_display, Some(display()));
-    wait_for(&mut hrx, |e| matches!(e, Event::KeyframeRequested)).await;
+    wait_for(&mut hrx, |e| matches!(e, Event::KeyframeRequested { .. })).await;
     let Event::StreamConfig { stream: s } = wait_for(&mut vrx, |e| matches!(e, Event::StreamConfig { .. })).await
     else {
         unreachable!()
@@ -113,7 +118,7 @@ async fn mirror_session_delivers_frames_and_stats() {
 
     // Viewer asks for a keyframe.
     viewer.request_keyframe();
-    wait_for(&mut hrx, |e| matches!(e, Event::KeyframeRequested)).await;
+    wait_for(&mut hrx, |e| matches!(e, Event::KeyframeRequested { .. })).await;
 
     {
         let r = received.lock().unwrap();
@@ -123,7 +128,8 @@ async fn mirror_session_delivers_frames_and_stats() {
     }
 
     viewer.disconnect().await;
-    let Event::SessionEnded { reason } = wait_for(&mut hrx, |e| matches!(e, Event::SessionEnded { .. })).await else {
+    let Event::SessionEnded { reason, .. } = wait_for(&mut hrx, |e| matches!(e, Event::SessionEnded { .. })).await
+    else {
         unreachable!()
     };
     assert_eq!(reason, "user");
@@ -139,7 +145,7 @@ async fn mirror_session_delivers_frames_and_stats() {
 /// host cancels). Returns (host outcome, viewer outcome): "started" or the session-end reason.
 async fn pair_attempt(host_core: &Arc<Core>, viewer_core: &Arc<Core>, typed: Option<&str>) -> (String, String) {
     let (hev, mut hrx) = channel_sink();
-    let host = start_host(host_core.clone(), HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
+    let host = start_host(host_core.clone(), host_cfg(), hev).await.unwrap();
     let (vev, mut vrx) = channel_sink();
     let viewer = connect_viewer(viewer_core.clone(), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
 
@@ -175,7 +181,7 @@ async fn pair_attempt(host_core: &Arc<Core>, viewer_core: &Arc<Core>, typed: Opt
         "not_paired".to_string()
     };
     let v = match wait_for(&mut vrx, outcome).await {
-        Event::SessionEnded { reason } => reason,
+        Event::SessionEnded { reason, .. } => reason,
         _ => "started".to_string(),
     };
     viewer.disconnect().await;
@@ -193,7 +199,7 @@ async fn pin_pairing_succeeds_and_is_remembered() {
 
     // Second connection: no pairing.
     let (hev, mut hrx) = channel_sink();
-    let host = start_host(host_core.clone(), HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
+    let host = start_host(host_core.clone(), host_cfg(), hev).await.unwrap();
     let (vev, _vrx) = channel_sink();
     let viewer = connect_viewer(viewer_core.clone(), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
     let e = wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. } | Event::PairingPin { .. })).await;
@@ -231,10 +237,11 @@ async fn repeated_failures_lock_pairing() {
     }
     // Locked: the host refuses before showing a PIN.
     let (hev, mut hrx) = channel_sink();
-    let host = start_host(host_core.clone(), HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
+    let host = start_host(host_core.clone(), host_cfg(), hev).await.unwrap();
     let (vev, mut vrx) = channel_sink();
     let viewer = connect_viewer(viewer_core.clone(), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
-    let Event::SessionEnded { reason } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await else {
+    let Event::SessionEnded { reason, .. } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await
+    else {
         unreachable!()
     };
     assert_eq!(reason, "pairing_locked");
@@ -258,12 +265,13 @@ async fn pinned_fingerprint_mismatch_fails_handshake() {
     let host_core = Core::ephemeral("Host", TrustPolicy::AcceptAllInsecure).unwrap();
     let viewer_core = Core::ephemeral("Viewer", TrustPolicy::AcceptAllInsecure).unwrap();
     let (hev, _hrx) = channel_sink();
-    let host = start_host(host_core, HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
+    let host = start_host(host_core, host_cfg(), hev).await.unwrap();
     let (vev, mut vrx) = channel_sink();
     let mut cfg = viewer_cfg(host.port());
     cfg.expected_fingerprint = Some("00".repeat(32));
     let viewer = connect_viewer(viewer_core, cfg, vev, Arc::new(|_| {}));
-    let Event::SessionEnded { reason } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await else {
+    let Event::SessionEnded { reason, .. } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await
+    else {
         unreachable!()
     };
     assert!(reason.to_lowercase().contains("certificate"), "{reason}");
@@ -276,10 +284,11 @@ async fn reject_unknown_policy_refuses_without_pairing() {
     let host_core = Core::ephemeral("Host", TrustPolicy::RejectUnknown).unwrap();
     let viewer_core = Core::ephemeral("Viewer", TrustPolicy::AcceptAllInsecure).unwrap();
     let (hev, mut hrx) = channel_sink();
-    let host = start_host(host_core, HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
+    let host = start_host(host_core, host_cfg(), hev).await.unwrap();
     let (vev, mut vrx) = channel_sink();
     let viewer = connect_viewer(viewer_core, viewer_cfg(host.port()), vev, Arc::new(|_| {}));
-    let Event::SessionEnded { reason } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await else {
+    let Event::SessionEnded { reason, .. } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await
+    else {
         unreachable!()
     };
     assert!(reason.contains("not_trusted"), "{reason}");
@@ -288,32 +297,157 @@ async fn reject_unknown_policy_refuses_without_pairing() {
     host.stop().await;
 }
 
+fn viewer_core(name: &str) -> Arc<Core> {
+    Core::ephemeral(name, TrustPolicy::AcceptAllInsecure).unwrap()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn second_viewer_is_rejected_as_busy() {
-    let host_core = Core::ephemeral("Host", TrustPolicy::AcceptAllInsecure).unwrap();
+async fn extra_viewer_beyond_limit_is_rejected_as_busy() {
     let (hev, mut hrx) = channel_sink();
-    let host = start_host(host_core, HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
-    let (vev, _v1rx) = channel_sink();
-    let v1 = connect_viewer(
-        Core::ephemeral("V1", TrustPolicy::AcceptAllInsecure).unwrap(),
-        viewer_cfg(host.port()),
-        vev,
-        Arc::new(|_| {}),
-    );
-    wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
-    let (vev, mut v2rx) = channel_sink();
-    let v2 = connect_viewer(
-        Core::ephemeral("V2", TrustPolicy::AcceptAllInsecure).unwrap(),
-        viewer_cfg(host.port()),
-        vev,
-        Arc::new(|_| {}),
-    );
-    let Event::SessionEnded { reason } = wait_for(&mut v2rx, |e| matches!(e, Event::SessionEnded { .. })).await else {
+    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
+    let mut viewers = Vec::new();
+    for i in 0..MAX_SESSIONS {
+        let (vev, _rx) = channel_sink();
+        viewers.push(connect_viewer(viewer_core(&format!("V{i}")), viewer_cfg(host.port()), vev, Arc::new(|_| {})));
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+    }
+    assert_eq!(host.sessions().len(), MAX_SESSIONS);
+    let (vev, mut extra_rx) = channel_sink();
+    let extra = connect_viewer(viewer_core("Extra"), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
+    let Event::SessionEnded { reason, .. } = wait_for(&mut extra_rx, |e| matches!(e, Event::SessionEnded { .. })).await
+    else {
         unreachable!()
     };
-    assert!(reason.contains("busy"), "{reason}");
-    v2.disconnect().await;
+    assert_eq!(reason, "busy");
+    extra.disconnect().await;
+    for v in viewers {
+        v.disconnect().await;
+    }
+    host.stop().await;
+}
+
+fn frame_counter() -> (FrameSink, Arc<Mutex<Vec<Vec<u8>>>>) {
+    let got: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+    let g = got.clone();
+    (Arc::new(move |f: FrameOut<'_>| g.lock().unwrap().push(f.data.to_vec())), got)
+}
+
+async fn eventually(mut check: impl FnMut() -> bool) {
+    for _ in 0..200 {
+        if check() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("condition not reached");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_mirror_viewers_receive_the_same_frames() {
+    let (hev, mut hrx) = channel_sink();
+    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
+    let (s1, got1) = frame_counter();
+    let (s2, got2) = frame_counter();
+    let (e1, _r1) = channel_sink();
+    let (e2, _r2) = channel_sink();
+    let v1 = connect_viewer(viewer_core("A"), viewer_cfg(host.port()), e1, s1);
+    wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+    let v2 = connect_viewer(viewer_core("B"), viewer_cfg(host.port()), e2, s2);
+    wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+    assert_eq!(host.submit_frame(b"key", clock::now_us(), true), SubmitResult::Sent);
+    assert_eq!(host.submit_frame(b"delta", clock::now_us(), false), SubmitResult::Sent);
+    eventually(|| got1.lock().unwrap().len() == 2 && got2.lock().unwrap().len() == 2).await;
     v1.disconnect().await;
+    v2.disconnect().await;
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn extend_session_gets_its_own_stream() {
+    let (hev, mut hrx) = channel_sink();
+    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
+    // One mirror viewer and one extend viewer.
+    let (ms, mirror_got) = frame_counter();
+    let (me, _mr) = channel_sink();
+    let mirror = connect_viewer(viewer_core("Mirror"), viewer_cfg(host.port()), me, ms);
+    wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+
+    let (xs, extend_got) = frame_counter();
+    let (xe, mut xrx) = channel_sink();
+    let mut cfg = viewer_cfg(host.port());
+    cfg.mode = Mode::Extend;
+    cfg.display = DisplayInfo {
+        width_px: 2880,
+        height_px: 1801,
+        width_mm: 300,
+        height_mm: 190,
+        refresh_hz: 120,
+        scale_percent: 200,
+    };
+    let extend = connect_viewer(viewer_core("Extend"), cfg, xe, xs);
+    let Event::SessionStarted { session_id, mode, stream, viewer_display, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(mode, Mode::Extend);
+    assert_eq!((stream.width, stream.height, stream.fps), (2880, 1800, 60), "native size, even, ≤ 60 fps");
+    assert_eq!(viewer_display.unwrap().scale_percent, 200);
+    let Event::StreamConfig { stream: vs } = wait_for(&mut xrx, |e| matches!(e, Event::StreamConfig { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(vs, stream);
+
+    // Per-session frames go only to the extend viewer; mirror frames only to the mirror viewer.
+    assert_eq!(host.submit_session_frame(session_id, b"ext-key", clock::now_us(), true), SubmitResult::Sent);
+    assert_eq!(host.submit_frame(b"mirror-key", clock::now_us(), true), SubmitResult::Sent);
+    eventually(|| extend_got.lock().unwrap().len() == 1 && mirror_got.lock().unwrap().len() == 1).await;
+    assert_eq!(extend_got.lock().unwrap()[0], b"ext-key");
+    assert_eq!(mirror_got.lock().unwrap()[0], b"mirror-key");
+
+    // The user picks another resolution for the virtual display.
+    let new = StreamConfig { width: 1920, height: 1200, ..stream };
+    assert!(host.set_session_stream(session_id, new.clone()));
+    let Event::StreamConfig { stream: vs } = wait_for(&mut xrx, |e| matches!(e, Event::StreamConfig { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(vs, new);
+
+    // The host ends the extend session (e.g. virtual display removed).
+    host.end_session(session_id);
+    let Event::SessionEnded { reason, .. } = wait_for(&mut xrx, |e| matches!(e, Event::SessionEnded { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(reason, "host_ended_session");
+    let Event::SessionEnded { session_id: ended, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionEnded { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(ended, session_id);
+    assert_eq!(host.sessions().len(), 1);
+    extend.disconnect().await;
+    mirror.disconnect().await;
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn extend_is_refused_by_mirror_only_hosts() {
+    let (hev, _hrx) = channel_sink();
+    let host = start_host(viewer_core("Host"), HostConfig { extend: false, ..host_cfg() }, hev).await.unwrap();
+    let (vev, mut vrx) = channel_sink();
+    let mut cfg = viewer_cfg(host.port());
+    cfg.mode = Mode::Extend;
+    let v = connect_viewer(viewer_core("V"), cfg, vev, Arc::new(|_| {}));
+    let Event::SessionEnded { reason, .. } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(reason, "extend_not_supported");
+    v.disconnect().await;
     host.stop().await;
 }
 
@@ -321,7 +455,7 @@ async fn second_viewer_is_rejected_as_busy() {
 async fn host_stop_ends_viewer_session() {
     let host_core = Core::ephemeral("Host", TrustPolicy::AcceptAllInsecure).unwrap();
     let (hev, mut hrx) = channel_sink();
-    let host = start_host(host_core, HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
+    let host = start_host(host_core, host_cfg(), hev).await.unwrap();
     let (vev, mut vrx) = channel_sink();
     let viewer = connect_viewer(
         Core::ephemeral("V", TrustPolicy::AcceptAllInsecure).unwrap(),
@@ -331,7 +465,8 @@ async fn host_stop_ends_viewer_session() {
     );
     wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
     host.stop().await;
-    let Event::SessionEnded { reason } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await else {
+    let Event::SessionEnded { reason, .. } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await
+    else {
         unreachable!()
     };
     assert_eq!(reason, "host_stopped");
@@ -397,7 +532,7 @@ async fn spawn_mitm(target_port: u16, attack: Attack) -> u16 {
 async fn run_attack(attack: Attack) -> String {
     let host_core = Core::ephemeral("Host", TrustPolicy::AcceptAllInsecure).unwrap();
     let (hev, mut hrx) = channel_sink();
-    let host = start_host(host_core, HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
+    let host = start_host(host_core, host_cfg(), hev).await.unwrap();
     let proxy = spawn_mitm(host.port(), attack).await;
     let (vev, mut vrx) = channel_sink();
     let viewer = connect_viewer(
@@ -414,7 +549,8 @@ async fn run_attack(attack: Attack) -> String {
         }
         host
     });
-    let Event::SessionEnded { reason } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await else {
+    let Event::SessionEnded { reason, .. } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await
+    else {
         unreachable!()
     };
     viewer.disconnect().await;

@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use annex_discovery::{Advertisement, Browser, Discovery};
 use annex_session::{
-    Codec, Core, DisplayInfo, Event, EventSink, FrameOut, FrameSink, HostConfig, HostHandle, StreamConfig,
+    Codec, Core, DisplayInfo, Event, EventSink, FrameOut, FrameSink, HostConfig, HostHandle, Mode, StreamConfig,
     SubmitResult, TrustPolicy, ViewerConfig, ViewerHandle,
 };
 
@@ -365,6 +365,7 @@ pub unsafe extern "C" fn annex_host_start(
     height: u32,
     fps: u32,
     advertise: bool,
+    extend: bool,
     on_event: AnnexEventCallback,
     ctx: *mut c_void,
     out: *mut *mut AnnexHost,
@@ -379,7 +380,7 @@ pub unsafe extern "C" fn annex_host_start(
             return Err(invalid("width, height and fps must be non-zero"));
         }
         let callbacks = Callbacks::new(on_event, None, ctx);
-        let cfg = HostConfig { port, stream: StreamConfig { codec, width, height, fps } };
+        let cfg = HostConfig { port, stream: StreamConfig { codec, width, height, fps }, extend };
         let handle =
             c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, callbacks.event_sink())).map_err(failed)?;
         let advert = if advertise {
@@ -424,8 +425,8 @@ pub unsafe extern "C" fn annex_host_set_stream(
     })
 }
 
-/// Queues one encoded access unit (Annex B for H.264/HEVC). Never blocks.
-/// Returns `ANNEX_SUBMIT_*` or a negative error.
+/// Queues one encoded access unit (Annex B for H.264/HEVC) for every **mirror** session.
+/// Never blocks. Returns `ANNEX_SUBMIT_*` or a negative error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn annex_host_submit_frame(
     host: *const AnnexHost,
@@ -449,7 +450,59 @@ pub unsafe extern "C" fn annex_host_submit_frame(
     })
 }
 
-/// Stops hosting (ends any session, stops advertising) and frees the host.
+/// Queues one encoded access unit for one session (Extend). Never blocks.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_submit_session_frame(
+    host: *const AnnexHost,
+    session_id: u64,
+    data: *const u8,
+    len: usize,
+    capture_ts_us: i64,
+    keyframe: bool,
+) -> i32 {
+    guard(|| {
+        let h = unsafe { host.as_ref() }.ok_or_else(|| invalid("host is null"))?;
+        if data.is_null() || len == 0 {
+            return Err(invalid("empty frame"));
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(data, len) };
+        Ok(match h.handle.submit_session_frame(session_id, bytes, capture_ts_us, keyframe) {
+            SubmitResult::Sent => ANNEX_SUBMIT_SENT,
+            SubmitResult::NoSession => ANNEX_SUBMIT_NO_SESSION,
+            SubmitResult::Dropped => ANNEX_SUBMIT_DROPPED,
+        })
+    })
+}
+
+/// Changes one session's stream (e.g. the user picked another resolution for its virtual display).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_set_session_stream(
+    host: *const AnnexHost,
+    session_id: u64,
+    codec: *const c_char,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> i32 {
+    guard(|| {
+        let h = unsafe { host.as_ref() }.ok_or_else(|| invalid("host is null"))?;
+        let codec = parse_codec(unsafe { str_arg(codec, "codec") }?)?;
+        if width == 0 || height == 0 || fps == 0 {
+            return Err(invalid("width, height and fps must be non-zero"));
+        }
+        Ok(h.handle.set_session_stream(session_id, StreamConfig { codec, width, height, fps }) as i32)
+    })
+}
+
+/// Ends one session (its viewer gets `host_ended_session`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_end_session(host: *const AnnexHost, session_id: u64) {
+    if let Some(h) = unsafe { host.as_ref() } {
+        h.handle.end_session(session_id);
+    }
+}
+
+/// Stops hosting (ends all sessions, stops advertising) and frees the host.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn annex_host_free(host: *mut AnnexHost) {
     if host.is_null() {
@@ -542,13 +595,22 @@ mod win_host {
 
     impl ScreenState {
         fn start_pipeline(self: &Arc<Self>) {
-            let Some(host) = self.host.get().and_then(|w| w.upgrade()) else { return };
+            let mut slot = self.pipeline.lock().unwrap();
+            if let Some(p) = slot.as_ref() {
+                // Another mirror viewer joined: one capture feeds everyone; just resync.
+                p.request_keyframe();
+                return;
+            }
+            let Some(host) = self.host.get().cloned() else { return };
             let clock: Arc<dyn Fn() -> i64 + Send + Sync> = Arc::new(annex_session::clock::now_us);
+            // Weak: the host owns this pipeline (via the event sink), not the other way round.
             let output = Arc::new(move |f: annex_media_win::EncodedFrame| {
-                host.submit_frame(&f.data, f.capture_us, f.keyframe);
+                if let Some(h) = host.upgrade() {
+                    h.submit_frame(&f.data, f.capture_us, f.keyframe);
+                }
             });
             match HostPipeline::start(self.cfg.clone(), clock, output) {
-                Ok(p) => *self.pipeline.lock().unwrap() = Some(p),
+                Ok(p) => *slot = Some(p),
                 Err(e) => tracing::error!("screen capture failed to start: {e}"),
             }
         }
@@ -559,13 +621,17 @@ mod win_host {
 
         fn on_event(self: &Arc<Self>, e: &Event) {
             match e {
-                Event::SessionStarted { .. } => {
+                Event::SessionStarted { mode: annex_session::Mode::Mirror, .. } => {
                     // Capture setup touches COM/WinRT; keep it off the async runtime threads.
                     let me = self.clone();
                     std::thread::spawn(move || me.start_pipeline());
                 }
-                Event::SessionEnded { .. } => self.stop(),
-                Event::KeyframeRequested => {
+                Event::SessionEnded { .. } => {
+                    if self.host.get().and_then(|w| w.upgrade()).is_none_or(|h| !h.has_session()) {
+                        self.stop();
+                    }
+                }
+                Event::KeyframeRequested { .. } => {
                     if let Some(p) = self.pipeline.lock().unwrap().as_ref() {
                         p.request_keyframe();
                     }
@@ -599,7 +665,7 @@ mod win_host {
                 app_events(e);
             })
         };
-        let cfg = HostConfig { port, stream: StreamConfig { codec: Codec::H264, width, height, fps } };
+        let cfg = HostConfig { port, stream: StreamConfig { codec: Codec::H264, width, height, fps }, extend: false };
         let handle = Arc::new(c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, events))?);
         let _ = state.host.set(Arc::downgrade(&handle));
         Ok((handle, state))
@@ -614,6 +680,7 @@ unsafe fn viewer_config(
     address: *const c_char,
     expected_fingerprint: *const c_char,
     display_json: *const c_char,
+    extend: bool,
 ) -> Result<ViewerConfig, (i32, String)> {
     let address = unsafe { str_arg(address, "address") }?.to_string();
     let expected = unsafe { opt_str_arg(expected_fingerprint, "expected_fingerprint") }?
@@ -635,6 +702,7 @@ unsafe fn viewer_config(
         display,
         codecs: vec![Codec::H264],
         expected_fingerprint: expected,
+        mode: if extend { Mode::Extend } else { Mode::Mirror },
         latency_csv: std::env::var_os("ANNEX_LATENCY_CSV").map(PathBuf::from),
     })
 }
@@ -649,6 +717,7 @@ pub unsafe extern "C" fn annex_viewer_connect(
     address: *const c_char,
     expected_fingerprint: *const c_char,
     display_json: *const c_char,
+    extend: bool,
     on_event: AnnexEventCallback,
     on_frame: AnnexFrameCallback,
     ctx: *mut c_void,
@@ -659,7 +728,7 @@ pub unsafe extern "C" fn annex_viewer_connect(
         if out.is_null() {
             return Err(invalid("out is null"));
         }
-        let cfg = unsafe { viewer_config(address, expected_fingerprint, display_json) }?;
+        let cfg = unsafe { viewer_config(address, expected_fingerprint, display_json, extend) }?;
         let callbacks = Callbacks::new(on_event, on_frame, ctx);
         let _enter = c.rt.enter();
         let handle = Arc::new(annex_session::connect_viewer(
@@ -688,6 +757,7 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
     core: *const AnnexCore,
     address: *const c_char,
     expected_fingerprint: *const c_char,
+    extend: bool,
     on_event: AnnexEventCallback,
     ctx: *mut c_void,
     out: *mut *mut AnnexViewer,
@@ -697,7 +767,7 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
         if out.is_null() {
             return Err(invalid("out is null"));
         }
-        let mut cfg = unsafe { viewer_config(address, expected_fingerprint, std::ptr::null()) }?;
+        let mut cfg = unsafe { viewer_config(address, expected_fingerprint, std::ptr::null(), extend) }?;
         cfg.display = annex_media_win::primary_display_info();
         let callbacks = Callbacks::new(on_event, None, ctx);
         let events = callbacks.event_sink();

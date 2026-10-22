@@ -39,6 +39,10 @@ struct PairingFinished: Decodable, Equatable {
 }
 
 struct SessionStarted: Decodable, Equatable {
+    /// 0 on the viewer side.
+    let sessionId: UInt64
+    /// "mirror" or "extend".
+    let mode: String
     let peerName: String
     let fingerprint: String
     let viewerDisplay: DisplayInfo?
@@ -89,9 +93,9 @@ enum CoreEvent: Equatable {
     case pairingFinished(PairingFinished)
     case sessionStarted(SessionStarted)
     case streamConfig(StreamConfig)
-    case keyframeRequested
+    case keyframeRequested(sessionId: UInt64)
     case latencyStats(LatencyStats)
-    case sessionEnded(reason: String)
+    case sessionEnded(sessionId: UInt64, reason: String)
     case error(message: String)
     case peerFound(PeerInfo)
     case peerLost(instance: String)
@@ -106,7 +110,8 @@ enum CoreEvent: Equatable {
     private struct Tag: Decodable { let type: String }
     private struct Port: Decodable { let port: Int }
     private struct Address: Decodable { let address: String }
-    private struct Reason: Decodable { let reason: String }
+    private struct Ended: Decodable { let sessionId: UInt64; let reason: String }
+    private struct SessionRef: Decodable { let sessionId: UInt64 }
     private struct Message: Decodable { let message: String }
     private struct Instance: Decodable { let instance: String }
     private struct Stream: Decodable { let stream: StreamConfig }
@@ -123,9 +128,11 @@ enum CoreEvent: Equatable {
             case "pairing_finished": return .pairingFinished(try d.decode(PairingFinished.self, from: data))
             case "session_started": return .sessionStarted(try d.decode(SessionStarted.self, from: data))
             case "stream_config": return .streamConfig(try d.decode(Stream.self, from: data).stream)
-            case "keyframe_requested": return .keyframeRequested
+            case "keyframe_requested": return .keyframeRequested(sessionId: try d.decode(SessionRef.self, from: data).sessionId)
             case "latency_stats": return .latencyStats(try d.decode(LatencyStats.self, from: data))
-            case "session_ended": return .sessionEnded(reason: try d.decode(Reason.self, from: data).reason)
+            case "session_ended":
+                let e = try d.decode(Ended.self, from: data)
+                return .sessionEnded(sessionId: e.sessionId, reason: e.reason)
             case "error": return .error(message: try d.decode(Message.self, from: data).message)
             case "peer_found": return .peerFound(try d.decode(PeerInfo.self, from: data))
             case "peer_lost": return .peerLost(instance: try d.decode(Instance.self, from: data).instance)

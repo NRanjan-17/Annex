@@ -77,6 +77,7 @@ fn host_and_viewer_through_c_abi() {
                 1080,
                 60,
                 false,
+                true,
                 Some(on_event),
                 &*hs as *const Sink as *mut c_void,
                 &mut host
@@ -99,6 +100,7 @@ fn host_and_viewer_through_c_abi() {
                 addr.as_ptr(),
                 fp_c.as_ptr(),
                 display.as_ptr(),
+                false,
                 Some(on_event),
                 Some(on_frame),
                 &*vs as *const Sink as *mut c_void,
@@ -121,6 +123,9 @@ fn host_and_viewer_through_c_abi() {
 
         let started = wait(&hev, "session_started");
         assert_eq!(started["viewer_display"]["width_px"], 2560);
+        assert_eq!(started["mode"], "mirror");
+        let session_id = started["session_id"].as_u64().unwrap();
+        assert!(session_id > 0);
         let cfg = wait(&vev, "stream_config");
         assert_eq!(cfg["stream"]["codec"], "h264");
         wait(&hev, "keyframe_requested");
@@ -135,7 +140,19 @@ fn host_and_viewer_through_c_abi() {
         assert_eq!(bytes, payload);
         annex_viewer_frame_presented(viewer, id);
         annex_viewer_request_keyframe(viewer);
-        wait(&hev, "keyframe_requested");
+        assert_eq!(wait(&hev, "keyframe_requested")["session_id"], session_id);
+        // Per-session submission reaches the same viewer.
+        assert_eq!(
+            annex_host_submit_session_frame(host, session_id, payload.as_ptr(), payload.len(), annex_now_us(), true),
+            ANNEX_SUBMIT_SENT
+        );
+        assert_eq!(vframes.recv_timeout(Duration::from_secs(5)).unwrap().2, payload);
+        assert_eq!(
+            annex_host_submit_session_frame(host, 9999, payload.as_ptr(), payload.len(), 0, true),
+            ANNEX_SUBMIT_NO_SESSION
+        );
+        assert_eq!(annex_host_set_session_stream(host, session_id, c"h264".as_ptr(), 1280, 720, 60), 1);
+        assert_eq!(wait(&vev, "stream_config")["stream"]["width"], 1280);
 
         // Invalid arguments are reported, not crashes.
         assert_eq!(annex_host_submit_frame(host, std::ptr::null(), 0, 0, false), ANNEX_ERR_INVALID_ARGUMENT);
@@ -143,7 +160,9 @@ fn host_and_viewer_through_c_abi() {
         assert_eq!(annex_host_set_stream(host, c"vp9".as_ptr(), 1, 1, 1), ANNEX_ERR_INVALID_ARGUMENT);
 
         annex_viewer_free(viewer);
-        assert_eq!(wait(&hev, "session_ended")["reason"], "user");
+        let ended = wait(&hev, "session_ended");
+        assert_eq!(ended["reason"], "user");
+        assert_eq!(ended["session_id"], session_id);
 
         // Host persisted the viewer in its on-disk trust store; revoke it.
         let peers: serde_json::Value =

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use annex_proto::{DisplayInfo, StreamConfig};
+use annex_proto::{DisplayInfo, Mode, StreamConfig};
 use serde::Serialize;
 
 use crate::LatencyStats;
@@ -36,7 +36,10 @@ pub enum Event {
         success: bool,
         peer_name: String,
     },
+    /// `session_id` is 0 on the viewer side (a viewer has one session).
     SessionStarted {
+        session_id: u64,
+        mode: Mode,
         peer_name: String,
         fingerprint: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,7 +49,9 @@ pub enum Event {
     StreamConfig {
         stream: StreamConfig,
     },
-    KeyframeRequested,
+    KeyframeRequested {
+        session_id: u64,
+    },
     LatencyStats {
         #[serde(flatten)]
         stats: LatencyStats,
@@ -54,6 +59,7 @@ pub enum Event {
         clock_rtt_ms: Option<f64>,
     },
     SessionEnded {
+        session_id: u64,
         reason: String,
     },
     Error {

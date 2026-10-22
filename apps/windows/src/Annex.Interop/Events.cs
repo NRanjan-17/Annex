@@ -36,11 +36,13 @@ public abstract record CoreEvent
     /// <summary>Viewer: ask the user for the PIN shown on the host.</summary>
     public sealed record PairingPinRequired(ulong RequestId, string PeerName, string FingerprintDisplay) : CoreEvent;
     public sealed record PairingFinished(ulong RequestId, bool Success, string PeerName) : CoreEvent;
-    public sealed record SessionStarted(string PeerName, string Fingerprint, StreamConfig Stream, DisplayInfo? ViewerDisplay = null) : CoreEvent;
+    /// <summary><c>SessionId</c> is 0 on the viewer side; <c>Mode</c> is "mirror" or "extend".</summary>
+    public sealed record SessionStarted(ulong SessionId, string Mode, string PeerName, string Fingerprint, StreamConfig Stream,
+        DisplayInfo? ViewerDisplay = null) : CoreEvent;
     public sealed record StreamChanged(StreamConfig Stream) : CoreEvent;
-    public sealed record KeyframeRequested : CoreEvent;
+    public sealed record KeyframeRequested(ulong SessionId) : CoreEvent;
     public sealed record Latency(LatencyStats Stats) : CoreEvent;
-    public sealed record SessionEnded(string Reason) : CoreEvent;
+    public sealed record SessionEnded(ulong SessionId, string Reason) : CoreEvent;
     public sealed record Error(string Message) : CoreEvent;
     public sealed record PeerFound(PeerInfo Peer) : CoreEvent;
     public sealed record PeerLost(string Instance) : CoreEvent;
@@ -69,9 +71,9 @@ public abstract record CoreEvent
                 "pairing_finished" => Get<PairingFinished>(json),
                 "session_started" => Get<SessionStarted>(json),
                 "stream_config" => new StreamChanged(Get<StreamWrapper>(json).Stream),
-                "keyframe_requested" => new KeyframeRequested(),
+                "keyframe_requested" => Get<KeyframeRequested>(json),
                 "latency_stats" => new Latency(Get<LatencyStats>(json)),
-                "session_ended" => new SessionEnded(Get<ReasonDto>(json).Reason),
+                "session_ended" => Get<SessionEnded>(json),
                 "error" => new Error(Get<MessageDto>(json).Message),
                 "peer_found" => new PeerFound(Get<PeerInfo>(json)),
                 "peer_lost" => new PeerLost(Get<InstanceDto>(json).Instance),
@@ -88,7 +90,6 @@ public abstract record CoreEvent
 }
 
 internal sealed record StreamWrapper(StreamConfig Stream);
-internal sealed record ReasonDto(string Reason);
 internal sealed record MessageDto(string Message);
 internal sealed record PortDto(int Port);
 internal sealed record AddressDto(string Address);
@@ -110,7 +111,8 @@ internal sealed record InstanceDto(string Instance);
 [JsonSerializable(typeof(TrustedPeer[]))]
 [JsonSerializable(typeof(MonitorInfo[]))]
 [JsonSerializable(typeof(StreamWrapper))]
-[JsonSerializable(typeof(ReasonDto))]
+[JsonSerializable(typeof(CoreEvent.SessionEnded))]
+[JsonSerializable(typeof(CoreEvent.KeyframeRequested))]
 [JsonSerializable(typeof(MessageDto))]
 [JsonSerializable(typeof(PortDto))]
 [JsonSerializable(typeof(AddressDto))]

@@ -307,6 +307,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Info.plist;
+				SWIFT_OBJC_BRIDGING_HEADER = "Annex/Annex-Bridging-Header.h";
 				INFOPLIST_KEY_CFBundleDisplayName = Annex;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = YES;
@@ -325,6 +326,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Info.plist;
+				SWIFT_OBJC_BRIDGING_HEADER = "Annex/Annex-Bridging-Header.h";
 				INFOPLIST_KEY_CFBundleDisplayName = Annex;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = YES;
@@ -340,6 +342,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				SWIFT_OBJC_BRIDGING_HEADER = "Annex/Annex-Bridging-Header.h";
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Annex";
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nranjan-17.annex.tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -351,6 +355,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				SWIFT_OBJC_BRIDGING_HEADER = "Annex/Annex-Bridging-Header.h";
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/Annex";
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nranjan-17.annex.tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";

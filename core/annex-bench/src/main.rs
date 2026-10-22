@@ -62,7 +62,11 @@ async fn main() {
     });
     let host = start_host(
         host_core,
-        HostConfig { port: 0, stream: StreamConfig { codec: Codec::Raw, width: 1920, height: 1080, fps } },
+        HostConfig {
+            port: 0,
+            stream: StreamConfig { codec: Codec::Raw, width: 1920, height: 1080, fps },
+            extend: false,
+        },
         host_events,
     )
     .await
@@ -93,6 +97,7 @@ async fn main() {
             },
             codecs: vec![Codec::Raw],
             expected_fingerprint: None,
+            mode: Mode::Mirror,
             latency_csv: None,
         },
         Arc::new(|_| {}),

@@ -110,12 +110,13 @@ final class HostHandle {
     private let box: CallbackBox
     private var raw: OpaquePointer?
 
+    /// `extend`: accept Extend sessions (the app creates a virtual display for each).
     init(core: CoreClient, port: UInt16, codec: String = "h264", width: Int, height: Int, fps: Int,
-         advertise: Bool, onEvent: @escaping (CoreEvent) -> Void) throws {
+         advertise: Bool, extend: Bool = false, onEvent: @escaping (CoreEvent) -> Void) throws {
         self.core = core
         box = CallbackBox(onEvent: onEvent)
         var out: OpaquePointer?
-        try check(annex_host_start(core.raw, port, codec, UInt32(width), UInt32(height), UInt32(fps), advertise,
+        try check(annex_host_start(core.raw, port, codec, UInt32(width), UInt32(height), UInt32(fps), advertise, extend,
                                    eventTrampoline, box.context, &out))
         raw = out
     }
@@ -129,7 +130,31 @@ final class HostHandle {
         try check(annex_host_set_stream(raw, codec, UInt32(width), UInt32(height), UInt32(fps)))
     }
 
-    /// Thread-safe and non-blocking.
+    /// One access unit for a single (Extend) session. Thread-safe and non-blocking.
+    @discardableResult
+    func submit(_ data: Data, session: UInt64, captureMicros: Int64, keyframe: Bool) -> SubmitResult {
+        guard let raw, !data.isEmpty else { return .noSession }
+        let r = data.withUnsafeBytes { buf in
+            annex_host_submit_session_frame(raw, session, buf.bindMemory(to: UInt8.self).baseAddress, buf.count,
+                                            captureMicros, keyframe)
+        }
+        switch r {
+        case ANNEX_SUBMIT_SENT: return .sent
+        case ANNEX_SUBMIT_DROPPED: return .dropped
+        default: return .noSession
+        }
+    }
+
+    func setStream(session: UInt64, width: Int, height: Int, fps: Int) {
+        guard let raw else { return }
+        annex_host_set_session_stream(raw, session, "h264", UInt32(width), UInt32(height), UInt32(fps))
+    }
+
+    func endSession(_ session: UInt64) {
+        if let raw { annex_host_end_session(raw, session) }
+    }
+
+    /// One access unit for every mirror session. Thread-safe and non-blocking.
     @discardableResult
     func submit(_ data: Data, captureMicros: Int64, keyframe: Bool) -> SubmitResult {
         guard let raw, !data.isEmpty else { return .noSession }
@@ -163,14 +188,14 @@ final class ViewerHandle {
         return e
     }()
 
-    init(core: CoreClient, address: String, expectedFingerprint: String?, display: DisplayInfo,
+    init(core: CoreClient, address: String, expectedFingerprint: String?, display: DisplayInfo, extend: Bool = false,
          onEvent: @escaping (CoreEvent) -> Void,
          onFrame: @escaping (UnsafeRawBufferPointer, UInt32, Int64?, Bool) -> Void) throws {
         self.core = core
         box = CallbackBox(onEvent: onEvent, onFrame: onFrame)
         let displayJSON = String(decoding: try Self.encoder.encode(display), as: UTF8.self)
         var out: OpaquePointer?
-        try check(annex_viewer_connect(core.raw, address, expectedFingerprint, displayJSON,
+        try check(annex_viewer_connect(core.raw, address, expectedFingerprint, displayJSON, extend,
                                        eventTrampoline, frameTrampoline, box.context, &out))
         raw = out
     }

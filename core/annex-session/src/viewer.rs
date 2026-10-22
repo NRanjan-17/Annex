@@ -36,6 +36,8 @@ pub struct ViewerConfig {
     /// If set (e.g. from discovery for an already-trusted host), the TLS handshake fails
     /// unless the host presents exactly this certificate.
     pub expected_fingerprint: Option<String>,
+    /// Mirror the host's screen, or extend it with a new virtual display.
+    pub mode: Mode,
     /// Optional per-frame latency log: `frame_id,capture_local_us,present_us,latency_us`.
     pub latency_csv: Option<PathBuf>,
 }
@@ -81,7 +83,7 @@ pub fn connect_viewer(core: Arc<Core>, cfg: ViewerConfig, events: EventSink, fra
             Ok(r) | Err(SessionError::Rejected(r)) => r,
             Err(e) => e.to_string(),
         };
-        events(Event::SessionEnded { reason });
+        events(Event::SessionEnded { session_id: 0, reason });
     });
     ViewerHandle { cmd, task: Mutex::new(Some(task)) }
 }
@@ -141,7 +143,7 @@ async fn run(
     let mut reader = Reader::new(r);
     let mut writer = Writer::new(w);
     let knows = core.knows(&fp);
-    writer.send_control(&hello(&core, vec![Role::Viewer], knows)).await?;
+    writer.send_control(&hello(&core, vec![Role::Viewer], knows, &["h264"])).await?;
     let peer = match timeout(HANDSHAKE_TIMEOUT, reader.next_control()).await?? {
         Control::SessionReject { reason } => return Err(SessionError::Rejected(reason)),
         other => check_hello(other, &fp)?,
@@ -164,7 +166,7 @@ async fn run(
     }
     writer
         .send_control(&Control::SessionRequest(SessionRequest {
-            mode: Mode::Mirror,
+            mode: cfg.mode,
             display: cfg.display.clone(),
             codecs: cfg.codecs.clone(),
             input: false,
@@ -176,6 +178,8 @@ async fn run(
         _ => return Err(SessionError::Violation("expected session_accept".into())),
     };
     events(Event::SessionStarted {
+        session_id: 0,
+        mode: cfg.mode,
         peer_name: peer.device_name.clone(),
         fingerprint: fp.clone(),
         viewer_display: None,

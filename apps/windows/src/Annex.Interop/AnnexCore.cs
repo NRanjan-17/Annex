@@ -147,11 +147,12 @@ public sealed unsafe class HostHandle : IDisposable
         return new HostHandle(core, target, raw);
     }
 
-    public HostHandle(CoreClient core, ushort port, int width, int height, int fps, bool advertise, Action<CoreEvent> onEvent, string codec = "h264")
+    public HostHandle(CoreClient core, ushort port, int width, int height, int fps, bool advertise, Action<CoreEvent> onEvent,
+        string codec = "h264", bool extend = false)
     {
         _core = core;
         _target = new CallbackTarget(onEvent);
-        var rc = NativeMethods.annex_host_start(core.Raw, port, codec, (uint)width, (uint)height, (uint)fps, advertise,
+        var rc = NativeMethods.annex_host_start(core.Raw, port, codec, (uint)width, (uint)height, (uint)fps, advertise, extend,
             CallbackTarget.EventCallback, _target.Context, out _raw);
         if (rc < 0)
         {
@@ -202,11 +203,11 @@ public sealed unsafe class ViewerHandle : IDisposable
 
     /// <summary>Connects and delivers encoded frames to <paramref name="onFrame"/>.</summary>
     public static ViewerHandle Connect(CoreClient core, string address, string? expectedFingerprint, DisplayInfo display,
-        Action<CoreEvent> onEvent, FrameHandler onFrame)
+        Action<CoreEvent> onEvent, FrameHandler onFrame, bool extend = false)
     {
         var v = new ViewerHandle(core, new CallbackTarget(onEvent, onFrame));
         var json = AnnexJson.Serialize(display);
-        var rc = NativeMethods.annex_viewer_connect(core.Raw, address, expectedFingerprint, json,
+        var rc = NativeMethods.annex_viewer_connect(core.Raw, address, expectedFingerprint, json, extend,
             CallbackTarget.EventCallback, CallbackTarget.FrameCallback, v._target.Context, out v._raw);
         if (rc < 0)
         {
@@ -217,10 +218,11 @@ public sealed unsafe class ViewerHandle : IDisposable
     }
 
     /// <summary>Windows: connects and shows the stream in a full-screen window owned by the core (Esc closes).</summary>
-    public static ViewerHandle ConnectWindowed(CoreClient core, string address, string? expectedFingerprint, Action<CoreEvent> onEvent)
+    public static ViewerHandle ConnectWindowed(CoreClient core, string address, string? expectedFingerprint, Action<CoreEvent> onEvent,
+        bool extend = false)
     {
         var v = new ViewerHandle(core, new CallbackTarget(onEvent));
-        var rc = NativeMethods.annex_viewer_connect_windowed(core.Raw, address, expectedFingerprint,
+        var rc = NativeMethods.annex_viewer_connect_windowed(core.Raw, address, expectedFingerprint, extend,
             CallbackTarget.EventCallback, v._target.Context, out v._raw);
         if (rc < 0)
         {

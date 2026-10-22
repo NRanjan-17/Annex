@@ -68,16 +68,26 @@ int32_t annex_core_submit_pin(const AnnexCore *core, uint64_t request_id, const 
 int32_t annex_core_cancel_request(const AnnexCore *core, uint64_t request_id);
 
 /* ---- Host ------------------------------------------------------------------------- */
-/* codec: "h264" | "hevc" | "raw". port 0 picks a free port. */
+/* codec: "h264" | "hevc" | "raw". port 0 picks a free port. extend: accept Extend sessions
+ * (the app creates a virtual display per extend session). Up to 4 sessions at once; events
+ * carry a "session_id". */
 int32_t annex_host_start(const AnnexCore *core, uint16_t port, const char *codec, uint32_t width,
-                         uint32_t height, uint32_t fps, bool advertise, AnnexEventCallback on_event,
-                         void *ctx, AnnexHost **out);
+                         uint32_t height, uint32_t fps, bool advertise, bool extend,
+                         AnnexEventCallback on_event, void *ctx, AnnexHost **out);
 uint16_t annex_host_port(const AnnexHost *host);
 int32_t annex_host_set_stream(const AnnexHost *host, const char *codec, uint32_t width,
                               uint32_t height, uint32_t fps);
-/* One encoded access unit (Annex B). Returns ANNEX_SUBMIT_* or a negative error. */
+/* One encoded access unit (Annex B) for every MIRROR session. Returns ANNEX_SUBMIT_* or < 0. */
 int32_t annex_host_submit_frame(const AnnexHost *host, const uint8_t *data, size_t len,
                                 int64_t capture_ts_us, bool keyframe);
+/* One encoded access unit for a single (Extend) session. */
+int32_t annex_host_submit_session_frame(const AnnexHost *host, uint64_t session_id, const uint8_t *data,
+                                        size_t len, int64_t capture_ts_us, bool keyframe);
+/* Changes one session's stream (e.g. its virtual display's resolution changed). */
+int32_t annex_host_set_session_stream(const AnnexHost *host, uint64_t session_id, const char *codec,
+                                      uint32_t width, uint32_t height, uint32_t fps);
+/* Ends one session; its viewer is told "host_ended_session". */
+void annex_host_end_session(const AnnexHost *host, uint64_t session_id);
 void annex_host_free(AnnexHost *host);
 #ifdef _WIN32
 /* Windows: JSON array of monitors [{index, name, width, height, refresh_hz, primary}]. */
@@ -89,15 +99,16 @@ int32_t annex_host_start_screen(const AnnexCore *core, uint32_t monitor_index, u
 
 /* ---- Viewer ----------------------------------------------------------------------- */
 /* address: "host", "host:port", "ip" or "ip:port". expected_fingerprint and display_json
- * (a DisplayInfo JSON object) may be NULL. */
+ * (a DisplayInfo JSON object) may be NULL. extend: ask the host for a new virtual display
+ * instead of mirroring. */
 int32_t annex_viewer_connect(const AnnexCore *core, const char *address,
-                             const char *expected_fingerprint, const char *display_json,
+                             const char *expected_fingerprint, const char *display_json, bool extend,
                              AnnexEventCallback on_event, AnnexFrameCallback on_frame, void *ctx,
                              AnnexViewer **out);
 #ifdef _WIN32
 /* Windows: decode + render in a full-screen window owned by the core. Esc closes it. */
 int32_t annex_viewer_connect_windowed(const AnnexCore *core, const char *address,
-                                      const char *expected_fingerprint,
+                                      const char *expected_fingerprint, bool extend,
                                       AnnexEventCallback on_event, void *ctx, AnnexViewer **out);
 #endif
 void annex_viewer_request_keyframe(const AnnexViewer *viewer);

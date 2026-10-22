@@ -27,7 +27,7 @@ final class CoreBridgeTests: XCTestCase {
         let started = expectation(description: "host session started")
         let keyframeAsked = expectation(description: "keyframe requested")
         keyframeAsked.assertForOverFulfill = false
-        let host = try HostHandle(core: hostCore, port: 0, width: 1280, height: 720, fps: 60, advertise: false) { e in
+        let host = try HostHandle(core: hostCore, port: 0, width: 1280, height: 720, fps: 60, advertise: false, extend: true) { e in
             switch e {
             case .pairingPin(let p):
                 note(p.pin, nil)

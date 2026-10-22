@@ -282,7 +282,8 @@ public sealed partial class MainWindow : Window
         Disconnect();
         try
         {
-            _viewer = ViewerHandle.ConnectWindowed(_core, address, pinnedFingerprint, e => _ui.TryEnqueue(() => OnViewerEvent(e)));
+            _viewer = ViewerHandle.ConnectWindowed(_core, address, pinnedFingerprint, e => _ui.TryEnqueue(() => OnViewerEvent(e)),
+                extend: ExtendToggle.IsOn);
             _viewingName = title;
             StatusText.Text = $"Connecting to {title}…";
             if (_tray is not null) _tray.Tooltip = $"Annex — connecting to {title}";
@@ -304,7 +305,7 @@ public sealed partial class MainWindow : Window
                 StatusText.Text = $"Pairing with {f.PeerName} failed: the PIN didn't match or pairing was cancelled.";
                 break;
             case CoreEvent.SessionStarted s:
-                StatusText.Text = $"Viewing {s.PeerName}";
+                StatusText.Text = s.Mode == "extend" ? $"Extra display for {s.PeerName}" : $"Viewing {s.PeerName}";
                 _viewingName = s.PeerName;
                 if (_tray is not null) _tray.Tooltip = $"Annex — viewing {s.PeerName}";
                 RefreshTrusted();
@@ -315,7 +316,7 @@ public sealed partial class MainWindow : Window
             case CoreEvent.Latency(var l):
                 LatencyText.Text = $"Latency p50 {l.P50Ms:F0} ms · p95 {l.P95Ms:F0} ms · {l.Fps:F0} fps";
                 break;
-            case CoreEvent.SessionEnded(var reason):
+            case CoreEvent.SessionEnded(_, var reason):
                 StatusText.Text = reason == "user" ? "Disconnected." : $"Disconnected: {reason}";
                 LatencyText.Text = "";
                 if (_tray is not null) _tray.Tooltip = "Annex";

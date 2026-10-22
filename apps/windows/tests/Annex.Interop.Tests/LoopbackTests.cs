@@ -64,9 +64,11 @@ public class LoopbackTests
         Assert.True(WaitFor<CoreEvent.PairingFinished>(viewerEvents).Success);
         var started = WaitFor<CoreEvent.SessionStarted>(hostEvents);
         Assert.Equal("C# Viewer", started.PeerName);
+        Assert.Equal("mirror", started.Mode);
+        Assert.True(started.SessionId > 0);
         Assert.Equal(1920, started.ViewerDisplay!.WidthPx);
         Assert.Equal(new StreamConfig("h264", 1280, 720, 60), WaitFor<CoreEvent.StreamChanged>(viewerEvents).Stream);
-        WaitFor<CoreEvent.KeyframeRequested>(hostEvents);
+        Assert.Equal(started.SessionId, WaitFor<CoreEvent.KeyframeRequested>(hostEvents).SessionId);
 
         byte[] au = [0, 0, 0, 1, 0x65, 1, 2, 3];
         Assert.Equal(SubmitResult.Sent, host.Submit(au, AnnexNative.NowMicros(), keyframe: true));
@@ -75,7 +77,9 @@ public class LoopbackTests
         Assert.Equal(au, f.Item3);
 
         viewer.Dispose();
-        Assert.Equal("user", WaitFor<CoreEvent.SessionEnded>(hostEvents).Reason);
+        var ended = WaitFor<CoreEvent.SessionEnded>(hostEvents);
+        Assert.Equal("user", ended.Reason);
+        Assert.Equal(started.SessionId, ended.SessionId);
 
         Assert.Single(hostCore.TrustedPeers);
         Assert.True(hostCore.Untrust(viewerCore.Fingerprint));

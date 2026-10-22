@@ -55,11 +55,17 @@ struct MenuContent: View {
                 .help("Off forces Apple's software encoder, which adds about 280 ms of latency.")
             if model.isHosting {
                 let s = model.hostStatus
-                if let viewer = s.viewerName, let st = s.stream {
-                    Label("Streaming to \(viewer) — \(st.width)×\(st.height) @ \(st.fps)\(s.hardwareEncoder ? " (HW)" : " (SW)")",
+                if !s.mirrorViewers.isEmpty, let st = s.stream {
+                    Label("Mirroring to \(s.mirrorViewers.joined(separator: ", ")) — \(st.width)×\(st.height) @ \(st.fps)\(s.hardwareEncoder ? " (HW)" : " (SW)")",
                           systemImage: "dot.radiowaves.left.and.right")
                         .font(.callout)
-                } else if let port = s.listeningPort {
+                }
+                if !s.extendViewers.isEmpty {
+                    Label("Extended to \(s.extendViewers.joined(separator: ", ")) (see System Settings → Displays)",
+                          systemImage: "rectangle.on.rectangle")
+                        .font(.callout)
+                }
+                if s.viewerName == nil, let port = s.listeningPort {
                     Label("Waiting for a viewer on port \(port)…", systemImage: "hourglass").font(.callout)
                 }
             }
@@ -72,6 +78,13 @@ struct MenuContent: View {
     private var viewSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("View another computer").font(.subheadline.bold())
+            Picker("", selection: $model.extendMode) {
+                Text("Mirror its screen").tag(false)
+                Text("Use as extra display").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .help("Extra display: the other computer gets a new virtual display and this Mac shows it.")
             if model.discovered.isEmpty {
                 Text("Looking for hosts on this network…").font(.callout).foregroundStyle(.secondary)
             }

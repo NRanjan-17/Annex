@@ -1,12 +1,16 @@
 //! Host side: listens for viewers, authorizes them and streams encoded frames.
-//! M1 serves one viewer at a time; extra viewers are rejected with `busy`.
+//!
+//! Up to [`MAX_SESSIONS`] viewers at once. **Mirror** sessions all receive the same frames
+//! ([`HostHandle::submit_frame`]); each **Extend** session gets its own virtual display and
+//! frames ([`HostHandle::submit_session_frame`]). Extra viewers are rejected with `busy`.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use annex_crypto::peer_fingerprint;
-use annex_proto::{Control, Mode, Role, StreamConfig, VideoFlags, VideoHeader};
+use annex_proto::{Codec, Control, DisplayInfo, Mode, Role, StreamConfig, VideoFlags, VideoHeader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -19,24 +23,30 @@ use crate::pairing::{PairContext, pair_as_host};
 use crate::{Core, SessionError};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Long enough for the user on the viewer side to answer its own trust prompt.
+/// Long enough for the user on the viewer side to type the pairing PIN.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(130);
 /// Frames queued between the encoder and the socket. Small on purpose: on a slow link we
 /// would rather drop frames and resync with a keyframe than build up latency.
 const FRAME_QUEUE: usize = 4;
+/// Concurrent viewers per host.
+pub const MAX_SESSIONS: usize = 4;
+
+pub type SessionId = u64;
 
 #[derive(Debug, Clone)]
 pub struct HostConfig {
     /// TCP port to listen on (0 = pick a free port).
     pub port: u16,
-    /// Initial stream description; update with [`HostHandle::set_stream`].
+    /// Stream description for mirror sessions; update with [`HostHandle::set_stream`].
     pub stream: StreamConfig,
+    /// Whether this host can create virtual displays (accepts `extend` sessions).
+    pub extend: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubmitResult {
     Sent,
-    /// No viewer connected; the frame was discarded.
+    /// No (matching) viewer connected; the frame was discarded.
     NoSession,
     /// The link is congested, or we are waiting for a keyframe after a drop.
     Dropped,
@@ -44,24 +54,61 @@ pub enum SubmitResult {
 
 struct OutFrame {
     header: VideoHeader,
-    data: Vec<u8>,
+    data: Arc<Vec<u8>>,
+}
+
+struct SessionSlot {
+    id: SessionId,
+    mode: Mode,
+    frames: mpsc::Sender<OutFrame>,
+    stream: watch::Sender<StreamConfig>,
+    need_keyframe: AtomicBool,
+    next_frame_id: AtomicU32,
+    /// Signalled by [`HostHandle::end_session`].
+    ended: tokio::sync::Notify,
 }
 
 struct Shared {
     core: Arc<Core>,
     events: EventSink,
-    busy: AtomicBool,
-    active: Mutex<Option<mpsc::Sender<OutFrame>>>,
-    stream: watch::Sender<StreamConfig>,
-    next_frame_id: AtomicU32,
-    need_keyframe: AtomicBool,
+    extend: bool,
+    mirror_stream: Mutex<StreamConfig>,
+    sessions: Mutex<HashMap<SessionId, Arc<SessionSlot>>>,
+    /// Connections that have claimed a slot (pairing or streaming).
+    claimed: AtomicUsize,
+    next_id: AtomicU64,
 }
 
 impl Shared {
-    fn request_keyframe(&self) {
+    fn request_keyframe(&self, slot: &SessionSlot) {
         // Only notify once per outstanding request.
-        if !self.need_keyframe.swap(true, Ordering::AcqRel) {
-            (self.events)(Event::KeyframeRequested);
+        if !slot.need_keyframe.swap(true, Ordering::AcqRel) {
+            (self.events)(Event::KeyframeRequested { session_id: slot.id });
+        }
+    }
+
+    fn submit(&self, slot: &SessionSlot, data: &Arc<Vec<u8>>, capture_ts_us: i64, keyframe: bool) -> SubmitResult {
+        if keyframe {
+            slot.need_keyframe.store(false, Ordering::Release);
+        } else if slot.need_keyframe.load(Ordering::Acquire) {
+            // Deltas after a drop would decode as garbage; wait for the keyframe.
+            return SubmitResult::Dropped;
+        }
+        let frame = OutFrame {
+            header: VideoHeader {
+                frame_id: slot.next_frame_id.fetch_add(1, Ordering::Relaxed),
+                capture_ts_us,
+                flags: VideoFlags(if keyframe { VideoFlags::KEYFRAME } else { 0 }),
+            },
+            data: data.clone(),
+        };
+        match slot.frames.try_send(frame) {
+            Ok(()) => SubmitResult::Sent,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.request_keyframe(slot);
+                SubmitResult::Dropped
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => SubmitResult::NoSession,
         }
     }
 }
@@ -78,50 +125,94 @@ impl HostHandle {
         self.port
     }
 
+    /// Changes the mirror stream (e.g. the captured display's resolution changed). Every mirror
+    /// session is told with a `stream_config` message.
     pub fn set_stream(&self, stream: StreamConfig) {
-        self.shared.stream.send_replace(stream);
+        *self.shared.mirror_stream.lock().unwrap() = stream.clone();
+        for s in self.shared.sessions.lock().unwrap().values().filter(|s| s.mode == Mode::Mirror) {
+            s.stream.send_replace(stream.clone());
+        }
+    }
+
+    /// Changes one session's stream (Extend: the user picked another resolution).
+    pub fn set_session_stream(&self, session_id: SessionId, stream: StreamConfig) -> bool {
+        match self.shared.sessions.lock().unwrap().get(&session_id) {
+            Some(s) => {
+                s.stream.send_replace(stream);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn has_session(&self) -> bool {
-        self.shared.active.lock().unwrap().is_some()
+        !self.shared.sessions.lock().unwrap().is_empty()
     }
 
-    /// Queues one encoded access unit. Safe to call from any thread; never blocks.
+    /// Active sessions and their modes.
+    pub fn sessions(&self) -> Vec<(SessionId, Mode)> {
+        self.shared.sessions.lock().unwrap().values().map(|s| (s.id, s.mode)).collect()
+    }
+
+    /// Queues one encoded access unit for every **mirror** session. Never blocks.
     pub fn submit_frame(&self, data: &[u8], capture_ts_us: i64, keyframe: bool) -> SubmitResult {
-        let guard = self.shared.active.lock().unwrap();
-        let Some(tx) = guard.as_ref() else { return SubmitResult::NoSession };
-        if keyframe {
-            self.shared.need_keyframe.store(false, Ordering::Release);
-        } else if self.shared.need_keyframe.load(Ordering::Acquire) {
-            // Deltas after a drop would decode as garbage; wait for the keyframe.
-            return SubmitResult::Dropped;
+        let targets: Vec<Arc<SessionSlot>> =
+            self.shared.sessions.lock().unwrap().values().filter(|s| s.mode == Mode::Mirror).cloned().collect();
+        if targets.is_empty() {
+            return SubmitResult::NoSession;
         }
-        let frame = OutFrame {
-            header: VideoHeader {
-                frame_id: self.shared.next_frame_id.fetch_add(1, Ordering::Relaxed),
-                capture_ts_us,
-                flags: VideoFlags(if keyframe { VideoFlags::KEYFRAME } else { 0 }),
-            },
-            data: data.to_vec(),
-        };
-        match tx.try_send(frame) {
-            Ok(()) => SubmitResult::Sent,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                drop(guard);
-                self.shared.request_keyframe();
-                SubmitResult::Dropped
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => SubmitResult::NoSession,
+        let data = Arc::new(data.to_vec());
+        let results: Vec<SubmitResult> =
+            targets.iter().map(|s| self.shared.submit(s, &data, capture_ts_us, keyframe)).collect();
+        if results.contains(&SubmitResult::Sent) {
+            SubmitResult::Sent
+        } else if results.contains(&SubmitResult::Dropped) {
+            SubmitResult::Dropped
+        } else {
+            SubmitResult::NoSession
         }
     }
 
-    /// Stops listening, ends any session and waits for tasks to finish.
+    /// Queues one encoded access unit for a single session (Extend). Never blocks.
+    pub fn submit_session_frame(
+        &self,
+        session_id: SessionId,
+        data: &[u8],
+        capture_ts_us: i64,
+        keyframe: bool,
+    ) -> SubmitResult {
+        let slot = self.shared.sessions.lock().unwrap().get(&session_id).cloned();
+        match slot {
+            Some(s) => self.shared.submit(&s, &Arc::new(data.to_vec()), capture_ts_us, keyframe),
+            None => SubmitResult::NoSession,
+        }
+    }
+
+    /// Ends one session (e.g. its virtual display could not be created or was removed).
+    pub fn end_session(&self, session_id: SessionId) {
+        if let Some(s) = self.shared.sessions.lock().unwrap().remove(&session_id) {
+            // notify_one stores a permit, so this works even if the task isn't waiting yet.
+            s.ended.notify_one();
+        }
+    }
+
+    /// Stops listening, ends all sessions and waits for tasks to finish.
     pub async fn stop(&self) {
         self.shutdown.send_replace(true);
         let task = self.task.lock().unwrap().take();
         if let Some(t) = task {
             let _ = t.await;
         }
+    }
+}
+
+/// Initial stream for an Extend session: the viewer's native resolution (even), ≤ 60 fps.
+pub fn extend_stream_for(display: &DisplayInfo) -> StreamConfig {
+    StreamConfig {
+        codec: Codec::H264,
+        width: display.width_px.max(2) & !1,
+        height: display.height_px.max(2) & !1,
+        fps: if display.refresh_hz == 0 { 60 } else { display.refresh_hz.clamp(24, 60) },
     }
 }
 
@@ -134,11 +225,11 @@ pub async fn start_host(core: Arc<Core>, cfg: HostConfig, events: EventSink) -> 
     let shared = Arc::new(Shared {
         core,
         events: events.clone(),
-        busy: AtomicBool::new(false),
-        active: Mutex::new(None),
-        stream: watch::Sender::new(cfg.stream),
-        next_frame_id: AtomicU32::new(0),
-        need_keyframe: AtomicBool::new(true),
+        extend: cfg.extend,
+        mirror_stream: Mutex::new(cfg.stream),
+        sessions: Mutex::new(HashMap::new()),
+        claimed: AtomicUsize::new(0),
+        next_id: AtomicU64::new(1),
     });
     events(Event::Listening { port });
     let task = tokio::spawn(accept_loop(listener, tls, shared.clone(), shutdown_rx));
@@ -192,16 +283,18 @@ async fn handle_conn(
     let mut reader = Reader::new(r);
     let mut writer = Writer::new(w);
 
-    // Claim the single session slot before prompting anyone.
-    if shared.busy.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+    // Claim a slot before asking anyone for a PIN.
+    if shared.claimed.fetch_add(1, Ordering::AcqRel) >= MAX_SESSIONS {
+        shared.claimed.fetch_sub(1, Ordering::AcqRel);
         let _ = writer.send_control(&Control::SessionReject { reason: "busy".into() }).await;
         writer.shutdown().await;
         return;
     }
+    let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     let mut started = false;
-    let result = run_session(&mut reader, &mut writer, &fp, &exporter, &shared, shutdown, &mut started).await;
-    *shared.active.lock().unwrap() = None;
-    shared.busy.store(false, Ordering::Release);
+    let result = run_session(&mut reader, &mut writer, &fp, &exporter, &shared, shutdown, id, &mut started).await;
+    shared.sessions.lock().unwrap().remove(&id);
+    shared.claimed.fetch_sub(1, Ordering::AcqRel);
     let reason = match result {
         Ok(reason) => reason,
         Err(SessionError::Rejected(reason)) => reason,
@@ -209,12 +302,13 @@ async fn handle_conn(
     };
     writer.shutdown().await;
     if started {
-        (shared.events)(Event::SessionEnded { reason });
+        (shared.events)(Event::SessionEnded { session_id: id, reason });
     } else {
         tracing::info!("connection closed before session start: {reason}");
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_session<R, W>(
     reader: &mut Reader<R>,
     writer: &mut Writer<W>,
@@ -222,6 +316,7 @@ async fn run_session<R, W>(
     exporter: &[u8],
     shared: &Arc<Shared>,
     mut shutdown: watch::Receiver<bool>,
+    id: SessionId,
     started: &mut bool,
 ) -> Result<String, SessionError>
 where
@@ -232,7 +327,8 @@ where
         return Err(SessionError::Violation("peer uses our own identity".into()));
     }
     let knows = shared.core.knows(fp);
-    writer.send_control(&hello(&shared.core, vec![Role::Host], knows)).await?;
+    let caps: &[&str] = if shared.extend { &["h264", "extend"] } else { &["h264"] };
+    writer.send_control(&hello(&shared.core, vec![Role::Host], knows, caps)).await?;
     let peer = check_hello(timeout(HANDSHAKE_TIMEOUT, reader.next_control()).await??, fp)?;
     if knows && peer.knows_peer {
         shared.core.touch(fp);
@@ -252,8 +348,11 @@ where
         Control::Bye { reason } => return Err(SessionError::Rejected(reason)),
         _ => return Err(SessionError::Violation("expected session_request".into())),
     };
-    let stream = shared.stream.borrow().clone();
-    let reject = if req.mode != Mode::Mirror {
+    let stream = match req.mode {
+        Mode::Mirror => shared.mirror_stream.lock().unwrap().clone(),
+        Mode::Extend => extend_stream_for(&req.display),
+    };
+    let reject = if req.mode == Mode::Extend && !shared.extend {
         Some("extend_not_supported")
     } else if !req.codecs.contains(&stream.codec) {
         Some("no_common_codec")
@@ -267,20 +366,30 @@ where
     writer.send_control(&Control::SessionAccept { stream: stream.clone() }).await?;
 
     let (frame_tx, mut frame_rx) = mpsc::channel::<OutFrame>(FRAME_QUEUE);
-    shared.need_keyframe.store(false, Ordering::Release);
-    *shared.active.lock().unwrap() = Some(frame_tx);
+    let (stream_tx, mut stream_rx) = watch::channel(stream.clone());
+    let slot = Arc::new(SessionSlot {
+        id,
+        mode: req.mode,
+        frames: frame_tx,
+        stream: stream_tx,
+        need_keyframe: AtomicBool::new(false),
+        next_frame_id: AtomicU32::new(0),
+        ended: tokio::sync::Notify::new(),
+    });
+    shared.sessions.lock().unwrap().insert(id, slot.clone());
     *started = true;
     (shared.events)(Event::SessionStarted {
+        session_id: id,
+        mode: req.mode,
         peer_name: peer.device_name.clone(),
         fingerprint: fp.to_string(),
         viewer_display: Some(req.display.clone()),
         stream,
     });
-    shared.request_keyframe();
+    shared.request_keyframe(&slot);
 
     // The reader runs independently so control messages are handled while we write video.
     let (ctl_tx, mut ctl_rx) = mpsc::channel::<Result<Control, SessionError>>(32);
-    let mut stream_rx = shared.stream.subscribe();
     stream_rx.mark_unchanged();
     let reader_fut = async {
         loop {
@@ -305,8 +414,12 @@ where
                     Some(f) => writer.send_video(f.header, &f.data).await?,
                     None => return Ok("stopped".to_string()),
                 },
+                _ = slot.ended.notified() => {
+                    let _ = writer.send_control(&Control::Bye { reason: "host_ended_session".into() }).await;
+                    return Ok("host_ended_session".to_string());
+                },
                 c = ctl_rx.recv() => match c {
-                    Some(Ok(Control::KeyframeRequest)) => shared.request_keyframe(),
+                    Some(Ok(Control::KeyframeRequest)) => shared.request_keyframe(&slot),
                     Some(Ok(Control::ClockPing { seq, t_viewer_us })) => {
                         writer.send_control(&Control::ClockPong { seq, t_viewer_us, t_host_us: now_us() }).await?;
                     }
@@ -316,6 +429,7 @@ where
                     None => return Err(SessionError::Closed),
                 },
                 Ok(()) = stream_rx.changed() => {
+                    // Mirror sessions resync with a keyframe after a resolution change too.
                     let s = stream_rx.borrow_and_update().clone();
                     writer.send_control(&Control::StreamConfig(s)).await?;
                 }
