@@ -17,7 +17,8 @@ use tokio::time::timeout;
 
 use crate::clock::{ClockSync, now_us};
 use crate::conn::{Incoming, Reader, Writer, check_hello, hello};
-use crate::events::{Event, EventSink, FrameOut, FrameSink, PeerRole};
+use crate::events::{Event, EventSink, FrameOut, FrameSink};
+use crate::pairing::{PairContext, pair_as_viewer};
 use crate::stats::LatencyWindow;
 use crate::{Core, SessionError};
 
@@ -75,8 +76,9 @@ impl ViewerHandle {
 pub fn connect_viewer(core: Arc<Core>, cfg: ViewerConfig, events: EventSink, frames: FrameSink) -> ViewerHandle {
     let (cmd, cmd_rx) = mpsc::unbounded_channel();
     let task = tokio::spawn(async move {
+        // Peer-sent reasons stay bare codes (`pairing_failed`, `busy`, ...) for the apps.
         let reason = match run(core, cfg, events.clone(), frames, cmd_rx).await {
-            Ok(r) => r,
+            Ok(r) | Err(SessionError::Rejected(r)) => r,
             Err(e) => e.to_string(),
         };
         events(Event::SessionEnded { reason });
@@ -126,19 +128,39 @@ async fn run(
         timeout(HANDSHAKE_TIMEOUT, connector.connect(name, sock)).await.map_err(|_| SessionError::Timeout("tls"))??;
     let fp = peer_fingerprint(tls.get_ref().1.peer_certificates())
         .ok_or_else(|| SessionError::Violation("host sent no certificate".into()))?;
+    let exporter = tls
+        .get_ref()
+        .1
+        .export_keying_material([0u8; 32], annex_crypto::pairing::EXPORTER_LABEL, None)
+        .map_err(|e| SessionError::Violation(format!("tls exporter: {e}")))?;
+    if fp == core.fingerprint() {
+        return Err(SessionError::Violation("host uses our own identity".into()));
+    }
 
     let (r, w) = tokio::io::split(tls);
     let mut reader = Reader::new(r);
     let mut writer = Writer::new(w);
-    writer.send_control(&hello(&core, vec![Role::Viewer])).await?;
+    let knows = core.knows(&fp);
+    writer.send_control(&hello(&core, vec![Role::Viewer], knows)).await?;
     let peer = match timeout(HANDSHAKE_TIMEOUT, reader.next_control()).await?? {
         Control::SessionReject { reason } => return Err(SessionError::Rejected(reason)),
         other => check_hello(other, &fp)?,
     };
-    if let Err(e) = core.authorize(&fp, &peer.device_name, PeerRole::Host, &events).await {
-        let _ = writer.send_control(&Control::Bye { reason: "not_trusted".into() }).await;
-        writer.shutdown().await;
-        return Err(e);
+    if knows && peer.knows_peer {
+        core.touch(&fp);
+    } else {
+        let cx = PairContext {
+            core: &core,
+            events: &events,
+            peer_fp: &fp,
+            peer_name: &peer.device_name,
+            exporter: &exporter,
+        };
+        let paired = pair_as_viewer(cx, &mut reader, &mut writer).await;
+        if paired.is_err() {
+            writer.shutdown().await;
+        }
+        paired?;
     }
     writer
         .send_control(&Control::SessionRequest(SessionRequest {

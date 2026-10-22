@@ -5,12 +5,14 @@ namespace Annex.Interop.Tests;
 public class EventTests
 {
     [Fact]
-    public void ParsesTrustRequest()
+    public void ParsesPairingEvents()
     {
-        var e = CoreEvent.Parse("""{"type":"trust_request","request_id":7,"peer_name":"Mac","peer_role":"host","fingerprint":"ab","fingerprint_display":"AB"}""");
-        var t = Assert.IsType<CoreEvent.TrustRequest>(e);
-        Assert.Equal(7ul, t.RequestId);
-        Assert.Equal("host", t.PeerRole);
+        var p = Assert.IsType<CoreEvent.PairingPin>(CoreEvent.Parse("""{"type":"pairing_pin","request_id":7,"pin":"123 456","peer_name":"PC","fingerprint_display":"AB"}"""));
+        Assert.Equal("123 456", p.Pin);
+        var r = Assert.IsType<CoreEvent.PairingPinRequired>(CoreEvent.Parse("""{"type":"pairing_pin_required","request_id":8,"peer_name":"Mac","fingerprint_display":"CD"}"""));
+        Assert.Equal(8ul, r.RequestId);
+        var f = Assert.IsType<CoreEvent.PairingFinished>(CoreEvent.Parse("""{"type":"pairing_finished","request_id":8,"success":false,"peer_name":"Mac"}"""));
+        Assert.False(f.Success);
     }
 
     [Fact]

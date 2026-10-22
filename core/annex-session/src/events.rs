@@ -5,13 +5,6 @@ use serde::Serialize;
 
 use crate::LatencyStats;
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PeerRole {
-    Host,
-    Viewer,
-}
-
 /// Everything the native UI needs to know, delivered as JSON through the FFI.
 /// Field names are part of the app ↔ core contract; see `docs/PROTOCOL.md` (FFI events).
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -23,13 +16,25 @@ pub enum Event {
     Connecting {
         address: String,
     },
-    /// An unknown peer wants to connect. Answer with `Core::respond_trust`.
-    TrustRequest {
+    /// Host: show this PIN so the user can type it on the viewer. Cancel with
+    /// `Core::cancel_request`.
+    PairingPin {
+        request_id: u64,
+        pin: String,
+        peer_name: String,
+        fingerprint_display: String,
+    },
+    /// Viewer: ask the user for the PIN shown on the host; answer with `Core::submit_pin`.
+    PairingPinRequired {
         request_id: u64,
         peer_name: String,
-        peer_role: PeerRole,
-        fingerprint: String,
         fingerprint_display: String,
+    },
+    /// Pairing finished on this side (dismiss the PIN UI).
+    PairingFinished {
+        request_id: u64,
+        success: bool,
+        peer_name: String,
     },
     SessionStarted {
         peer_name: String,

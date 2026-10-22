@@ -29,21 +29,39 @@ public class LoopbackTests
         var viewerEvents = new BlockingCollection<CoreEvent>();
         var frames = new BlockingCollection<(uint, bool, byte[])>();
 
+        // PIN pairing: the host shows a PIN; the viewer's "user" types it once both are known.
+        var gate = new object();
+        string? pin = null;
+        ulong? request = null;
+        var submitted = false;
+        void Note(string? p, ulong? r)
+        {
+            lock (gate)
+            {
+                pin ??= p;
+                request ??= r;
+                if (submitted || pin is null || request is null) return;
+                submitted = true;
+                Assert.True(viewerCore.SubmitPin(request.Value, pin));
+            }
+        }
+
         using var host = new HostHandle(hostCore, 0, 1280, 720, 60, advertise: false, e =>
         {
-            if (e is CoreEvent.TrustRequest r) hostCore.RespondTrust(r.RequestId, true);
+            if (e is CoreEvent.PairingPin p) Note(p.Pin, null);
             hostEvents.Add(e);
         });
         Assert.NotEqual(0, host.Port);
 
-        var viewer = ViewerHandle.Connect(viewerCore, $"127.0.0.1:{host.Port}", hostCore.Fingerprint, new DisplayInfo(1920, 1200),
+        var viewer = ViewerHandle.Connect(viewerCore, $"127.0.0.1:{host.Port}", null, new DisplayInfo(1920, 1200),
             e =>
             {
-                if (e is CoreEvent.TrustRequest r) viewerCore.RespondTrust(r.RequestId, true);
+                if (e is CoreEvent.PairingPinRequired r) Note(null, r.RequestId);
                 viewerEvents.Add(e);
             },
             (data, id, _, key) => frames.Add((id, key, data.ToArray())));
 
+        Assert.True(WaitFor<CoreEvent.PairingFinished>(viewerEvents).Success);
         var started = WaitFor<CoreEvent.SessionStarted>(hostEvents);
         Assert.Equal("C# Viewer", started.PeerName);
         Assert.Equal(1920, started.ViewerDisplay!.WidthPx);

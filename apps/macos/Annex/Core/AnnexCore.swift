@@ -90,9 +90,16 @@ final class CoreClient {
         try check(annex_core_untrust(raw, fingerprint)) == 1
     }
 
+    /// Answers a `pairingPinRequired` event with what the user typed.
     @discardableResult
-    func respondTrust(requestID: UInt64, accept: Bool) -> Bool {
-        annex_core_respond_trust(raw, requestID, accept) == 1
+    func submitPin(requestID: UInt64, pin: String) -> Bool {
+        annex_core_submit_pin(raw, requestID, pin) == 1
+    }
+
+    /// Cancels a pending pairing on either side.
+    @discardableResult
+    func cancelRequest(_ requestID: UInt64) -> Bool {
+        annex_core_cancel_request(raw, requestID) == 1
     }
 }
 

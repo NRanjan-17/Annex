@@ -100,6 +100,10 @@ pub struct Hello {
     pub roles: Vec<Role>,
     #[serde(default)]
     pub caps: Vec<String>,
+    /// True if the sender already trusts the receiver's certificate. If either side sends
+    /// false, the peers run PIN pairing before the session starts.
+    #[serde(default)]
+    pub knows_peer: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -126,13 +130,36 @@ pub struct StreamConfig {
 pub enum Control {
     Hello(Hello),
     SessionRequest(SessionRequest),
-    SessionAccept { stream: StreamConfig },
-    SessionReject { reason: String },
+    SessionAccept {
+        stream: StreamConfig,
+    },
+    SessionReject {
+        reason: String,
+    },
     StreamConfig(StreamConfig),
     KeyframeRequest,
-    ClockPing { seq: u32, t_viewer_us: i64 },
-    ClockPong { seq: u32, t_viewer_us: i64, t_host_us: i64 },
-    Bye { reason: String },
+    /// SPAKE2 message (viewer = side A, host = side B).
+    PairSpake {
+        #[serde(with = "serde_bytes")]
+        msg: Vec<u8>,
+    },
+    /// HMAC key confirmation over the pairing transcript (32 bytes).
+    PairConfirm {
+        #[serde(with = "serde_bytes")]
+        mac: Vec<u8>,
+    },
+    ClockPing {
+        seq: u32,
+        t_viewer_us: i64,
+    },
+    ClockPong {
+        seq: u32,
+        t_viewer_us: i64,
+        t_host_us: i64,
+    },
+    Bye {
+        reason: String,
+    },
 }
 
 const KNOWN_CONTROL_TYPES: &[&str] = &[
@@ -142,6 +169,8 @@ const KNOWN_CONTROL_TYPES: &[&str] = &[
     "session_reject",
     "stream_config",
     "keyframe_request",
+    "pair_spake",
+    "pair_confirm",
     "clock_ping",
     "clock_pong",
     "bye",
@@ -202,6 +231,16 @@ impl Control {
                     return Err(ProtoError::InvalidField("reason"));
                 }
             }
+            Control::PairSpake { msg } => {
+                if msg.is_empty() || msg.len() > 128 {
+                    return Err(ProtoError::InvalidField("msg"));
+                }
+            }
+            Control::PairConfirm { mac } => {
+                if mac.len() != 32 {
+                    return Err(ProtoError::InvalidField("mac"));
+                }
+            }
             Control::KeyframeRequest | Control::ClockPing { .. } | Control::ClockPong { .. } => {}
         }
         Ok(())
@@ -221,6 +260,7 @@ mod tests {
             app_version: "0.1.0".into(),
             roles: vec![Role::Host, Role::Viewer],
             caps: vec!["h264".into()],
+            knows_peer: true,
         }
     }
 
@@ -244,6 +284,8 @@ mod tests {
             Control::SessionAccept { stream: StreamConfig { codec: Codec::H264, width: 1920, height: 1080, fps: 60 } },
             Control::SessionReject { reason: "busy".into() },
             Control::KeyframeRequest,
+            Control::PairSpake { msg: vec![1; 33] },
+            Control::PairConfirm { mac: vec![2; 32] },
             Control::ClockPing { seq: 7, t_viewer_us: -5 },
             Control::ClockPong { seq: 7, t_viewer_us: -5, t_host_us: 123_456_789 },
             Control::Bye { reason: "user".into() },
@@ -300,6 +342,13 @@ mod tests {
         let mut h = hello();
         h.device_name = "x".repeat(MAX_NAME_LEN + 1);
         assert!(Control::decode(&Control::Hello(h).encode()).is_err());
+    }
+
+    #[test]
+    fn pairing_fields_are_validated() {
+        assert!(Control::decode(&Control::PairConfirm { mac: vec![0; 31] }.encode()).is_err());
+        assert!(Control::decode(&Control::PairSpake { msg: vec![] }.encode()).is_err());
+        assert!(Control::decode(&Control::PairSpake { msg: vec![0; 129] }.encode()).is_err());
     }
 
     #[test]

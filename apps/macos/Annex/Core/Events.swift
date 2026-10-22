@@ -17,12 +17,25 @@ struct DisplayInfo: Codable, Equatable {
     var scalePercent: Int = 100
 }
 
-struct TrustRequest: Decodable, Equatable {
+/// Host side: show `pin` until `pairingFinished` arrives for `requestId`.
+struct PairingPin: Decodable, Equatable {
+    let requestId: UInt64
+    let pin: String
+    let peerName: String
+    let fingerprintDisplay: String
+}
+
+/// Viewer side: ask the user for the PIN the host shows.
+struct PairingPinRequired: Decodable, Equatable {
     let requestId: UInt64
     let peerName: String
-    let peerRole: String
-    let fingerprint: String
     let fingerprintDisplay: String
+}
+
+struct PairingFinished: Decodable, Equatable {
+    let requestId: UInt64
+    let success: Bool
+    let peerName: String
 }
 
 struct SessionStarted: Decodable, Equatable {
@@ -71,7 +84,9 @@ struct TrustedPeer: Decodable, Identifiable, Hashable {
 enum CoreEvent: Equatable {
     case listening(port: Int)
     case connecting(address: String)
-    case trustRequest(TrustRequest)
+    case pairingPin(PairingPin)
+    case pairingPinRequired(PairingPinRequired)
+    case pairingFinished(PairingFinished)
     case sessionStarted(SessionStarted)
     case streamConfig(StreamConfig)
     case keyframeRequested
@@ -103,7 +118,9 @@ enum CoreEvent: Equatable {
             switch tag.type {
             case "listening": return .listening(port: try d.decode(Port.self, from: data).port)
             case "connecting": return .connecting(address: try d.decode(Address.self, from: data).address)
-            case "trust_request": return .trustRequest(try d.decode(TrustRequest.self, from: data))
+            case "pairing_pin": return .pairingPin(try d.decode(PairingPin.self, from: data))
+            case "pairing_pin_required": return .pairingPinRequired(try d.decode(PairingPinRequired.self, from: data))
+            case "pairing_finished": return .pairingFinished(try d.decode(PairingFinished.self, from: data))
             case "session_started": return .sessionStarted(try d.decode(SessionStarted.self, from: data))
             case "stream_config": return .streamConfig(try d.decode(Stream.self, from: data).stream)
             case "keyframe_requested": return .keyframeRequested

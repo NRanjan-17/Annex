@@ -51,15 +51,19 @@ These need two machines (or a Windows VM with network bridging). Put both on the
 2. On Windows, open Annex from the tray icon. Within ~5 s the Mac appears under "Hosts on
    this network". (Windows may ask to allow Annex through the firewall: allow **Private**.)
    Alternatively type the Mac's IP address and press **Connect**.
-3. **Both** machines show a trust prompt. Check that the code shown on Windows matches the
-   code at the top of the Mac menu, and the reverse, then click **Trust** on both.
+3. **Pairing:** the Mac shows a floating panel with a 6-digit PIN; Windows asks for it.
+   Type the PIN on Windows and click **Pair**. (Try a wrong PIN once first: both sides must
+   report that pairing failed, and nothing is added to *Trusted devices*.)
 4. Expected: a full-screen window on Windows shows the Mac screen within ~1 s. Move a window
    on the Mac; it moves on Windows. The Windows app shows "Viewing <Mac> — W×H @ 60 fps"
    and a latency line (p50/p95).
 5. Press **Esc** on Windows: the viewer closes, and the Mac menu returns to "Waiting for a viewer".
-6. Connect again: no trust prompt this time (the devices are pinned).
-7. On Windows, select the Mac in **Trusted devices** and click **Remove selected device**,
-   then connect again: the trust prompt must reappear. Click **Reject**: the session must not start.
+6. Connect again: no PIN this time (the devices are pinned).
+7. On the **Mac**, click **Remove** next to the PC under *Trusted devices*, then connect from
+   Windows again: a new PIN must be shown and pairing repeats. Click **Don't Allow** on the
+   Mac: Windows reports "pairing_cancelled" and no session starts.
+8. Lockout: enter a wrong PIN 5 times in a row. The 6th attempt must fail immediately with
+   "pairing_locked" and no PIN panel on the Mac (it unlocks after 10 minutes).
 
 ### 3. Tray behaviour (Windows)
 

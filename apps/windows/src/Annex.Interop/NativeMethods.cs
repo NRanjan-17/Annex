@@ -58,8 +58,11 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_core_untrust(nint core, string fingerprint);
 
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_core_submit_pin(nint core, ulong requestId, string pin);
+
     [LibraryImport(Lib)]
-    public static partial int annex_core_respond_trust(nint core, ulong requestId, [MarshalAs(UnmanagedType.U1)] bool accept);
+    public static partial int annex_core_cancel_request(nint core, ulong requestId);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_host_start(nint core, ushort port, string codec, uint width, uint height, uint fps,

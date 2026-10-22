@@ -256,12 +256,12 @@ pub unsafe extern "C" fn annex_core_new(
         }
         let dir = PathBuf::from(unsafe { str_arg(data_dir, "data_dir") }?);
         let name = unsafe { str_arg(device_name, "device_name") }?;
-        let core = Core::open(&dir, name, TrustPolicy::Prompt).map_err(failed)?;
+        let core = Core::open(&dir, name, TrustPolicy::Pair).map_err(failed)?;
         new_core(core, out)
     })
 }
 
-/// In-memory identity and trust store (tests). Unknown peers still trigger trust prompts.
+/// In-memory identity and trust store (tests). Unknown peers still require PIN pairing.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn annex_core_new_ephemeral(device_name: *const c_char, out: *mut *mut AnnexCore) -> i32 {
     guard(|| {
@@ -269,7 +269,7 @@ pub unsafe extern "C" fn annex_core_new_ephemeral(device_name: *const c_char, ou
             return Err(invalid("out is null"));
         }
         let name = unsafe { str_arg(device_name, "device_name") }?;
-        new_core(Core::ephemeral(name, TrustPolicy::Prompt).map_err(failed)?, out)
+        new_core(Core::ephemeral(name, TrustPolicy::Pair).map_err(failed)?, out)
     })
 }
 
@@ -327,12 +327,24 @@ pub unsafe extern "C" fn annex_core_untrust(core: *const AnnexCore, fingerprint:
     })
 }
 
-/// Answers a `trust_request` event. Returns 1 if the request was pending, 0 if unknown/expired.
+/// Answers a `pairing_pin_required` event with the PIN the user typed.
+/// Returns 1 if the request was pending, 0 if unknown/expired.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn annex_core_respond_trust(core: *const AnnexCore, request_id: u64, accept: bool) -> i32 {
+pub unsafe extern "C" fn annex_core_submit_pin(core: *const AnnexCore, request_id: u64, pin: *const c_char) -> i32 {
     guard(|| {
         let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
-        Ok(c.core.respond_trust(request_id, accept) as i32)
+        let pin = unsafe { str_arg(pin, "pin") }?;
+        Ok(c.core.submit_pin(request_id, pin) as i32)
+    })
+}
+
+/// Cancels a pending pairing (`pairing_pin` on the host, `pairing_pin_required` on the viewer).
+/// Returns 1 if the request was pending.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_cancel_request(core: *const AnnexCore, request_id: u64) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        Ok(c.core.cancel_request(request_id) as i32)
     })
 }
 

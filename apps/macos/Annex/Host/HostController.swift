@@ -156,4 +156,12 @@ final class LockedBox<T>: @unchecked Sendable {
         get { lock.lock(); defer { lock.unlock() }; return _value }
         set { lock.lock(); _value = newValue; lock.unlock() }
     }
+
+    /// Atomic read-modify-write.
+    @discardableResult
+    func update<R>(_ body: (inout T?) -> R) -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return body(&_value)
+    }
 }

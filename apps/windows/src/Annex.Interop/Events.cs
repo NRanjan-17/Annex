@@ -26,7 +26,11 @@ public abstract record CoreEvent
 {
     public sealed record Listening(int Port) : CoreEvent;
     public sealed record Connecting(string Address) : CoreEvent;
-    public sealed record TrustRequest(ulong RequestId, string PeerName, string PeerRole, string Fingerprint, string FingerprintDisplay) : CoreEvent;
+    /// <summary>Host: show this PIN until <see cref="PairingFinished"/> arrives.</summary>
+    public sealed record PairingPin(ulong RequestId, string Pin, string PeerName, string FingerprintDisplay) : CoreEvent;
+    /// <summary>Viewer: ask the user for the PIN shown on the host.</summary>
+    public sealed record PairingPinRequired(ulong RequestId, string PeerName, string FingerprintDisplay) : CoreEvent;
+    public sealed record PairingFinished(ulong RequestId, bool Success, string PeerName) : CoreEvent;
     public sealed record SessionStarted(string PeerName, string Fingerprint, StreamConfig Stream, DisplayInfo? ViewerDisplay = null) : CoreEvent;
     public sealed record StreamChanged(StreamConfig Stream) : CoreEvent;
     public sealed record KeyframeRequested : CoreEvent;
@@ -55,7 +59,9 @@ public abstract record CoreEvent
             {
                 "listening" => new Listening(Get<PortDto>(json).Port),
                 "connecting" => new Connecting(Get<AddressDto>(json).Address),
-                "trust_request" => Get<TrustRequest>(json),
+                "pairing_pin" => Get<PairingPin>(json),
+                "pairing_pin_required" => Get<PairingPinRequired>(json),
+                "pairing_finished" => Get<PairingFinished>(json),
                 "session_started" => Get<SessionStarted>(json),
                 "stream_config" => new StreamChanged(Get<StreamWrapper>(json).Stream),
                 "keyframe_requested" => new KeyframeRequested(),
@@ -89,7 +95,9 @@ internal sealed record InstanceDto(string Instance);
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     RespectRequiredConstructorParameters = true,
     RespectNullableAnnotations = true)]
-[JsonSerializable(typeof(CoreEvent.TrustRequest))]
+[JsonSerializable(typeof(CoreEvent.PairingPin))]
+[JsonSerializable(typeof(CoreEvent.PairingPinRequired))]
+[JsonSerializable(typeof(CoreEvent.PairingFinished))]
 [JsonSerializable(typeof(CoreEvent.SessionStarted))]
 [JsonSerializable(typeof(LatencyStats))]
 [JsonSerializable(typeof(PeerInfo))]

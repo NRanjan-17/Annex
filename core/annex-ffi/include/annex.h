@@ -62,8 +62,10 @@ char *annex_core_device_name(const AnnexCore *core);
 char *annex_core_trusted_peers_json(const AnnexCore *core);
 /* Returns 1 if removed, 0 if not trusted. */
 int32_t annex_core_untrust(const AnnexCore *core, const char *fingerprint);
-/* Answers a "trust_request" event. Returns 1 if it was pending. */
-int32_t annex_core_respond_trust(const AnnexCore *core, uint64_t request_id, bool accept);
+/* Answers a "pairing_pin_required" event with the PIN the user typed. Returns 1 if pending. */
+int32_t annex_core_submit_pin(const AnnexCore *core, uint64_t request_id, const char *pin);
+/* Cancels a pending pairing ("pairing_pin" or "pairing_pin_required"). Returns 1 if pending. */
+int32_t annex_core_cancel_request(const AnnexCore *core, uint64_t request_id);
 
 /* ---- Host ------------------------------------------------------------------------- */
 /* codec: "h264" | "hevc" | "raw". port 0 picks a free port. */

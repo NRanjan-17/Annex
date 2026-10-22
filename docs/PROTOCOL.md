@@ -32,12 +32,40 @@ M5 adds QUIC (same identities, ALPN and control messages; video moves to unrelia
 - Display form for humans: first 20 hex digits, upper case, in groups of 4
   (`AB12 CD34 EF56 7890 1234`).
 - TLS verifiers check the handshake signature (proof of key possession) but not trust. After
-  the handshake each side looks the peer's device ID up in its trust store. Unknown peers
-  trigger a `trust_request` event; the user compares display fingerprints and accepts or
-  rejects. Accepted IDs are pinned. A viewer connecting to an already-trusted host passes the
-  expected ID so the TLS handshake itself fails on any other certificate.
+  the handshake each side looks the peer's device ID up in its trust store and reports the
+  result in `Hello.knows_peer`. If **either** side sends `false`, the two run **PIN pairing**
+  (below) before anything else. Afterwards both IDs are pinned. A viewer connecting to an
+  already-trusted host passes the expected ID so the TLS handshake itself fails on any other
+  certificate.
 - `Hello.device_id` must equal the TLS peer's device ID or the session is aborted.
-- M2 replaces the visual comparison with PIN/QR pairing (SPAKE2 bound to the TLS exporter).
+
+## PIN pairing (SPAKE2)
+
+The host generates a uniformly random 6-digit PIN (OS CSPRNG) and shows it. The viewer's user
+types it. Both sides run SPAKE2 over Ed25519 (RustCrypto `spake2`; viewer = side A, host =
+side B, identities = the two device IDs) with the PIN as the password:
+
+```
+viewer                                              host
+  |------- pair_spake { msg: A } ------------------->|
+  |<------ pair_spake { msg: B } --------------------|
+  |------- pair_confirm { mac: MAC_viewer } -------->|   host verifies; mismatch → bye{pairing_failed}
+  |<------ pair_confirm { mac: MAC_host } -----------|   viewer verifies
+```
+
+- `E` = 32 bytes of TLS keying material, label `EXPORTER-annex-pairing-v1`, no context.
+- `K` = SPAKE2 output. `k_v`, `k_h` = HKDF-SHA256(salt = `E`, ikm = `K`), info
+  `annex/1 pairing confirm viewer` / `... host`.
+- transcript = length-prefixed (`u32` BE) concatenation of `annex/1 pairing transcript`,
+  viewer ID, host ID, `A`, `B`. `MAC_x` = HMAC-SHA256(`k_x`, transcript), compared in
+  constant time.
+- An eavesdropper learns nothing it can brute-force offline. An active attacker gets one PIN
+  guess per run. Binding to `E` defeats a relay between two TLS sessions, and binding to both
+  IDs ties the pinned keys to the exchange.
+- The host allows **5 failed runs per 10 minutes**; after that it answers `bye{pairing_locked}`
+  without showing a PIN. Either side may cancel (`bye{pairing_cancelled}`). The viewer has
+  120 s to enter the PIN (`bye{pairing_timeout}`).
+- QR pairing is not implemented. The PIN covers the requirement and needs no camera.
 
 ## Record framing
 
@@ -58,7 +86,9 @@ A CBOR map with a text key `t` holding the message type. Field names are snake_c
 
 | `t` | Direction | Fields |
 |---|---|---|
-| `hello` | both, first message | `proto_major` u16, `proto_minor` u16, `device_name` text (≤ 64 bytes), `device_id` text (64 hex), `app_version` text, `roles` [`host`\|`viewer`], `caps` [text] |
+| `hello` | both, first message | `proto_major` u16, `proto_minor` u16, `device_name` text (≤ 64 bytes), `device_id` text (64 hex), `app_version` text, `roles` [`host`\|`viewer`], `caps` [text], `knows_peer` bool |
+| `pair_spake` | both, pairing only | `msg` bytes (1–128) |
+| `pair_confirm` | both, pairing only | `mac` bytes (32) |
 | `session_request` | viewer → host | `mode` (`mirror`\|`extend`), `display` DisplayInfo, `codecs` [`h264`\|`hevc`\|`raw`], `input` bool |
 | `session_accept` | host → viewer | `stream` StreamConfig |
 | `session_reject` | host → viewer | `reason` text (`busy`, `extend_not_supported`, `no_common_codec`, ...) |
@@ -66,7 +96,7 @@ A CBOR map with a text key `t` holding the message type. Field names are snake_c
 | `keyframe_request` | viewer → host | — |
 | `clock_ping` | viewer → host | `seq` u32, `t_viewer_us` i64 |
 | `clock_pong` | host → viewer | `seq` u32, `t_viewer_us` i64 (echoed), `t_host_us` i64 |
-| `bye` | both | `reason` text (`user`, `host_stopped`, `not_trusted`, ...) |
+| `bye` | both | `reason` text (`user`, `host_stopped`, `not_trusted`, `pairing_failed`, `pairing_cancelled`, `pairing_locked`, `pairing_timeout`, ...) |
 
 **DisplayInfo**: `width_px`, `height_px` (required); `width_mm`, `height_mm`, `refresh_hz`,
 `scale_percent` (100 = 1x, 200 = Retina), optional with defaults 0/0/0/100.
@@ -95,7 +125,7 @@ viewer                                   host
   | TCP connect + TLS 1.3 (mutual auth)    |
   |--------------- hello ----------------->|
   |<-------------- hello ------------------|
-  |  (each side: trusted? else prompt user)|
+  |  (PIN pairing if either knows_peer=false)|
   |---------- session_request ------------>|
   |<--------- session_accept --------------|   or session_reject / bye{not_trusted}
   |<===== video (keyframe first) ==========|
@@ -137,7 +167,9 @@ JSON objects with a `type` field, delivered through the C ABI (`annex.h`):
 |---|---|
 | `listening` | `port` |
 | `connecting` | `address` |
-| `trust_request` | `request_id`, `peer_name`, `peer_role` (`host`\|`viewer`), `fingerprint`, `fingerprint_display` |
+| `pairing_pin` | `request_id`, `pin` (`"123 456"`), `peer_name`, `fingerprint_display`: host shows it; `annex_core_cancel_request` to refuse |
+| `pairing_pin_required` | `request_id`, `peer_name`, `fingerprint_display`: viewer asks the user; answer with `annex_core_submit_pin` |
+| `pairing_finished` | `request_id`, `success`, `peer_name` |
 | `session_started` | `peer_name`, `fingerprint`, `stream`, `viewer_display` (host side only) |
 | `stream_config` | `stream` |
 | `keyframe_requested` | — |

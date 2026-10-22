@@ -1,36 +1,39 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use annex_crypto::{Identity, TrustStore, TrustedPeer, display_fingerprint};
+use annex_crypto::{Identity, TrustStore, TrustedPeer};
 use tokio::sync::oneshot;
 
 use crate::SessionError;
-use crate::events::{Event, EventSink, PeerRole};
 
 /// How to treat peers that are not in the trust store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustPolicy {
-    /// Ask the user via `Event::TrustRequest` (normal operation).
-    Prompt,
-    /// Refuse unknown peers without asking.
+    /// Require PIN pairing (normal operation).
+    Pair,
+    /// Refuse unknown peers without pairing.
     RejectUnknown,
-    /// Accept and remember unknown peers. Tests and benchmarks only.
+    /// Accept and remember unknown peers without pairing. Tests and benchmarks only.
     AcceptAllInsecure,
 }
 
-const PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
+/// Failed pairing attempts allowed within [`FAILURE_WINDOW`] before pairing is locked.
+pub const MAX_PAIRING_FAILURES: usize = 5;
+pub const FAILURE_WINDOW: Duration = Duration::from_secs(10 * 60);
 
-/// Long-lived per-install state: identity, trust store and outstanding trust prompts.
+/// Long-lived per-install state: identity, trust store, pending user input, pairing lockout.
 pub struct Core {
     identity: Identity,
     trust: Mutex<TrustStore>,
     device_name: String,
     policy: TrustPolicy,
-    pending: Mutex<HashMap<u64, oneshot::Sender<bool>>>,
+    /// Outstanding requests waiting for the user: a PIN (viewer) or a cancel (host).
+    pending: Mutex<HashMap<u64, oneshot::Sender<Option<String>>>>,
     next_request: AtomicU64,
+    failures: Mutex<VecDeque<Instant>>,
 }
 
 impl Core {
@@ -58,6 +61,7 @@ impl Core {
             policy,
             pending: Mutex::new(HashMap::new()),
             next_request: AtomicU64::new(1),
+            failures: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -73,6 +77,10 @@ impl Core {
         &self.device_name
     }
 
+    pub fn policy(&self) -> TrustPolicy {
+        self.policy
+    }
+
     pub fn trusted_peers(&self) -> Vec<TrustedPeer> {
         self.trust.lock().unwrap().list().to_vec()
     }
@@ -81,57 +89,83 @@ impl Core {
         self.trust.lock().unwrap().is_trusted(fingerprint)
     }
 
+    /// Whether we can skip pairing with this peer.
+    pub(crate) fn knows(&self, fingerprint: &str) -> bool {
+        self.policy == TrustPolicy::AcceptAllInsecure || self.is_trusted(fingerprint)
+    }
+
+    pub(crate) fn trust_peer(&self, fingerprint: &str, name: &str) -> Result<(), SessionError> {
+        Ok(self.trust.lock().unwrap().add(fingerprint, name)?)
+    }
+
+    pub(crate) fn touch(&self, fingerprint: &str) {
+        let _ = self.trust.lock().unwrap().touch(fingerprint);
+    }
+
     /// Revokes a peer. Returns true if it was trusted.
     pub fn untrust(&self, fingerprint: &str) -> Result<bool, SessionError> {
         Ok(self.trust.lock().unwrap().remove(fingerprint)?)
     }
 
-    /// Answers a pending `TrustRequest`. Returns false if the request is unknown or expired.
-    pub fn respond_trust(&self, request_id: u64, accept: bool) -> bool {
+    /// Answers a `pairing_pin_required` request with the PIN the user typed.
+    /// Returns false if the request is unknown or already answered.
+    pub fn submit_pin(&self, request_id: u64, pin: &str) -> bool {
+        self.answer(request_id, Some(pin.to_string()))
+    }
+
+    /// Cancels a pending pairing (either side).
+    pub fn cancel_request(&self, request_id: u64) -> bool {
+        self.answer(request_id, None)
+    }
+
+    fn answer(&self, request_id: u64, value: Option<String>) -> bool {
         match self.pending.lock().unwrap().remove(&request_id) {
-            Some(tx) => tx.send(accept).is_ok(),
+            Some(tx) => tx.send(value).is_ok(),
             None => false,
         }
     }
 
-    /// Decides whether a peer that completed the TLS handshake may proceed.
-    pub(crate) async fn authorize(
-        &self,
-        fingerprint: &str,
-        peer_name: &str,
-        peer_role: PeerRole,
-        events: &EventSink,
-    ) -> Result<(), SessionError> {
-        if fingerprint == self.fingerprint() {
-            return Err(SessionError::Violation("peer uses our own identity".into()));
+    pub(crate) fn register_request(&self) -> (u64, PendingRequest<'_>) {
+        let id = self.next_request.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.pending.lock().unwrap().insert(id, tx);
+        (id, PendingRequest { core: self, id, rx: Some(rx) })
+    }
+
+    /// If pairing is locked after repeated failures, how long until it unlocks.
+    pub(crate) fn pairing_locked_for(&self) -> Option<Duration> {
+        let mut f = self.failures.lock().unwrap();
+        let now = Instant::now();
+        while f.front().is_some_and(|t| now.duration_since(*t) > FAILURE_WINDOW) {
+            f.pop_front();
         }
-        if self.is_trusted(fingerprint) {
-            self.trust.lock().unwrap().touch(fingerprint)?;
-            return Ok(());
+        (f.len() >= MAX_PAIRING_FAILURES).then(|| FAILURE_WINDOW - now.duration_since(f[0]))
+    }
+
+    pub(crate) fn record_pairing_failure(&self) {
+        self.failures.lock().unwrap().push_back(Instant::now());
+    }
+}
+
+/// A registered request; unregisters itself when dropped.
+pub(crate) struct PendingRequest<'a> {
+    core: &'a Core,
+    id: u64,
+    rx: Option<oneshot::Receiver<Option<String>>>,
+}
+
+impl PendingRequest<'_> {
+    /// Waits for the user's answer. `None` = cancelled (or the answer channel was dropped).
+    pub async fn answer(&mut self) -> Option<String> {
+        match self.rx.as_mut() {
+            Some(rx) => rx.await.ok().flatten(),
+            None => std::future::pending().await,
         }
-        let accept = match self.policy {
-            TrustPolicy::RejectUnknown => false,
-            TrustPolicy::AcceptAllInsecure => true,
-            TrustPolicy::Prompt => {
-                let id = self.next_request.fetch_add(1, Ordering::Relaxed);
-                let (tx, rx) = oneshot::channel();
-                self.pending.lock().unwrap().insert(id, tx);
-                events(Event::TrustRequest {
-                    request_id: id,
-                    peer_name: peer_name.to_string(),
-                    peer_role,
-                    fingerprint: fingerprint.to_string(),
-                    fingerprint_display: display_fingerprint(fingerprint),
-                });
-                let answer = tokio::time::timeout(PROMPT_TIMEOUT, rx).await;
-                self.pending.lock().unwrap().remove(&id);
-                matches!(answer, Ok(Ok(true)))
-            }
-        };
-        if !accept {
-            return Err(SessionError::NotTrusted);
-        }
-        self.trust.lock().unwrap().add(fingerprint, peer_name)?;
-        Ok(())
+    }
+}
+
+impl Drop for PendingRequest<'_> {
+    fn drop(&mut self) {
+        self.core.pending.lock().unwrap().remove(&self.id);
     }
 }

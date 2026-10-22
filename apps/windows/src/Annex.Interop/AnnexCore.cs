@@ -98,7 +98,11 @@ public sealed class CoreClient : IDisposable
 
     public bool Untrust(string fingerprint) => NativeMethods.Check(NativeMethods.annex_core_untrust(Raw, fingerprint)) == 1;
 
-    public bool RespondTrust(ulong requestId, bool accept) => NativeMethods.annex_core_respond_trust(Raw, requestId, accept) == 1;
+    /// <summary>Answers a <see cref="CoreEvent.PairingPinRequired"/> with the PIN the user typed.</summary>
+    public bool SubmitPin(ulong requestId, string pin) => NativeMethods.annex_core_submit_pin(Raw, requestId, pin) == 1;
+
+    /// <summary>Cancels a pending pairing on either side.</summary>
+    public bool CancelRequest(ulong requestId) => NativeMethods.annex_core_cancel_request(Raw, requestId) == 1;
 
     public void Dispose()
     {

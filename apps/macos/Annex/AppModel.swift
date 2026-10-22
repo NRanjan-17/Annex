@@ -168,12 +168,27 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: Trust
+    // MARK: Pairing
+
+    private var pinPanels: [UInt64: PinPanel] = [:]
 
     private func handleSessionEvent(_ e: CoreEvent) {
         switch e {
-        case .trustRequest(let req):
-            promptTrust(req)
+        case .pairingPin(let p):
+            // Host: show the PIN until pairing finishes or the user cancels.
+            let panel = PinPanel(pin: p.pin, peerName: p.peerName, fingerprint: p.fingerprintDisplay) { [weak self] in
+                self?.core?.cancelRequest(p.requestId)
+            }
+            pinPanels[p.requestId] = panel
+            panel.show()
+        case .pairingPinRequired(let r):
+            promptForPin(r)
+        case .pairingFinished(let f):
+            pinPanels.removeValue(forKey: f.requestId)?.close()
+            if !f.success {
+                notify("Pairing with \(f.peerName) failed", "The PIN didn't match or pairing was cancelled.")
+            }
+            refreshTrusted()
         case .sessionStarted, .sessionEnded:
             refreshTrusted()
         default:
@@ -181,25 +196,34 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func promptTrust(_ req: TrustRequest) {
+    private func promptForPin(_ req: PairingPinRequired) {
         guard let core else { return }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        let role = req.peerRole == "viewer" ? "wants to view this Mac's screen" : "is offering its screen"
-        alert.messageText = "“\(req.peerName)” \(role)"
-        alert.informativeText = """
-        Make sure the other device shows the same code before trusting it:
+        alert.messageText = "Pair with “\(req.peerName)”"
+        alert.informativeText = "Enter the 6-digit PIN shown on \(req.peerName).\n\nIts identity code: \(req.fingerprintDisplay)"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 160, height: 28))
+        field.placeholderString = "123 456"
+        field.font = .monospacedDigitSystemFont(ofSize: 18, weight: .medium)
+        field.alignment = .center
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Pair")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        if alert.runModal() == .alertFirstButtonReturn {
+            core.submitPin(requestID: req.requestId, pin: field.stringValue)
+        } else {
+            core.cancelRequest(req.requestId)
+        }
+    }
 
-        \(req.fingerprintDisplay)
-
-        This device's own code is \(fingerprintDisplay).
-        """
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Trust")
-        alert.addButton(withTitle: "Reject")
-        let accept = alert.runModal() == .alertFirstButtonReturn
-        core.respondTrust(requestID: req.requestId, accept: accept)
-        refreshTrusted()
+    private func notify(_ title: String, _ text: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = text
+        alert.alertStyle = .informational
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     func revoke(_ peer: TrustedPeer) {

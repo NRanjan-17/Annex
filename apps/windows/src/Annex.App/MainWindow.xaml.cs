@@ -164,8 +164,11 @@ public sealed partial class MainWindow : Window
     {
         switch (e)
         {
-            case CoreEvent.TrustRequest req:
-                await PromptTrust(req);
+            case CoreEvent.PairingPinRequired req:
+                await PromptForPin(req);
+                break;
+            case CoreEvent.PairingFinished { Success: false } f:
+                StatusText.Text = $"Pairing with {f.PeerName} failed: the PIN didn't match or pairing was cancelled.";
                 break;
             case CoreEvent.SessionStarted s:
                 StatusText.Text = $"Viewing {s.PeerName}";
@@ -188,22 +191,40 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private async Task PromptTrust(CoreEvent.TrustRequest req)
+    private async Task PromptForPin(CoreEvent.PairingPinRequired req)
     {
         if (_core is null) return;
         ShowFromTray(); // the dialog needs a visible window
+        var box = new TextBox
+        {
+            PlaceholderText = "123 456",
+            MaxLength = 7,
+            FontSize = 24,
+            TextAlignment = TextAlignment.Center,
+            InputScope = new InputScope { Names = { new InputScopeName(InputScopeNameValue.Number) } },
+        };
+        var panel = new StackPanel { Spacing = 12 };
+        panel.Children.Add(new TextBlock { Text = $"Enter the 6-digit PIN shown on {req.PeerName}.", TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(box);
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"Its identity code: {req.FingerprintDisplay}",
+            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
+        });
         var dialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
-            Title = $"Trust “{req.PeerName}”?",
-            Content = $"Make sure the other device shows the same code before trusting it:\n\n{req.FingerprintDisplay}\n\n" +
-                      $"This PC's own code is {FingerprintText.Text}.",
-            PrimaryButtonText = "Trust",
-            CloseButtonText = "Reject",
-            DefaultButton = ContentDialogButton.Close,
+            Title = $"Pair with “{req.PeerName}”",
+            Content = panel,
+            PrimaryButtonText = "Pair",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
         };
         var result = await dialog.ShowAsync();
-        _core.RespondTrust(req.RequestId, result == ContentDialogResult.Primary);
+        if (result == ContentDialogResult.Primary)
+            _core.SubmitPin(req.RequestId, box.Text);
+        else
+            _core.CancelRequest(req.RequestId);
         RefreshTrusted();
     }
 

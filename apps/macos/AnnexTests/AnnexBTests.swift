@@ -44,5 +44,8 @@ final class AnnexBTests: XCTestCase {
         guard case .peerFound(let p) = CoreEvent.decode(Data(peer.utf8)) else { return XCTFail("wrong case") }
         XCTAssertEqual(p.connectAddress, "[fe80::1]:47800")
         XCTAssertEqual(CoreEvent.decode(Data(#"{"type":"from_future"}"#.utf8)), .unknown(type: "from_future"))
+        let pin = #"{"type":"pairing_pin","request_id":4,"pin":"123 456","peer_name":"PC","fingerprint_display":"AB12"}"#
+        XCTAssertEqual(CoreEvent.decode(Data(pin.utf8)),
+                       .pairingPin(PairingPin(requestId: 4, pin: "123 456", peerName: "PC", fingerprintDisplay: "AB12")))
     }
 }

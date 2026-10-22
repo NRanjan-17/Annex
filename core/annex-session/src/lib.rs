@@ -9,11 +9,12 @@ mod conn;
 mod core;
 mod events;
 mod host;
+mod pairing;
 pub mod stats;
 mod viewer;
 
-pub use crate::core::{Core, TrustPolicy};
-pub use events::{Event, EventSink, FrameOut, FrameSink, PeerRole};
+pub use crate::core::{Core, FAILURE_WINDOW, MAX_PAIRING_FAILURES, TrustPolicy};
+pub use events::{Event, EventSink, FrameOut, FrameSink};
 pub use host::{HostConfig, HostHandle, SubmitResult, start_host};
 pub use stats::LatencyStats;
 pub use viewer::{ViewerConfig, ViewerHandle, connect_viewer};

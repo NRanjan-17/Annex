@@ -87,7 +87,8 @@ fn host_and_viewer_through_c_abi() {
 
         let (vs, vev, vframes) = sink();
         let addr = CString::new(format!("127.0.0.1:{port}")).unwrap();
-        let fp_c = CString::new(host_fp.clone()).unwrap();
+        // Not paired yet, so no pinned fingerprint.
+        let fp_c = CString::new("").unwrap();
         let display = cr#"{"width_px":2560,"height_px":1440,"scale_percent":100}"#;
         let mut viewer = std::ptr::null_mut();
         assert_eq!(
@@ -104,14 +105,17 @@ fn host_and_viewer_through_c_abi() {
             ANNEX_OK
         );
 
-        // Both sides are prompted; both accept.
-        let req = wait(&hev, "trust_request");
-        assert_eq!(req["peer_name"], "Viewer PC");
-        assert_eq!(req["peer_role"], "viewer");
-        assert_eq!(annex_core_respond_trust(host_core, req["request_id"].as_u64().unwrap(), true), 1);
-        let req = wait(&vev, "trust_request");
-        assert_eq!(req["fingerprint"], host_fp.as_str());
-        assert_eq!(annex_core_respond_trust(viewer_core, req["request_id"].as_u64().unwrap(), true), 1);
+        // PIN pairing: the host shows a PIN, the viewer's user types it.
+        let shown = wait(&hev, "pairing_pin");
+        assert_eq!(shown["peer_name"], "Viewer PC");
+        let pin = CString::new(shown["pin"].as_str().unwrap()).unwrap();
+        let req = wait(&vev, "pairing_pin_required");
+        assert_eq!(req["peer_name"], "Host Mac");
+        let id = req["request_id"].as_u64().unwrap();
+        assert_eq!(annex_core_submit_pin(viewer_core, id, pin.as_ptr()), 1);
+        assert_eq!(annex_core_submit_pin(viewer_core, id, pin.as_ptr()), 0, "request ids are single-use");
+        assert_eq!(wait(&vev, "pairing_finished")["success"], true);
+        assert_eq!(wait(&hev, "pairing_finished")["success"], true);
 
         let started = wait(&hev, "session_started");
         assert_eq!(started["viewer_display"]["width_px"], 2560);
@@ -162,6 +166,7 @@ fn null_and_bad_arguments() {
         assert_eq!(annex_core_new_ephemeral(c"x".as_ptr(), std::ptr::null_mut()), ANNEX_ERR_INVALID_ARGUMENT);
         assert!(annex_core_fingerprint(std::ptr::null()).is_null());
         assert_eq!(annex_core_untrust(std::ptr::null(), c"a".as_ptr()), ANNEX_ERR_INVALID_ARGUMENT);
+        assert_eq!(annex_core_cancel_request(std::ptr::null(), 1), ANNEX_ERR_INVALID_ARGUMENT);
         annex_host_free(std::ptr::null_mut());
         annex_viewer_free(std::ptr::null_mut());
         annex_discovery_free(std::ptr::null_mut());

@@ -6,6 +6,7 @@
 //! from then on the fingerprint is pinned.
 
 mod identity;
+pub mod pairing;
 mod tls;
 mod trust;
 

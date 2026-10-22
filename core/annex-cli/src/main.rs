@@ -7,8 +7,8 @@
 //! annex host [--port P] [--replay file.h264 | --synthetic] [--fps N] [--no-advertise]
 //! annex viewer <address> [--dump file.h264] [--expect <fingerprint>] [--seconds N]
 //! ```
-//! Common options: `--data-dir DIR`, `--name NAME`, `--trust-all` (accept unknown peers
-//! without asking; for automated tests only).
+//! Common options: `--data-dir DIR` (default: a separate "Annex CLI" data folder), `--name NAME`,
+//! `--trust-all` (skip PIN pairing and accept anyone; for automated tests only).
 
 mod h264;
 
@@ -87,28 +87,32 @@ fn default_name() -> String {
 fn open_core(o: &mut Opts) -> Arc<Core> {
     let dir = o.value("--data-dir").map(PathBuf::from).unwrap_or_else(default_data_dir);
     let name = o.value("--name").unwrap_or_else(default_name);
-    let policy = if o.flag("--trust-all") { TrustPolicy::AcceptAllInsecure } else { TrustPolicy::Prompt };
+    let policy = if o.flag("--trust-all") { TrustPolicy::AcceptAllInsecure } else { TrustPolicy::Pair };
     Core::open(&dir, &name, policy).unwrap_or_else(|e| die(&format!("cannot open data dir {}: {e}", dir.display())))
 }
 
-/// Prints events and answers trust prompts interactively on stdin.
+/// Prints events; shows the pairing PIN (host) or asks for it on stdin (viewer).
 fn event_printer(core: Arc<Core>) -> EventSink {
-    let prompt_lock = Arc::new(Mutex::new(()));
     Arc::new(move |e: Event| match e {
-        Event::TrustRequest { request_id, peer_name, peer_role, fingerprint_display, .. } => {
+        Event::PairingPin { pin, peer_name, fingerprint_display, .. } => eprintln!(
+            "\n\"{peer_name}\" ({fingerprint_display}) wants to pair.\nPairing PIN: {pin}\n\
+             Type this PIN on the other device. (Ctrl+C to refuse.)"
+        ),
+        Event::PairingPinRequired { request_id, peer_name, fingerprint_display } => {
             let core = core.clone();
-            let lock = prompt_lock.clone();
             std::thread::spawn(move || {
-                let _g = lock.lock().unwrap();
                 eprint!(
-                    "\nUnknown {:?} \"{peer_name}\" wants to connect.\nFingerprint: {fingerprint_display}\n\
-                     Check that the other device shows the same fingerprint. Trust it? [y/N] ",
-                    peer_role
+                    "\nPairing with \"{peer_name}\" ({fingerprint_display}).\nEnter the PIN it shows (empty to cancel): "
                 );
                 let _ = std::io::stderr().flush();
                 let mut line = String::new();
                 let _ = std::io::stdin().lock().read_line(&mut line);
-                core.respond_trust(request_id, line.trim().eq_ignore_ascii_case("y"));
+                let pin = line.trim();
+                if pin.is_empty() {
+                    core.cancel_request(request_id);
+                } else {
+                    core.submit_pin(request_id, pin);
+                }
             });
         }
         Event::LatencyStats { stats, clock_rtt_ms } => eprintln!(

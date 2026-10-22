@@ -94,7 +94,7 @@ impl<W: AsyncWrite + Unpin> Writer<W> {
     }
 }
 
-pub(crate) fn hello(core: &crate::Core, roles: Vec<annex_proto::Role>) -> Control {
+pub(crate) fn hello(core: &crate::Core, roles: Vec<annex_proto::Role>, knows_peer: bool) -> Control {
     Control::Hello(annex_proto::Hello {
         proto_major: annex_proto::PROTOCOL_MAJOR,
         proto_minor: annex_proto::PROTOCOL_MINOR,
@@ -103,6 +103,7 @@ pub(crate) fn hello(core: &crate::Core, roles: Vec<annex_proto::Role>) -> Contro
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         roles,
         caps: vec!["h264".into()],
+        knows_peer,
     })
 }
 

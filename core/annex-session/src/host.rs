@@ -14,7 +14,8 @@ use tokio::time::timeout;
 
 use crate::clock::now_us;
 use crate::conn::{Incoming, Reader, Writer, check_hello, hello};
-use crate::events::{Event, EventSink, PeerRole};
+use crate::events::{Event, EventSink};
+use crate::pairing::{PairContext, pair_as_host};
 use crate::{Core, SessionError};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -182,6 +183,11 @@ async fn handle_conn(
     let Some(fp) = peer_fingerprint(stream.get_ref().1.peer_certificates()) else {
         return tracing::warn!("peer sent no certificate");
     };
+    let Ok(exporter) =
+        stream.get_ref().1.export_keying_material([0u8; 32], annex_crypto::pairing::EXPORTER_LABEL, None)
+    else {
+        return tracing::warn!("tls exporter unavailable");
+    };
     let (r, w) = tokio::io::split(stream);
     let mut reader = Reader::new(r);
     let mut writer = Writer::new(w);
@@ -193,15 +199,12 @@ async fn handle_conn(
         return;
     }
     let mut started = false;
-    let result = run_session(&mut reader, &mut writer, &fp, &shared, shutdown, &mut started).await;
+    let result = run_session(&mut reader, &mut writer, &fp, &exporter, &shared, shutdown, &mut started).await;
     *shared.active.lock().unwrap() = None;
     shared.busy.store(false, Ordering::Release);
     let reason = match result {
         Ok(reason) => reason,
-        Err(SessionError::NotTrusted) => {
-            let _ = writer.send_control(&Control::Bye { reason: "not_trusted".into() }).await;
-            "not_trusted".into()
-        }
+        Err(SessionError::Rejected(reason)) => reason,
         Err(e) => e.to_string(),
     };
     writer.shutdown().await;
@@ -216,6 +219,7 @@ async fn run_session<R, W>(
     reader: &mut Reader<R>,
     writer: &mut Writer<W>,
     fp: &str,
+    exporter: &[u8],
     shared: &Arc<Shared>,
     mut shutdown: watch::Receiver<bool>,
     started: &mut bool,
@@ -224,9 +228,24 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    writer.send_control(&hello(&shared.core, vec![Role::Host])).await?;
+    if fp == shared.core.fingerprint() {
+        return Err(SessionError::Violation("peer uses our own identity".into()));
+    }
+    let knows = shared.core.knows(fp);
+    writer.send_control(&hello(&shared.core, vec![Role::Host], knows)).await?;
     let peer = check_hello(timeout(HANDSHAKE_TIMEOUT, reader.next_control()).await??, fp)?;
-    shared.core.authorize(fp, &peer.device_name, PeerRole::Viewer, &shared.events).await?;
+    if knows && peer.knows_peer {
+        shared.core.touch(fp);
+    } else {
+        let cx = PairContext {
+            core: &shared.core,
+            events: &shared.events,
+            peer_fp: fp,
+            peer_name: &peer.device_name,
+            exporter,
+        };
+        pair_as_host(cx, reader, writer).await?;
+    }
 
     let req = match timeout(REQUEST_TIMEOUT, reader.next_control()).await?? {
         Control::SessionRequest(r) => r,

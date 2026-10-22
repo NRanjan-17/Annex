@@ -130,79 +130,127 @@ async fn mirror_session_delivers_frames_and_stats() {
     assert_eq!(host.submit_frame(b"x", 0, true), SubmitResult::NoSession);
     presenter.abort();
 
-    // Both sides remembered each other.
-    assert!(host_core.is_trusted(viewer_core.fingerprint()));
-    assert!(viewer_core.is_trusted(host_core.fingerprint()));
+    // The insecure test policy skips pairing and stores nothing.
+    assert!(!host_core.is_trusted(viewer_core.fingerprint()));
     host.stop().await;
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn prompt_rejection_ends_session_and_is_not_remembered() {
-    let host_core = Core::ephemeral("Host", TrustPolicy::Prompt).unwrap();
-    let viewer_core = Core::ephemeral("Viewer", TrustPolicy::AcceptAllInsecure).unwrap();
+/// Runs one pairing attempt; the viewer types `typed` (`"RIGHT"` = the host's PIN, `None` = the
+/// host cancels). Returns (host outcome, viewer outcome): "started" or the session-end reason.
+async fn pair_attempt(host_core: &Arc<Core>, viewer_core: &Arc<Core>, typed: Option<&str>) -> (String, String) {
     let (hev, mut hrx) = channel_sink();
     let host = start_host(host_core.clone(), HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
     let (vev, mut vrx) = channel_sink();
     let viewer = connect_viewer(viewer_core.clone(), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
 
-    let Event::TrustRequest { request_id, peer_name, peer_role, fingerprint, fingerprint_display } =
-        wait_for(&mut hrx, |e| matches!(e, Event::TrustRequest { .. })).await
+    let Event::PairingPin { request_id: host_req, pin, peer_name, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::PairingPin { .. })).await
     else {
         unreachable!()
     };
     assert_eq!(peer_name, "Viewer");
-    assert_eq!(peer_role, PeerRole::Viewer);
-    assert_eq!(fingerprint, viewer_core.fingerprint());
-    assert_eq!(fingerprint_display.len(), 24);
-    assert!(host_core.respond_trust(request_id, false));
-    assert!(!host_core.respond_trust(request_id, false), "request ids are single-use");
-
-    let Event::SessionEnded { reason } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await else {
+    assert_eq!(pin.len(), 7, "PIN is shown as `123 456`: {pin}");
+    let Event::PairingPinRequired { request_id, peer_name, fingerprint_display } =
+        wait_for(&mut vrx, |e| matches!(e, Event::PairingPinRequired { .. })).await
+    else {
         unreachable!()
     };
-    assert!(reason.contains("not_trusted"), "{reason}");
-    assert!(!host_core.is_trusted(viewer_core.fingerprint()));
+    assert_eq!(peer_name, "Host");
+    assert_eq!(fingerprint_display.len(), 24);
+    match typed {
+        Some("RIGHT") => assert!(viewer_core.submit_pin(request_id, &pin)),
+        Some(other) => assert!(viewer_core.submit_pin(request_id, other)),
+        None => assert!(host_core.cancel_request(host_req)),
+    }
+    let Event::PairingFinished { success, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::PairingFinished { .. })).await
+    else {
+        unreachable!()
+    };
+    let outcome = |e: &Event| matches!(e, Event::SessionStarted { .. } | Event::SessionEnded { .. });
+    let h = if success {
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+        "started".to_string()
+    } else {
+        "not_paired".to_string()
+    };
+    let v = match wait_for(&mut vrx, outcome).await {
+        Event::SessionEnded { reason } => reason,
+        _ => "started".to_string(),
+    };
+    viewer.disconnect().await;
+    host.stop().await;
+    (h, v)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pin_pairing_succeeds_and_is_remembered() {
+    let host_core = Core::ephemeral("Host", TrustPolicy::Pair).unwrap();
+    let viewer_core = Core::ephemeral("Viewer", TrustPolicy::Pair).unwrap();
+    assert_eq!(pair_attempt(&host_core, &viewer_core, Some("RIGHT")).await, ("started".into(), "started".into()));
+    assert!(host_core.is_trusted(viewer_core.fingerprint()));
+    assert!(viewer_core.is_trusted(host_core.fingerprint()));
+
+    // Second connection: no pairing.
+    let (hev, mut hrx) = channel_sink();
+    let host = start_host(host_core.clone(), HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
+    let (vev, _vrx) = channel_sink();
+    let viewer = connect_viewer(viewer_core.clone(), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
+    let e = wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. } | Event::PairingPin { .. })).await;
+    assert!(matches!(e, Event::SessionStarted { .. }), "trusted peers must not pair again");
     viewer.disconnect().await;
     host.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn prompt_acceptance_then_revocation() {
-    let host_core = Core::ephemeral("Host", TrustPolicy::Prompt).unwrap();
-    let viewer_core = Core::ephemeral("Viewer", TrustPolicy::AcceptAllInsecure).unwrap();
+async fn wrong_pin_fails_and_nothing_is_trusted() {
+    let host_core = Core::ephemeral("Host", TrustPolicy::Pair).unwrap();
+    let viewer_core = Core::ephemeral("Viewer", TrustPolicy::Pair).unwrap();
+    let (h, v) = pair_attempt(&host_core, &viewer_core, Some("000 000")).await;
+    // (Probability the random PIN is 000000 is 1e-6.)
+    assert_eq!(h, "not_paired");
+    assert_eq!(v, "pairing_failed");
+    assert!(!host_core.is_trusted(viewer_core.fingerprint()));
+    assert!(!viewer_core.is_trusted(host_core.fingerprint()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn host_can_cancel_pairing() {
+    let host_core = Core::ephemeral("Host", TrustPolicy::Pair).unwrap();
+    let viewer_core = Core::ephemeral("Viewer", TrustPolicy::Pair).unwrap();
+    let (h, v) = pair_attempt(&host_core, &viewer_core, None).await;
+    assert_eq!((h.as_str(), v.as_str()), ("not_paired", "pairing_cancelled"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn repeated_failures_lock_pairing() {
+    let host_core = Core::ephemeral("Host", TrustPolicy::Pair).unwrap();
+    let viewer_core = Core::ephemeral("Viewer", TrustPolicy::Pair).unwrap();
+    for _ in 0..MAX_PAIRING_FAILURES {
+        assert_eq!(pair_attempt(&host_core, &viewer_core, Some("000000")).await.1, "pairing_failed");
+    }
+    // Locked: the host refuses before showing a PIN.
     let (hev, mut hrx) = channel_sink();
     let host = start_host(host_core.clone(), HostConfig { port: 0, stream: stream() }, hev).await.unwrap();
-
-    let (vev, _vrx) = channel_sink();
+    let (vev, mut vrx) = channel_sink();
     let viewer = connect_viewer(viewer_core.clone(), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
-    let Event::TrustRequest { request_id, .. } = wait_for(&mut hrx, |e| matches!(e, Event::TrustRequest { .. })).await
-    else {
+    let Event::SessionEnded { reason } = wait_for(&mut vrx, |e| matches!(e, Event::SessionEnded { .. })).await else {
         unreachable!()
     };
-    host_core.respond_trust(request_id, true);
-    wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
-    viewer.disconnect().await;
-    wait_for(&mut hrx, |e| matches!(e, Event::SessionEnded { .. })).await;
-
-    // Trusted now: reconnect without a prompt.
-    let (vev, _vrx) = channel_sink();
-    let viewer = connect_viewer(viewer_core.clone(), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
-    let e = wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. } | Event::TrustRequest { .. })).await;
-    assert!(matches!(e, Event::SessionStarted { .. }), "trusted peer must not be prompted");
-    viewer.disconnect().await;
-    wait_for(&mut hrx, |e| matches!(e, Event::SessionEnded { .. })).await;
-
-    // Revoke: the next connection prompts again.
-    assert!(host_core.untrust(viewer_core.fingerprint()).unwrap());
-    let (vev, _vrx) = channel_sink();
-    let viewer = connect_viewer(viewer_core.clone(), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
-    let Event::TrustRequest { request_id, .. } = wait_for(&mut hrx, |e| matches!(e, Event::TrustRequest { .. })).await
-    else {
-        unreachable!()
-    };
-    host_core.respond_trust(request_id, false);
+    assert_eq!(reason, "pairing_locked");
+    assert!(hrx.try_recv().map(|e| !matches!(e, Event::PairingPin { .. })).unwrap_or(true));
     viewer.disconnect().await;
     host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn revoked_peer_must_pair_again() {
+    let host_core = Core::ephemeral("Host", TrustPolicy::Pair).unwrap();
+    let viewer_core = Core::ephemeral("Viewer", TrustPolicy::Pair).unwrap();
+    assert_eq!(pair_attempt(&host_core, &viewer_core, Some("RIGHT")).await.0, "started");
+    assert!(host_core.untrust(viewer_core.fingerprint()).unwrap());
+    // The viewer still trusts the host, but the host no longer trusts the viewer: pairing again.
+    assert_eq!(pair_attempt(&host_core, &viewer_core, Some("RIGHT")).await.0, "started");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -224,7 +272,7 @@ async fn pinned_fingerprint_mismatch_fails_handshake() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn reject_unknown_policy_refuses_without_prompt() {
+async fn reject_unknown_policy_refuses_without_pairing() {
     let host_core = Core::ephemeral("Host", TrustPolicy::RejectUnknown).unwrap();
     let viewer_core = Core::ephemeral("Viewer", TrustPolicy::AcceptAllInsecure).unwrap();
     let (hev, mut hrx) = channel_sink();
@@ -235,7 +283,7 @@ async fn reject_unknown_policy_refuses_without_prompt() {
         unreachable!()
     };
     assert!(reason.contains("not_trusted"), "{reason}");
-    assert!(hrx.try_recv().map(|e| !matches!(e, Event::TrustRequest { .. })).unwrap_or(true));
+    assert!(hrx.try_recv().map(|e| !matches!(e, Event::PairingPin { .. })).unwrap_or(true));
     viewer.disconnect().await;
     host.stop().await;
 }
