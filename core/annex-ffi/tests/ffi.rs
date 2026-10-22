@@ -53,6 +53,8 @@ fn take_string(p: *mut c_char) -> String {
 
 #[test]
 fn host_and_viewer_through_c_abi() {
+    // Keep test identities out of the user's Keychain. (Only this test reads the variable.)
+    unsafe { std::env::set_var("ANNEX_KEY_STORAGE", "file") };
     unsafe {
         let mut host_core = std::ptr::null_mut();
         let mut viewer_core = std::ptr::null_mut();

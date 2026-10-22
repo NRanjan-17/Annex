@@ -88,7 +88,9 @@ fn open_core(o: &mut Opts) -> Arc<Core> {
     let dir = o.value("--data-dir").map(PathBuf::from).unwrap_or_else(default_data_dir);
     let name = o.value("--name").unwrap_or_else(default_name);
     let policy = if o.flag("--trust-all") { TrustPolicy::AcceptAllInsecure } else { TrustPolicy::Pair };
-    Core::open(&dir, &name, policy).unwrap_or_else(|e| die(&format!("cannot open data dir {}: {e}", dir.display())))
+    // A dev tool: keep its key in a 0600 file rather than prompting for Keychain access.
+    Core::open_with(&dir, &name, policy, KeyStorage::File)
+        .unwrap_or_else(|e| die(&format!("cannot open data dir {}: {e}", dir.display())))
 }
 
 /// Prints events; shows the pairing PIN (host) or asks for it on stdin (viewer).

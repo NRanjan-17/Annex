@@ -26,9 +26,12 @@ busy handling. `core/annex-proto/tests/fuzz.rs` fuzzes every decoder.
 - A 6-digit PIN allows one online guess per attempt (≤ 5 per 10 minutes), i.e. about a 1 in
   200,000 chance per locked-out window for a persistent attacker on the LAN. The PIN is only
   shown on the host's screen.
-- **Key storage:** the private key is a 0600 file in the app data folder
-  (`~/Library/Application Support/Annex`, `%LOCALAPPDATA%\Annex`). M2 moves it to the macOS
-  Keychain / Windows CNG.
+- **Key storage:** the private key is in the macOS login Keychain (service
+  `io.github.nranjan-17.annex`) or, on Windows, in `%LOCALAPPDATA%\Annex\identity.key.dpapi`
+  encrypted with DPAPI for the current user. Keys from older versions are migrated
+  automatically. Anyone who can run code as you can still use the key. The headless CLI keeps
+  its own key in a 0600 file. Development builds signed ad hoc trigger a Keychain access
+  prompt after each rebuild ("Always Allow" is fine for your own builds).
 - Discovery TXT records reveal device names and IDs to anyone on the LAN (by design; they are
   not secrets).
 - Windows secure desktop (UAC prompt, lock screen) is not captured.

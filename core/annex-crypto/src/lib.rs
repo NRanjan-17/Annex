@@ -6,11 +6,13 @@
 //! from then on the fingerprint is pinned.
 
 mod identity;
+mod keystore;
 pub mod pairing;
 mod tls;
 mod trust;
 
 pub use identity::{Identity, display_fingerprint, fingerprint};
+pub use keystore::{KEYCHAIN_SERVICE, KeyStorage};
 pub use tls::{SERVER_NAME, client_config, peer_fingerprint, server_config};
 pub use trust::{TrustStore, TrustedPeer};
 

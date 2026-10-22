@@ -1,6 +1,6 @@
 #!/bin/bash
-# Removes Annex and everything it stores on this Mac: the app, its identity key, trusted
-# devices, preferences, caches and its privacy (TCC) permissions.
+# Removes Annex and everything it stores on this Mac: the app, its identity key (Keychain),
+# trusted devices, preferences, caches and its privacy (TCC) permissions.
 set -u
 BUNDLE_ID="io.github.nranjan-17.annex"
 
@@ -34,6 +34,13 @@ for path in \
   fi
 done
 defaults delete "$BUNDLE_ID" >/dev/null 2>&1 || true
+
+# The identity private key(s) live in the login Keychain.
+removed_keys=0
+while security delete-generic-password -s "$BUNDLE_ID" >/dev/null 2>&1; do
+  removed_keys=$((removed_keys + 1))
+done
+[ "$removed_keys" -gt 0 ] && echo "Removed $removed_keys identity key(s) from the Keychain"
 
 # Forget Screen Recording / Accessibility / Local Network decisions for Annex.
 tccutil reset All "$BUNDLE_ID" >/dev/null 2>&1 || true

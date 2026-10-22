@@ -19,6 +19,7 @@ pub use host::{HostConfig, HostHandle, SubmitResult, start_host};
 pub use stats::LatencyStats;
 pub use viewer::{ViewerConfig, ViewerHandle, connect_viewer};
 
+pub use annex_crypto::KeyStorage;
 pub use annex_proto::{Codec, DisplayInfo, Mode, StreamConfig};
 
 #[derive(Debug, thiserror::Error)]

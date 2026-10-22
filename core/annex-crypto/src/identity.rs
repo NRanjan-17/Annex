@@ -7,7 +7,8 @@ use sha2::{Digest, Sha256};
 
 use crate::CryptoError;
 
-const KEY_FILE: &str = "identity.key.pem";
+use crate::keystore::KeyStorage;
+
 const CERT_FILE: &str = "identity.cert.der";
 
 /// This device's long-lived key pair and certificate.
@@ -31,25 +32,26 @@ impl Identity {
         Self::from_key(key)
     }
 
-    /// Loads the identity from `dir`, creating and persisting a new one on first run.
-    ///
-    /// M1 stores the private key as a 0600 file in the app data directory. M2 moves it to the
-    /// macOS Keychain / Windows CNG key storage.
+    /// Loads the identity from `dir` (private key in the platform store, certificate as a
+    /// file), creating and persisting a new one on first run.
     pub fn load_or_create(dir: &Path) -> Result<Self, CryptoError> {
-        let key_path = dir.join(KEY_FILE);
+        Self::load_or_create_with(dir, KeyStorage::platform_default())
+    }
+
+    pub fn load_or_create_with(dir: &Path, storage: KeyStorage) -> Result<Self, CryptoError> {
+        fs::create_dir_all(dir)?;
         let cert_path = dir.join(CERT_FILE);
-        if key_path.exists() && cert_path.exists() {
-            let pem = fs::read_to_string(&key_path)?;
+        if let Some(pem) = storage.load(dir)?
+            && cert_path.exists()
+        {
             let key = KeyPair::from_pem(&pem)?;
             let cert_der = fs::read(&cert_path)?;
-            let id = Identity { key_der: key.serialize_der(), fingerprint: fingerprint(&cert_der), cert_der };
-            return Ok(id);
+            return Ok(Identity { key_der: key.serialize_der(), fingerprint: fingerprint(&cert_der), cert_der });
         }
-        fs::create_dir_all(dir)?;
         let key = KeyPair::generate_for(&PKCS_ED25519)?;
         let pem = key.serialize_pem();
         let id = Self::from_key(key)?;
-        write_private(&key_path, pem.as_bytes())?;
+        storage.store(dir, &pem)?;
         write_atomic(&cert_path, &id.cert_der)?;
         Ok(id)
     }
@@ -104,7 +106,7 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     fs::rename(tmp, path)
 }
 
-fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let tmp = tmp_path(path);
     {
         let mut opts = fs::OpenOptions::new();
@@ -128,14 +130,14 @@ mod tests {
     #[test]
     fn persists_and_reloads_same_identity() {
         let dir = tempfile::tempdir().unwrap();
-        let a = Identity::load_or_create(dir.path()).unwrap();
-        let b = Identity::load_or_create(dir.path()).unwrap();
+        let a = Identity::load_or_create_with(dir.path(), KeyStorage::File).unwrap();
+        let b = Identity::load_or_create_with(dir.path(), KeyStorage::File).unwrap();
         assert_eq!(a.fingerprint(), b.fingerprint());
         assert_eq!(a.fingerprint().len(), 64);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(dir.path().join(KEY_FILE)).unwrap().permissions().mode();
+            let mode = fs::metadata(dir.path().join(crate::keystore::PEM_FILE)).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
     }

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use annex_crypto::{Identity, TrustStore, TrustedPeer};
+use annex_crypto::{Identity, KeyStorage, TrustStore, TrustedPeer};
 use tokio::sync::oneshot;
 
 use crate::SessionError;
@@ -37,9 +37,19 @@ pub struct Core {
 }
 
 impl Core {
-    /// Loads (or creates) identity and trust store under `data_dir`.
+    /// Loads (or creates) identity and trust store under `data_dir`; the private key goes to the
+    /// platform's secure store (Keychain / DPAPI).
     pub fn open(data_dir: &Path, device_name: &str, policy: TrustPolicy) -> Result<Arc<Self>, SessionError> {
-        let identity = Identity::load_or_create(data_dir)?;
+        Self::open_with(data_dir, device_name, policy, KeyStorage::platform_default())
+    }
+
+    pub fn open_with(
+        data_dir: &Path,
+        device_name: &str,
+        policy: TrustPolicy,
+        storage: KeyStorage,
+    ) -> Result<Arc<Self>, SessionError> {
+        let identity = Identity::load_or_create_with(data_dir, storage)?;
         let trust = TrustStore::open(&data_dir.join("trusted_peers.json"))?;
         Ok(Self::new(identity, trust, device_name, policy))
     }
