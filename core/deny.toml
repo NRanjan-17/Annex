@@ -1,0 +1,47 @@
+# cargo-deny policy: run `cargo deny check` from core/.
+# Every allowed license is permissive and MIT-compatible; copyleft licenses are rejected.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+]
+
+[[licenses.clarify]]
+# ring bundles BoringSSL-derived code under ISC/OpenSSL-style terms; its crate metadata is precise.
+crate = "ring"
+expression = "Apache-2.0 AND ISC"
+license-files = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    # GPL video encoders must never enter the dependency graph (license incompatible with MIT).
+    { crate = "x264" },
+    { crate = "x264-sys" },
+    { crate = "ffmpeg-sys-next" },
+    # Shipping OpenH264 built from source is not covered by Cisco's patent license.
+    { crate = "openh264-sys2" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

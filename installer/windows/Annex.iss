@@ -12,6 +12,9 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+#ifndef FileVersion
+  #define FileVersion AppVersion
+#endif
 #ifndef Arch
   #define Arch "x64"
 #endif
@@ -59,7 +62,7 @@ WizardStyle=modern
 CloseApplications=force
 RestartApplications=no
 MinVersion=10.0.19041
-VersionInfoVersion={#AppVersion}
+VersionInfoVersion={#FileVersion}
 VersionInfoProductName={#AppName}
 VersionInfoCompany={#AppPublisher}
 #if Arch == "arm64"

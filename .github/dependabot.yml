@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /core
+    schedule: { interval: weekly }
+    groups:
+      rust:
+        patterns: ["*"]
+  - package-ecosystem: nuget
+    directory: /apps/windows
+    schedule: { interval: weekly }
+    groups:
+      nuget:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions:
+        patterns: ["*"]
+  # The macOS app has no Swift packages today (system frameworks only). When a Package.swift or
+  # SwiftPM dependency is added, enable:
+  # - package-ecosystem: swift
+  #   directory: /apps/macos
+  #   schedule: { interval: weekly }

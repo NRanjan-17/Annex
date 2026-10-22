@@ -1,0 +1,223 @@
+name: Release
+
+# Tag vX.Y.Z to build signed artifacts and a DRAFT GitHub Release (published manually).
+# Run manually (workflow_dispatch) with dry_run=true to build everything without publishing.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build all artifacts but do not create a release
+        type: boolean
+        default: true
+      version:
+        description: Version to stamp for a dry run (defaults to core/Cargo.toml)
+        type: string
+        required: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+  DOTNET_NOLOGO: 1
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: v
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            PUBLISH=true
+          else
+            VERSION="${INPUT_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' core/Cargo.toml | head -1)}"
+            PUBLISH=$([[ "$DRY_RUN" == "false" ]] && echo true || echo false)
+          fi
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "::error::bad version '$VERSION'"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "Version $VERSION, publish=$PUBLISH"
+
+  macos:
+    name: macOS universal .dmg
+    needs: version
+    runs-on: macos-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Select pinned Xcode
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_$(cat .xcode-version).app"
+          xcodebuild -version
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Stamp version into the Rust core
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: scripts/stamp-version.sh "$VERSION"
+      - name: Import Developer ID certificate
+        id: cert
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CERT_P12" ]; then echo "signed=false" >> "$GITHUB_OUTPUT"; echo "::warning::No signing certificate; building ad-hoc signed."; exit 0; fi
+          KEYCHAIN="$RUNNER_TEMP/annex-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "::add-mask::$IDENTITY"
+          echo "identity=$IDENTITY" >> "$GITHUB_OUTPUT"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+      - name: Write notarization key
+        if: steps.cert.outputs.signed == 'true'
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+        run: |
+          if [ -n "$ASC_KEY_P8" ]; then printf '%s' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc_key.p8"; fi
+      - name: Build, sign, notarize, staple, package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+          DEVELOPER_ID_APPLICATION: ${{ steps.cert.outputs.identity }}
+          DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          NOTARY_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: |
+          if [ -f "$RUNNER_TEMP/asc_key.p8" ]; then export NOTARY_KEY_PATH="$RUNNER_TEMP/asc_key.p8"; fi
+          scripts/package-macos.sh "$VERSION"
+      - name: Clean up signing material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/annex-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/asc_key.p8" "$RUNNER_TEMP/cert.p12"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  windows:
+    name: Windows installer (${{ matrix.arch }})
+    needs: version
+    runs-on: windows-latest
+    environment: release
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: apps/windows/global.json
+      - name: Stamp version into the Rust core
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: scripts/stamp-version.sh "$VERSION"
+      - name: Prepare code signing
+        id: sign
+        shell: pwsh
+        env:
+          WIN_CERT_PFX: ${{ secrets.WIN_CERT_PFX_BASE64 }}
+          WIN_CERT_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
+        run: |
+          if (-not $env:WIN_CERT_PFX) { "::warning::No Windows signing certificate; binaries are unsigned."; exit 0 }
+          $pfx = Join-Path $env:RUNNER_TEMP "sign.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WIN_CERT_PFX))
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          "cmd=`"$signtool`" sign /f `"$pfx`" /p %WIN_CERT_PASSWORD% /fd SHA256 /tr http://timestamp.digicert.com /td SHA256" >> $env:GITHUB_OUTPUT
+      - name: Build and package
+        shell: pwsh
+        env:
+          ANNEX_SIGN_CMD: ${{ steps.sign.outputs.cmd }}
+          WIN_CERT_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
+        run: scripts/package-windows.ps1 -Arch ${{ matrix.arch }} -Version "${{ needs.version.outputs.version }}"
+      - name: Clean up signing material
+        if: always()
+        shell: pwsh
+        run: Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $env:RUNNER_TEMP "sign.pfx")
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-${{ matrix.arch }}
+          path: dist/Annex-Setup-*.exe
+          if-no-files-found: error
+
+  publish:
+    name: Checksums, SBOM, draft release
+    needs: [version, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: SBOMs (SPDX) per artifact
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          # The macOS app's only third-party code is the Rust core.
+          path: core
+          format: spdx-json
+          output-file: dist/Annex-${{ needs.version.outputs.version }}-macos-universal.dmg.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: "SBOM (Windows: Rust core + NuGet)"
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/Annex-Setup-${{ needs.version.outputs.version }}-windows.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-bundle
+          path: dist/
+      - name: Create draft release
+        if: needs.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cat > notes.md <<'NOTES'
+          > Draft created by CI. Check the artifacts, then publish manually.
+
+          **Signing status** is shown in each job's log. Builds made without signing secrets are
+          ad-hoc (macOS) or unsigned (Windows) and will trigger Gatekeeper / SmartScreen warnings.
+          Verify downloads against `SHA256SUMS.txt`.
+          NOTES
+          gh release create "v$VERSION" dist/* --draft --generate-notes --notes-file notes.md --title "Annex $VERSION" \
+            --verify-tag

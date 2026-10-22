@@ -17,6 +17,8 @@ $Root = Resolve-Path "$PSScriptRoot\.."
 if (-not $Version) {
   $Version = (Select-String -Path "$Root\core\Cargo.toml" -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
 }
+# Windows file versions must be numeric (a.b.c); keep any pre-release suffix only in names.
+$NumericVersion = ($Version -split '[-+]')[0]
 $Triple = if ($Arch -eq "arm64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" }
 $Platform = if ($Arch -eq "arm64") { "ARM64" } else { "x64" }
 $Rid = "win-$Arch"
@@ -34,7 +36,7 @@ if ($LASTEXITCODE) { throw "cargo build failed" }
 Write-Host "==> WinUI app ($Platform)"
 if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
 dotnet publish "$Root\apps\windows\src\Annex.App\Annex.App.csproj" -c Release -p:Platform=$Platform -r $Rid `
-  -p:Version=$Version -p:SelfContained=true -o $Out
+  -p:Version=$NumericVersion -p:InformationalVersion=$Version -p:SelfContained=true -o $Out
 if ($LASTEXITCODE) { throw "dotnet publish failed" }
 if (-not (Test-Path "$Out\annex_ffi.dll")) { throw "annex_ffi.dll missing from $Out" }
 Get-ChildItem $Out -Include Annex.exe, Annex.dll, annex_ffi.dll -Recurse | ForEach-Object { Invoke-Sign $_.FullName }
@@ -42,7 +44,7 @@ Get-ChildItem $Out -Include Annex.exe, Annex.dll, annex_ffi.dll -Recurse | ForEa
 Write-Host "==> Installer"
 $Iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
 if (-not $Iscc) { $Iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
-& $Iscc "/DAppVersion=$Version" "/DArch=$Arch" "/DSourceDir=$Out" "/DOutputDir=$Root\dist" "$Root\installer\windows\Annex.iss"
+& $Iscc "/DAppVersion=$Version" "/DFileVersion=$NumericVersion" "/DArch=$Arch" "/DSourceDir=$Out" "/DOutputDir=$Root\dist" "$Root\installer\windows\Annex.iss"
 if ($LASTEXITCODE) { throw "iscc failed" }
 $Setup = "$Root\dist\Annex-Setup-$Version-$Arch.exe"
 Invoke-Sign $Setup

@@ -1,0 +1,46 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { language: rust, os: ubuntu-latest, build-mode: none }
+          - { language: csharp, os: ubuntu-latest, build-mode: none }
+          - { language: actions, os: ubuntu-latest, build-mode: none }
+          - { language: swift, os: macos-latest, build-mode: manual }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Build (Swift)
+        if: matrix.language == 'swift'
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          xcodebuild build -project apps/macos/Annex.xcodeproj -scheme Annex -destination 'platform=macOS' \
+            -derivedDataPath apps/macos/build/DerivedData
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}

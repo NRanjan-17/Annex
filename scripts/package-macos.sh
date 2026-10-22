@@ -17,6 +17,8 @@ BUILD="$ROOT/apps/macos/build/release"
 DIST="$ROOT/dist"
 STAGE="$BUILD/dmg-stage"
 DMG="$DIST/Annex-$VERSION-macos-universal.dmg"
+# CFBundleShortVersionString must be numeric; keep pre-release suffixes only in the file name.
+NUMERIC_VERSION="${VERSION%%[-+]*}"
 
 SIGN_ARGS=(CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual)
 if [ -n "${DEVELOPER_ID_APPLICATION:-}" ]; then
@@ -29,7 +31,7 @@ xcodebuild build \
   -project "$ROOT/apps/macos/Annex.xcodeproj" -scheme Annex -configuration Release \
   -destination 'generic/platform=macOS' -derivedDataPath "$BUILD/DerivedData" \
   ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
-  MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="${BUILD_NUMBER:-1}" \
+  MARKETING_VERSION="$NUMERIC_VERSION" CURRENT_PROJECT_VERSION="${BUILD_NUMBER:-1}" \
   "${SIGN_ARGS[@]}" | grep -E "error:|warning: |BUILD (SUCCEEDED|FAILED)" || true
 
 APP="$BUILD/DerivedData/Build/Products/Release/Annex.app"
