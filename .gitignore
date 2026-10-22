@@ -1,0 +1,53 @@
+# --- OS / editors ---
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/
+*.code-workspace
+
+# --- Rust ---
+/core/target/
+**/*.rs.bk
+
+# --- Xcode / Swift ---
+/apps/macos/build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+.swiftpm/
+/apps/macos/AnnexFFI/lib/
+
+# --- .NET / Visual Studio ---
+bin/
+obj/
+.vs/
+*.user
+*.suo
+TestResults/
+*.binlog
+AppPackages/
+BundleArtifacts/
+
+# --- Windows driver (WDK) ---
+/drivers/windows/**/x64/
+/drivers/windows/**/ARM64/
+*.cer
+*.pfx
+
+# --- Signing material: never commit ---
+*.p12
+*.p8
+*.mobileprovision
+*.keychain
+*.keychain-db
+
+# --- Local outputs ---
+/dist/
+/bench-results/
+*.h264
+*.hevc
+latency*.csv

@@ -1,0 +1,5 @@
+[toolchain]
+# Pinned for reproducible builds. Bump deliberately (and in CI caches) when upgrading.
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
