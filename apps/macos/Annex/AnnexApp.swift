@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct AnnexApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
     var body: some Scene {
@@ -32,6 +33,20 @@ struct AnnexApp: App {
     }
 }
 
+extension Notification.Name {
+    /// Ask the app to show its main window (Dock click, opening it again from Finder).
+    static let annexShowMainWindow = Notification.Name("annexShowMainWindow")
+}
+
+/// Clicking Annex in the Dock while it runs without a window: SwiftUI only reopens WindowGroups
+/// by itself, so bring the Annex window back here.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        NotificationCenter.default.post(name: .annexShowMainWindow, object: nil)
+        return true
+    }
+}
+
 private struct MenuBarIcon: View {
     let hosting: Bool
     @Environment(\.openWindow) private var openWindow
@@ -40,6 +55,10 @@ private struct MenuBarIcon: View {
         // Template image: macOS tints it for light and dark menu bars.
         Image("MenuBarIcon")
             .opacity(hosting ? 1 : 0.85)
+            .onReceive(NotificationCenter.default.publisher(for: .annexShowMainWindow)) { _ in
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            }
             .onAppear {
                 DockPresence.shared.start()
                 // Open the window on launch, except when started at login (quietly, in the menu bar).
