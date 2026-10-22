@@ -31,6 +31,8 @@
     <IDDCX_MINIMUM_VERSION_REQUIRED>4</IDDCX_MINIMUM_VERSION_REQUIRED>
     <!-- Signing is a separate step (scripts/sign-test.ps1 or attestation via Partner Center). -->
     <SignMode>Off</SignMode>
+    <!-- The catalog is made by scripts/build.ps1 after the dll and the stamped INF are assembled. -->
+    <EnableInf2cat>false</EnableInf2cat>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ItemDefinitionGroup>
