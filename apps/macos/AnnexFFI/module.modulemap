@@ -1,0 +1,4 @@
+module AnnexFFI {
+    header "../../../core/annex-ffi/include/annex.h"
+    export *
+}

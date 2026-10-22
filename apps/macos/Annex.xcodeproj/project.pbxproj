@@ -1,0 +1,394 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		35BDA629D4E07FBD6BB84D2A /* libannex_ffi.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 085FEB4B0B60D088975ED8C3 /* libannex_ffi.a */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		431387EB7262E1CFC79B125E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3D4C91345015A4DD0A099400;
+			remoteInfo = Annex;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		2C090C541E206D79AB76701F /* Annex.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Annex.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		272F73E909FF8A22CBF8BD69 /* AnnexTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnnexTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		085FEB4B0B60D088975ED8C3 /* libannex_ffi.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; path = AnnexFFI/lib/libannex_ffi.a; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		CE882751F8B3EE4485706ED4 /* Annex */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Annex;
+			sourceTree = "<group>";
+		};
+		24DFAD7E3B56719996E6F208 /* AnnexTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = AnnexTests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		0248D6DB510EB0F7E9C05175 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				35BDA629D4E07FBD6BB84D2A /* libannex_ffi.a in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DF4C4AD544E90164AB8FCC3D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		8D3FC6DB5D0827F168A73277 = {
+			isa = PBXGroup;
+			children = (
+				CE882751F8B3EE4485706ED4 /* Annex */,
+				24DFAD7E3B56719996E6F208 /* AnnexTests */,
+				A448AE2ABD76C44A16177A9D /* AnnexFFI */,
+				1BADDC1D73C1A20F347483E1 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A448AE2ABD76C44A16177A9D /* AnnexFFI */ = {
+			isa = PBXGroup;
+			children = (
+				085FEB4B0B60D088975ED8C3 /* libannex_ffi.a */,
+			);
+			name = AnnexFFI;
+			sourceTree = "<group>";
+		};
+		1BADDC1D73C1A20F347483E1 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				2C090C541E206D79AB76701F /* Annex.app */,
+				272F73E909FF8A22CBF8BD69 /* AnnexTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		3D4C91345015A4DD0A099400 /* Annex */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BBFE79A791796F23E65A3A86 /* Build configuration list for PBXNativeTarget "Annex" */;
+			buildPhases = (
+				AC4D1B9340724A1E4D24D7F2 /* Build Rust core */,
+				DA10D9DD089DF2AFEBC5ED5A /* Sources */,
+				0248D6DB510EB0F7E9C05175 /* Frameworks */,
+				82A968CB662751220D4DFE2D /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				CE882751F8B3EE4485706ED4 /* Annex */,
+			);
+			name = Annex;
+			productName = Annex;
+			productReference = 2C090C541E206D79AB76701F /* Annex.app */;
+			productType = "com.apple.product-type.application";
+		};
+		9CA4B63375BBECC069794E56 /* AnnexTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 17B38E682BD72975D541E22C /* Build configuration list for PBXNativeTarget "AnnexTests" */;
+			buildPhases = (
+				8F11E0AE1293B031D2165BF2 /* Sources */,
+				DF4C4AD544E90164AB8FCC3D /* Frameworks */,
+				887D9852F7F2A508189160F7 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E54DEBD65D8142E7785275AA /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				24DFAD7E3B56719996E6F208 /* AnnexTests */,
+			);
+			name = AnnexTests;
+			productName = AnnexTests;
+			productReference = 272F73E909FF8A22CBF8BD69 /* AnnexTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		46F86FAA6BBF9AC94A7E4595 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					3D4C91345015A4DD0A099400 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					9CA4B63375BBECC069794E56 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 3D4C91345015A4DD0A099400;
+					};
+				};
+			};
+			buildConfigurationList = 5BF065D48D8C23D03623AA6A /* Build configuration list for PBXProject "Annex" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 8D3FC6DB5D0827F168A73277;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 1BADDC1D73C1A20F347483E1 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				3D4C91345015A4DD0A099400 /* Annex */,
+				9CA4B63375BBECC069794E56 /* AnnexTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		82A968CB662751220D4DFE2D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		887D9852F7F2A508189160F7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		AC4D1B9340724A1E4D24D7F2 /* Build Rust core */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust core";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/AnnexFFI/lib/libannex_ffi.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$SRCROOT/../../scripts/build-core-apple.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		DA10D9DD089DF2AFEBC5ED5A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8F11E0AE1293B031D2165BF2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E54DEBD65D8142E7785275AA /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3D4C91345015A4DD0A099400 /* Annex */;
+			targetProxy = 431387EB7262E1CFC79B125E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		FA9139DD8B03E3F922556BF8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				COPY_PHASE_STRIP = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/AnnexFFI";
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/AnnexFFI/lib";
+				MARKETING_VERSION = 0.1.0;
+				CURRENT_PROJECT_VERSION = 1;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "-";
+				DEVELOPMENT_TEAM = "";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				DEAD_CODE_STRIPPING = NO;
+			};
+			name = Debug;
+		};
+		FFE2104CCFAB79205AC64460 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				COPY_PHASE_STRIP = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/AnnexFFI";
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/AnnexFFI/lib";
+				MARKETING_VERSION = 0.1.0;
+				CURRENT_PROJECT_VERSION = 1;
+				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "-";
+				DEVELOPMENT_TEAM = "";
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				DEAD_CODE_STRIPPING = YES;
+			};
+			name = Release;
+		};
+		72FB3ED29B4639D83EC5DB14 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Config/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Annex;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Annex contributors. MIT License.";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nranjan-17.annex";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				ENABLE_HARDENED_RUNTIME = NO;
+			};
+			name = Debug;
+		};
+		191734982F22ABEBB64A1AE0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Config/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Annex;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Annex contributors. MIT License.";
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nranjan-17.annex";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				ENABLE_HARDENED_RUNTIME = YES;
+			};
+			name = Release;
+		};
+		5AB3A6BF84C2901E813939E6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nranjan-17.annex.tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Annex.app/Contents/MacOS/Annex";
+			};
+			name = Debug;
+		};
+		54ECD3B736C66C8688F6C25B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "io.github.nranjan-17.annex.tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Annex.app/Contents/MacOS/Annex";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5BF065D48D8C23D03623AA6A /* Build configuration list for PBXProject "Annex" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FA9139DD8B03E3F922556BF8 /* Debug */,
+				FFE2104CCFAB79205AC64460 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BBFE79A791796F23E65A3A86 /* Build configuration list for PBXNativeTarget "Annex" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				72FB3ED29B4639D83EC5DB14 /* Debug */,
+				191734982F22ABEBB64A1AE0 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		17B38E682BD72975D541E22C /* Build configuration list for PBXNativeTarget "AnnexTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5AB3A6BF84C2901E813939E6 /* Debug */,
+				54ECD3B736C66C8688F6C25B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 46F86FAA6BBF9AC94A7E4595 /* Project object */;
+}
