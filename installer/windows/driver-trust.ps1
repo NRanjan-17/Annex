@@ -1,0 +1,82 @@
+<#
+.SYNOPSIS
+  Signs the Annex display driver on this PC so Windows loads it without test signing, and removes
+  that trust again on uninstall. Run elevated by the installer.
+
+.DESCRIPTION
+  AnnexIdd is an Indirect Display (IddCx) driver, which runs in user mode. Windows accepts a
+  user-mode driver package whose catalog is signed by a certificate this PC trusts. So:
+
+    1. create a code-signing certificate that exists only on this PC,
+    2. sign the driver catalog (AnnexIdd.cat) with it,
+    3. trust that certificate (Trusted Root + Trusted Publishers),
+    4. delete its private key at once.
+
+  Because the private key is gone, nothing else can ever be signed with this certificate, so
+  trusting it can't be abused. Its thumbprint is kept in HKLM\SOFTWARE\Annex so uninstall can
+  remove it.
+
+.EXAMPLE
+  driver-trust.ps1 -Action install -Package "C:\Program Files\Annex\driver"
+  driver-trust.ps1 -Action uninstall
+#>
+param(
+    [Parameter(Mandatory)] [ValidateSet("install", "uninstall")] [string] $Action,
+    [string] $Package
+)
+$ErrorActionPreference = "Stop"
+$RegPath = "HKLM:\SOFTWARE\Annex"
+$RegValue = "DriverCertThumbprint"
+$Log = Join-Path $env:ProgramData "Annex\driver-trust.log"
+New-Item -ItemType Directory -Force (Split-Path $Log) | Out-Null
+function Note([string] $Text) { "[$(Get-Date -Format o)] $Text" | Add-Content $Log }
+
+function Remove-Trust {
+    $thumb = (Get-ItemProperty $RegPath -Name $RegValue -ErrorAction SilentlyContinue).$RegValue
+    if (-not $thumb) { return }
+    foreach ($store in "Root", "TrustedPublisher", "My") {
+        Get-ChildItem "Cert:\LocalMachine\$store\$thumb" -ErrorAction SilentlyContinue |
+            Remove-Item -DeleteKey -ErrorAction SilentlyContinue
+    }
+    Remove-ItemProperty $RegPath -Name $RegValue -ErrorAction SilentlyContinue
+    Note "removed driver certificate $thumb"
+}
+
+if ($Action -eq "uninstall") {
+    Remove-Trust
+    exit 0
+}
+
+$catalog = Join-Path $Package "AnnexIdd.cat"
+if (-not (Test-Path $catalog)) { Note "no catalog at $catalog"; throw "AnnexIdd.cat missing from $Package" }
+
+# A previous install's certificate is replaced, never accumulated.
+Remove-Trust
+
+$cert = New-SelfSignedCertificate -Type CodeSigningCert `
+    -Subject "CN=Annex display driver (signed on $env:COMPUTERNAME)" `
+    -CertStoreLocation Cert:\LocalMachine\My `
+    -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 `
+    -KeyExportPolicy NonExportable -NotAfter (Get-Date).AddYears(30)
+try {
+    # The catalog covers AnnexIdd.dll and AnnexIdd.inf, so signing it signs the package.
+    $result = Set-AuthenticodeSignature -FilePath $catalog -Certificate $cert -HashAlgorithm SHA256
+    if (-not $result.SignerCertificate) { throw "signing the catalog failed: $($result.StatusMessage)" }
+
+    $cer = Join-Path $env:TEMP "annex-driver-$($cert.Thumbprint).cer"
+    Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+    Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+    Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null
+    Remove-Item $cer -Force
+}
+finally {
+    # The private key never outlives this script.
+    Remove-Item "Cert:\LocalMachine\My\$($cert.Thumbprint)" -DeleteKey -ErrorAction SilentlyContinue
+}
+
+New-Item -Path $RegPath -Force | Out-Null
+Set-ItemProperty $RegPath -Name $RegValue -Value $cert.Thumbprint
+
+$check = Get-AuthenticodeSignature -FilePath $catalog
+Note "signed $catalog with $($cert.Thumbprint): $($check.Status)"
+if ($check.Status -ne "Valid") { throw "catalog signature not valid after trusting: $($check.Status) $($check.StatusMessage)" }

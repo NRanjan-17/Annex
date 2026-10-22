@@ -79,13 +79,17 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 #ifexist SourceDir + "\driver\AnnexIdd.inf"
-; The virtual display driver for Extend mode. Off by default: until the driver is attestation-signed it only loads
-; with test signing enabled (bcdedit /set testsigning on). Needs an all-users (administrator) install.
-Name: "extenddriver"; Description: "Install the Extend-mode display driver (lets other computers use this PC as an extra display; requires test signing until the driver is signed)"; GroupDescription: "Extend mode:"; Flags: unchecked; Check: IsAdminInstallMode
+; The virtual display driver for Extend mode. Off by default; needs an all-users (administrator) install.
+; driver-trust.ps1 signs it on this PC with a one-off certificate whose private key is deleted straight
+; away, so Windows loads it without test signing.
+Name: "extenddriver"; Description: "Install the Extend-mode display driver (lets another computer be an extra display for this PC)"; GroupDescription: "Extend mode:"; Flags: unchecked; Check: IsAdminInstallMode
 #endif
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+#ifexist SourceDir + "\driver\AnnexIdd.inf"
+Source: "driver-trust.ps1"; DestDir: "{app}\driver"; Flags: ignoreversion
+#endif
 Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
 [Icons]
@@ -98,6 +102,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: 
 
 [Run]
 #ifexist SourceDir + "\driver\AnnexIdd.inf"
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\driver\driver-trust.ps1"" -Action install -Package ""{app}\driver"""; Flags: runhidden waituntilterminated; Tasks: extenddriver; StatusMsg: "Signing the Extend-mode display driver for this PC..."
 Filename: "{app}\annex-driver.exe"; Parameters: "install ""{app}\driver\AnnexIdd.inf"""; Flags: runhidden waituntilterminated; Tasks: extenddriver; StatusMsg: "Installing the Extend-mode display driver..."
 #endif
 ; Firewall: allow Annex on private networks (discovery + incoming sessions). All-users installs only;
@@ -109,6 +114,8 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#AppExe}"; Flags: runhidden; RunOnceId: "KillAnnex"
 ; Removes the Extend-mode display device and driver package if they were installed (no-op otherwise).
 Filename: "{app}\annex-driver.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode; RunOnceId: "RemoveDriver"
+; ...and the certificate that signed it on this PC.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\driver\driver-trust.ps1"" -Action uninstall"; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode; RunOnceId: "RemoveDriverTrust"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Annex"""; Flags: runhidden; Check: IsAdminInstallMode; RunOnceId: "DelFirewall"
 
 [UninstallDelete]

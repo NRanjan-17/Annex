@@ -144,7 +144,7 @@ jobs:
       - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
         with:
           msbuild-architecture: x64
-      - name: Build the Extend-mode driver (unsigned)
+      - name: Build the Extend-mode driver
         shell: pwsh
         run: drivers/windows/scripts/build.ps1 -Platform $(if ("${{ matrix.arch }}" -eq "arm64") { "ARM64" } else { "x64" }) -Version "${{ needs.version.outputs.version }}"
       - name: Prepare code signing
@@ -221,8 +221,8 @@ jobs:
           cat > notes.md <<'NOTES'
           > Built by CI from this tag. Installation steps: see the README.
 
-          **Windows Extend-mode driver:** included **unsigned** (the installer option is off by default). It loads only
-          with test signing enabled until it is attestation-signed through Microsoft Partner Center (docs/CICD.md).
+          **Windows Extend-mode driver:** optional in the installer (off by default). The installer signs it on your PC
+          with a one-off certificate whose private key is deleted right away, so it loads without test signing.
 
           **Signing status** is shown in each job's log. Builds made without signing secrets are
           ad-hoc (macOS) or unsigned (Windows) and will trigger Gatekeeper / SmartScreen warnings.

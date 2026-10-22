@@ -131,6 +131,9 @@ public sealed partial class MainWindow : Window
             Go(pane);
         ShowTrayMenu();
         _trayMenu?.Hide();
+        var x = TryExtendStatus();
+        File.WriteAllText(Path.Combine(DataDirectory, "selftest-extend.json"),
+            x is null ? "null" : $"{{\"state\":\"{x.State}\",\"problem\":{x.Problem},\"test_signing\":{(x.TestSigning ? "true" : "false")}}}");
         File.WriteAllText(Path.Combine(DataDirectory, "selftest-ok"), DateTimeOffset.Now.ToString("O"));
     }
 
@@ -358,9 +361,9 @@ public sealed partial class MainWindow : Window
                     "To let another computer be a second screen for this PC, run the Annex installer again and tick “Install the Extend-mode display driver”. Showing this PC's screen works without it."));
                 break;
             default:
-                var why = x.TestSigning
-                    ? $"The Annex display driver is installed but not running (Device Manager problem code {x.Problem}). Restart the PC; if it stays, reinstall the driver."
-                    : "The Annex display driver is installed, but Windows only loads it with test signing on (it isn't signed by Microsoft yet). In an administrator terminal run  bcdedit /set testsigning on  and restart. Showing this PC's screen works without it.";
+                var why = x.Problem == 52 && !x.TestSigning
+                    ? "Windows didn't accept the driver's signature. Run the Annex installer again with “Install the Extend-mode display driver” ticked: it signs the driver for this PC. If that still fails, test signing works as a last resort:  bcdedit /set testsigning on  in an administrator terminal, then restart."
+                    : $"The Annex display driver is installed but not running (Device Manager problem code {x.Problem}). Restart the PC; if it stays, run the Annex installer again with the driver option ticked.";
                 var copy = new Button { Content = "Copy command" };
                 copy.Click += (_, _) =>
                 {
@@ -369,7 +372,7 @@ public sealed partial class MainWindow : Window
                     Clipboard.SetContent(data);
                     copy.Content = "Copied";
                 };
-                p.Children.Add(Ui.Card("", "Extra displays: driver not loaded", why, x.TestSigning ? null : copy));
+                p.Children.Add(Ui.Card("", "Extra displays: driver not loaded", why, x.Problem == 52 && !x.TestSigning ? copy : null));
                 break;
         }
     }

@@ -143,6 +143,17 @@ jobs:
         run: dotnet test apps/windows/tests/Annex.Interop.Tests -p:RestoreLockedMode=true
       - name: Build WinUI app (x64)
         run: dotnet build apps/windows/src/Annex.App -p:Platform=x64 -p:RestoreLockedMode=true
+      # The Extend-mode driver goes into the installer too, so the smoke test can install it.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: drivers/windows/packages
+          key: wdk-${{ hashFiles('drivers/windows/packages.config') }}
+      - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+        with:
+          msbuild-architecture: x64
+      - name: Build the Extend-mode driver (x64)
+        shell: pwsh
+        run: drivers/windows/scripts/build.ps1 -Platform x64
       - name: Package installer (x64)
         shell: pwsh
         run: scripts/package-windows.ps1 -Arch x64 -Version "0.0.0-ci.${{ github.run_number }}"

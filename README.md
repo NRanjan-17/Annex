@@ -131,11 +131,15 @@ so it doesn't work. Details: [docs/CABLES.md](docs/CABLES.md).
 
 ### Extend on Windows
 
-Windows has no built-in way for an app to add a display, so Extend on a Windows **host** uses
-Annex's own display driver. It isn't signed by Microsoft yet, so for now it only loads with
-Windows **test signing** turned on (an administrator command: `bcdedit /set testsigning on`,
-then restart). Mirroring, and using a Windows PC as an extra display for a **Mac**, work
-without it.
+Windows has no built-in way for an app to add a display, so when a **Windows PC is sharing**,
+Extend uses Annex's own display driver. Tick *Install the Extend-mode display driver* in the
+installer (an all-users install). The installer signs the driver **on your PC** with a
+certificate made just for it and deletes that certificate's private key straight away, so
+Windows loads the driver without test signing and nothing else can ever be signed with it.
+Uninstalling removes the driver and the certificate.
+
+**Share this PC** shows whether extra displays are ready. Mirroring, and using a Windows PC as
+an extra display for a **Mac**, don't need the driver.
 
 ## Uninstall
 
@@ -159,7 +163,7 @@ Details: [docs/SECURITY.md](docs/SECURITY.md) · [docs/PROTOCOL.md](docs/PROTOCO
 |---|---|
 | The other computer doesn't show under **Nearby** | Same network (not guest Wi-Fi or a VPN)? On Windows: **Connect → Not showing up? → Allow** (firewall) and set the network to *Private*. On Mac: allow Annex in **Privacy & Security → Local Network**. Or use **Connect by address**. |
 | It shows *not sharing* | Click **Start Sharing** on that computer. |
-| "Be its extra display" is greyed out, or "can't add an extra display" | A Windows PC needs the Extend-mode display driver *and* test signing. **Share this PC** on that PC says which is missing. |
+| "Be its extra display" is greyed out, or "can't add an extra display" | A sharing Windows PC needs the Extend-mode display driver (installer option). **Share this PC** on that PC says what's missing. |
 | Black screen when mirroring a Mac | Allow Screen Recording for Annex (System Settings → Privacy & Security), then turn sharing off and on. |
 | "Annex can't be opened" on Mac | System Settings → Privacy & Security → **Open Anyway** (see Install). |
 | Mouse/keyboard does nothing on the other computer | It must allow your device under **Paired Devices**, and on a Mac have Accessibility permission. Turn on **Viewing → Control the other computer** on your side. |
