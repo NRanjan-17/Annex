@@ -67,7 +67,11 @@ if ($alive) { Stop-Process -Id $app.Id -Force }
 $selftest = Test-Path $marker
 # Extend-mode driver: did signing work, and does Windows run it?
 $extend = "$env:LOCALAPPDATA\Annex\selftest-extend.json"
-if (Test-Path $extend) { Note ("Extend status: " + (Get-Content $extend -Raw)) }
+if (Test-Path $extend) {
+    $ex = Get-Content $extend -Raw
+    Note ("Extend status: " + $ex)
+    Note ("EXTEND: " + $(if ($ex -match '"state":"ready"') { "READY (driver signed on this PC and running)" } else { "NOT READY" }))
+}
 pnputil /enum-devices /class Display 2>&1 | Out-File (Join-Path $OutDir "display-devices.txt")
 Note "Self-test (every page opened twice): $selftest"
 $ok = $alive -and $responding -and ($window -ne 0) -and $selftest -and -not (Test-Path $crash)

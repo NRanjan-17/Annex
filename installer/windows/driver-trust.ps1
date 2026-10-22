@@ -28,6 +28,13 @@ param(
     [string] $Package
 )
 $ErrorActionPreference = "Stop"
+# Use Windows PowerShell's own modules. If this was started from PowerShell 7 (e.g. CI), the
+# inherited PSModulePath loads PS7's security module, which breaks the Cert: drive here.
+$env:PSModulePath = @(
+    (Join-Path $env:ProgramFiles "WindowsPowerShell\Modules"),
+    (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\Modules")
+) -join ";"
+Import-Module Microsoft.PowerShell.Security, PKI -Force
 $RegPath = "HKLM:\SOFTWARE\Annex"
 $RegValue = "DriverCertThumbprint"
 $Log = Join-Path $env:ProgramData "Annex\driver-trust.log"
