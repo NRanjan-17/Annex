@@ -92,6 +92,10 @@ Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignor
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
+[Registry]
+; "Start with Windows" (set from the app's General page) lives in the user's Run key; remove it on uninstall.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "Annex"; Flags: uninsdeletevalue dontcreatekey
+
 [Run]
 #ifexist SourceDir + "\driver\AnnexIdd.inf"
 Filename: "{app}\annex-driver.exe"; Parameters: "install ""{app}\driver\AnnexIdd.inf"""; Flags: runhidden waituntilterminated; Tasks: extenddriver; StatusMsg: "Installing the Extend-mode display driver..."

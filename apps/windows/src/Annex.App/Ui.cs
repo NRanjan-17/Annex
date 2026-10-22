@@ -1,0 +1,174 @@
+using Microsoft.UI.Text;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
+
+namespace Annex.App;
+
+/// <summary>
+/// Windows 11 Settings-style building blocks, built in code: a page header with a big icon,
+/// section titles and setting cards (icon, title, description on the left; a control on the right).
+/// </summary>
+internal static class Ui
+{
+    public static T Res<T>(string key) => (T)Application.Current.Resources[key];
+
+    public static Brush Secondary => Res<Brush>("TextFillColorSecondaryBrush");
+    public static Brush Tertiary => Res<Brush>("TextFillColorTertiaryBrush");
+
+    public static string AssetPath(string name) => Path.Combine(AppContext.BaseDirectory, "Assets", name);
+
+    public static Image AppIcon(double size) => new()
+    {
+        Source = new BitmapImage(new Uri(AssetPath("Annex.png"))),
+        Width = size,
+        Height = size,
+    };
+
+    public static FontIcon Glyph(string glyph, double size = 16) => new() { Glyph = glyph, FontSize = size };
+
+    public static TextBlock Text(string text, string? style = null, Brush? brush = null, bool wrap = true)
+    {
+        var t = new TextBlock { Text = text, TextWrapping = wrap ? TextWrapping.Wrap : TextWrapping.NoWrap, TextTrimming = TextTrimming.CharacterEllipsis };
+        if (style is not null) t.Style = Res<Style>(style);
+        if (brush is not null) t.Foreground = brush;
+        return t;
+    }
+
+    /// <summary>The page's content column: a scrolling stack with Settings' margins.</summary>
+    public static StackPanel Page(out ScrollViewer scroller)
+    {
+        var stack = new StackPanel { Spacing = 4, Padding = new Thickness(40, 8, 40, 40), MaxWidth = 1000 };
+        scroller = new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        return stack;
+    }
+
+    /// <summary>The big header at the top of a page: an accent icon tile, a title and a description.</summary>
+    public static UIElement Hero(string glyph, string title, string description, UIElement? icon = null)
+    {
+        var tile = icon ?? new Border
+        {
+            Width = 64,
+            Height = 64,
+            CornerRadius = new CornerRadius(14),
+            Background = Res<Brush>("AccentFillColorDefaultBrush"),
+            Child = new FontIcon { Glyph = glyph, FontSize = 30, Foreground = Res<Brush>("TextOnAccentFillColorPrimaryBrush") },
+        };
+        var text = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(Text(title, "TitleTextBlockStyle"));
+        text.Children.Add(Text(description, "BodyTextBlockStyle", Secondary));
+        var grid = new Grid { ColumnSpacing = 20, Margin = new Thickness(0, 16, 0, 20) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(tile);
+        grid.Children.Add(text);
+        return grid;
+    }
+
+    public static TextBlock Section(string title)
+    {
+        var t = Text(title, "BodyStrongTextBlockStyle");
+        t.Margin = new Thickness(1, 20, 0, 6);
+        return t;
+    }
+
+    /// <summary>A setting card. <paramref name="control"/> sits on the right, vertically centred.</summary>
+    public static Border Card(string glyph, string title, string? description = null, UIElement? control = null, Brush? glyphBrush = null)
+    {
+        var grid = new Grid { ColumnSpacing = 16, MinHeight = 44 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var icon = Glyph(glyph, 20);
+        icon.VerticalAlignment = VerticalAlignment.Center;
+        if (glyphBrush is not null) icon.Foreground = glyphBrush;
+        grid.Children.Add(icon);
+
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 1 };
+        text.Children.Add(Text(title, "BodyTextBlockStyle"));
+        if (!string.IsNullOrEmpty(description)) text.Children.Add(Text(description, "CaptionTextBlockStyle", Secondary));
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+
+        if (control is FrameworkElement fe)
+        {
+            fe.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(fe, 2);
+            grid.Children.Add(fe);
+        }
+        return new Border
+        {
+            Child = grid,
+            Padding = new Thickness(16, 12, 16, 12),
+            CornerRadius = new CornerRadius(8),
+            Background = Res<Brush>("CardBackgroundFillColorDefaultBrush"),
+            BorderBrush = Res<Brush>("CardStrokeColorDefaultBrush"),
+            BorderThickness = new Thickness(1),
+            Margin = new Thickness(0, 0, 0, 2),
+        };
+    }
+
+    /// <summary>A switch with its "On"/"Off" label on the left, like Settings.</summary>
+    public static StackPanel Switch(bool on, Action<bool> changed, bool enabled = true)
+    {
+        var label = Text(on ? "On" : "Off", "BodyTextBlockStyle", Secondary, wrap: false);
+        label.VerticalAlignment = VerticalAlignment.Center;
+        var t = new ToggleSwitch { IsOn = on, IsEnabled = enabled, OnContent = "", OffContent = "", MinWidth = 0 };
+        t.Toggled += (_, _) =>
+        {
+            label.Text = t.IsOn ? "On" : "Off";
+            changed(t.IsOn);
+        };
+        var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        p.Children.Add(label);
+        p.Children.Add(t);
+        return p;
+    }
+
+    public static Button Button(string text, Action click, bool accent = false)
+    {
+        var b = new Button { Content = text, MinWidth = 96 };
+        if (accent) b.Style = Res<Style>("AccentButtonStyle");
+        b.Click += (_, _) => click();
+        return b;
+    }
+
+    public static StackPanel Row(params UIElement[] children)
+    {
+        var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        foreach (var c in children) p.Children.Add(c);
+        return p;
+    }
+
+    public static InfoBar Info(string title, string message, InfoBarSeverity severity) => new()
+    {
+        Title = title,
+        Message = message,
+        Severity = severity,
+        IsOpen = true,
+        IsClosable = false,
+        Margin = new Thickness(0, 0, 0, 8),
+    };
+
+    public static TextBlock Bold(string text)
+    {
+        var t = Text(text, "BodyTextBlockStyle");
+        t.FontWeight = FontWeights.SemiBold;
+        return t;
+    }
+
+    /// <summary>Detaches a long-lived control (e.g. a text box being typed in) before it joins a rebuilt page.</summary>
+    public static T Reuse<T>(T element) where T : FrameworkElement
+    {
+        switch (element.Parent)
+        {
+            case Panel p: p.Children.Remove(element); break;
+            case Border b: b.Child = null; break;
+            case ContentControl c: c.Content = null; break;
+        }
+        return element;
+    }
+}

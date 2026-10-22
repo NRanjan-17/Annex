@@ -59,6 +59,9 @@ internal static unsafe partial class NativeMethods
     public static partial int annex_core_untrust(nint core, string fingerprint);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint annex_core_set_device_name(nint core, string name);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_core_set_allow_input(nint core, string fingerprint, [MarshalAs(UnmanagedType.U1)] bool allow);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]

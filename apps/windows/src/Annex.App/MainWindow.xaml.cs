@@ -1,33 +1,68 @@
-using System.Collections.ObjectModel;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using Annex.Interop;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using Windows.ApplicationModel.DataTransfer;
 using Windows.Graphics;
 
 namespace Annex.App;
 
 /// <summary>
-/// Windows app: discovers hosts and views them full screen. The stream is decoded and rendered
-/// by the core in its own window (annex_viewer_connect_windowed). The app lives in the system
-/// tray: closing the window hides it; "Quit" in the tray menu exits.
+/// The Windows app: a Settings-style window (Mica, sidebar, setting cards) to share this PC or
+/// connect to another computer. Streams are decoded and rendered by the core in its own window
+/// (annex_viewer_connect_windowed). Annex lives in the system tray: closing the window hides
+/// it; "Quit" in the tray menu exits.
 /// </summary>
 public sealed partial class MainWindow : Window
 {
+    private const ushort DefaultPort = 47800;
+
     private readonly DispatcherQueue _ui;
-    private readonly ObservableCollection<PeerInfo> _hosts = [];
-    private readonly ObservableCollection<TrustedPeer> _trusted = [];
+    private readonly AppSettings _settings = AppSettings.Load();
+    private readonly List<PeerInfo> _hosts = [];
+    private List<TrustedPeer> _trusted = [];
     private CoreClient? _core;
     private DiscoveryHandle? _discovery;
     private ViewerHandle? _viewer;
     private HostHandle? _host;
     private IReadOnlyList<MonitorInfo> _monitors = [];
+    private int _monitorIndex;
     private ContentDialog? _pinDialog;
     private ulong _pinRequest;
     private TrayIcon? _tray;
     private bool _quitting;
+    private string? _startupError;
+
+    // Host state.
+    private readonly Dictionary<ulong, (string Name, string Mode, bool Input)> _sessions = [];
+    private StreamConfig? _hostStream;
+    private string? _hostError;
+
+    // Viewer state.
+    private bool _extend;
     private string _viewingName = "";
+    private string? _viewerStatus;
+    private string? _latency;
+    private bool _controlling;
+
+    // UI.
+    private readonly NavigationView _nav = new();
+    private readonly ContentControl _page = new()
+    {
+        HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        VerticalContentAlignment = VerticalAlignment.Stretch,
+    };
+    private readonly TextBlock _deviceTitle = new() { TextTrimming = TextTrimming.CharacterEllipsis };
+    private readonly TextBlock _deviceSubtitle = new();
+    private string _pane = "share";
+    private bool _buildingNav;
+    // Text boxes survive page rebuilds so typing isn't interrupted by status updates.
+    private readonly TextBox _addressBox = new() { PlaceholderText = "192.168.1.20 or host:port", Width = 240 };
+    private readonly TextBox _nameBox = new() { Width = 240 };
 
     public static string DataDirectory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Annex");
@@ -36,11 +71,12 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         _ui = DispatcherQueue.GetForCurrentThread();
-        AppWindow.Resize(new SizeInt32(520, 720));
-        HostsList.ItemsSource = _hosts;
-        TrustedList.ItemsSource = _trusted;
+        _extend = _settings.ExtendByDefault;
+        SystemBackdrop = new MicaBackdrop();
+        ExtendsContentIntoTitleBar = true;
+        AppWindow.Resize(new SizeInt32(1040, 760));
+        AppWindow.SetIcon(Ui.AssetPath("Annex.ico"));
         Closed += (_, _) => Shutdown();
-        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "Annex.ico"));
         // Closing the window keeps Annex running in the tray.
         AppWindow.Closing += (_, args) =>
         {
@@ -48,34 +84,429 @@ public sealed partial class MainWindow : Window
             args.Cancel = true;
             AppWindow.Hide();
         };
-        _tray = new TrayIcon("Annex", Path.Combine(AppContext.BaseDirectory, "Assets", "Annex.ico"))
-        {
-            MenuProvider = BuildTrayMenu,
-        };
+        _tray = new TrayIcon("Annex", Ui.AssetPath("Annex.ico")) { MenuProvider = BuildTrayMenu };
         _tray.LeftClick += ShowFromTray;
+
+        _addressBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Enter) ConnectManual();
+        };
+        _nameBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Enter) Rename(_nameBox.Text);
+        };
+        _nameBox.LostFocus += (_, _) => Rename(_nameBox.Text);
 
         try
         {
-            _core = CoreClient.Open(DataDirectory, Environment.MachineName);
-            DeviceNameText.Text = _core.DeviceName;
-            FingerprintText.Text = AnnexNative.DisplayFingerprint(_core.Fingerprint);
-            VersionText.Text = $"Annex {AnnexNative.Version}";
+            _core = CoreClient.Open(DataDirectory, _settings.DeviceName ?? Environment.MachineName);
             _discovery = new DiscoveryHandle(_core, e => _ui.TryEnqueue(() => OnDiscovery(e)));
-            RefreshTrusted();
+            _trusted = [.. _core.TrustedPeers];
             RefreshMonitors();
         }
         catch (Exception ex)
         {
-            StatusText.Text = $"Could not start: {ex.Message}";
+            _startupError = ex.Message;
         }
+        _nameBox.Text = _settings.DeviceName ?? "";
+        _nameBox.PlaceholderText = Environment.MachineName;
+        BuildShell();
+        if (_settings.StartSharingAtLaunch) SetHosting(true);
+    }
+
+    // ---- Shell: title bar + sidebar ---------------------------------------------------
+
+    private void BuildShell()
+    {
+        RootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
+        RootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        var title = Ui.Row(Ui.AppIcon(16), Ui.Text("Annex", "CaptionTextBlockStyle", wrap: false));
+        title.Margin = new Thickness(16, 0, 0, 0);
+        title.VerticalAlignment = VerticalAlignment.Center;
+        var titleBar = new Grid { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+        titleBar.Children.Add(title);
+        RootGrid.Children.Add(titleBar);
+        SetTitleBar(titleBar);
+
+        _nav.PaneDisplayMode = NavigationViewPaneDisplayMode.Left;
+        _nav.IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed;
+        _nav.IsPaneToggleButtonVisible = false;
+        _nav.IsSettingsVisible = false;
+        _nav.OpenPaneLength = 300;
+        _nav.Content = _page;
+        _nav.PaneHeader = DeviceCard();
+        _nav.SelectionChanged += (_, args) =>
+        {
+            if (_buildingNav || args.SelectedItemContainer?.Tag is not string tag) return;
+            _pane = tag;
+            Render();
+        };
+        Grid.SetRow(_nav, 1);
+        RootGrid.Children.Add(_nav);
+        BuildNav();
+        Render();
+    }
+
+    private UIElement DeviceCard()
+    {
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 0 };
+        _deviceTitle.Style = Ui.Res<Style>("BodyStrongTextBlockStyle");
+        _deviceSubtitle.Style = Ui.Res<Style>("CaptionTextBlockStyle");
+        _deviceSubtitle.Foreground = Ui.Secondary;
+        text.Children.Add(_deviceTitle);
+        text.Children.Add(_deviceSubtitle);
+        var card = Ui.Row(Ui.AppIcon(40), text);
+        card.Spacing = 12;
+        card.Margin = new Thickness(16, 4, 16, 12);
+        UpdateDeviceCard();
+        return card;
+    }
+
+    private void UpdateDeviceCard()
+    {
+        _deviceTitle.Text = _core?.DeviceName ?? "Annex";
+        _deviceSubtitle.Text = _host is not null ? "Sharing" : "This PC";
+    }
+
+    private static NavigationViewItem NavItem(string text, string glyph, string tag, string? info = null)
+    {
+        var item = new NavigationViewItem { Content = text, Icon = Ui.Glyph(glyph), Tag = tag };
+        if (info is not null) item.InfoBadge = new InfoBadge { Value = int.TryParse(info, out var n) ? n : -1 };
+        return item;
+    }
+
+    /// <summary>Rebuilds the sidebar (nearby computers come and go) and keeps the selection.</summary>
+    private void BuildNav()
+    {
+        _buildingNav = true;
+        var items = _nav.MenuItems;
+        items.Clear();
+        items.Add(NavItem("Share this PC", "", "share"));
+        items.Add(NavItem("Connect", "", "connect"));
+        items.Add(new NavigationViewItemHeader { Content = "Nearby" });
+        if (_hosts.Count == 0)
+            items.Add(new NavigationViewItem { Content = "Searching…", Icon = Ui.Glyph(""), IsEnabled = false, SelectsOnInvoked = false });
+        foreach (var h in _hosts)
+            items.Add(NavItem(h.Name, "", "peer:" + h.Instance));
+        items.Add(new NavigationViewItemHeader { Content = "Annex" });
+        items.Add(NavItem("Paired devices", "", "devices"));
+        items.Add(NavItem("General", "", "general"));
+        items.Add(NavItem("Viewing", "", "viewing"));
+        items.Add(NavItem("About", "", "about"));
+        if (_pane.StartsWith("peer:", StringComparison.Ordinal) && !_hosts.Any(h => "peer:" + h.Instance == _pane))
+            _pane = "connect";
+        _nav.SelectedItem = items.OfType<NavigationViewItem>().FirstOrDefault(i => (string?)i.Tag == _pane);
+        _buildingNav = false;
+    }
+
+    private void Go(string pane)
+    {
+        _pane = pane;
+        BuildNav();
+        Render();
+    }
+
+    /// <summary>Rebuilds the current page from state.</summary>
+    private void Render()
+    {
+        UpdateDeviceCard();
+        var stack = Ui.Page(out var scroller);
+        if (_startupError is not null)
+            stack.Children.Add(Ui.Info("Annex couldn't start", _startupError, InfoBarSeverity.Error));
+        switch (_pane)
+        {
+            case "share": SharePage(stack); break;
+            case "connect": ConnectPage(stack); break;
+            case "devices": DevicesPage(stack); break;
+            case "general": GeneralPage(stack); break;
+            case "viewing": ViewingPage(stack); break;
+            case "about": AboutPage(stack); break;
+            default:
+                var peer = _hosts.FirstOrDefault(h => "peer:" + h.Instance == _pane);
+                if (peer is not null) PeerPage(stack, peer); else ConnectPage(stack);
+                break;
+        }
+        _page.Content = scroller;
+    }
+
+    private void RenderIf(params string[] panes)
+    {
+        if (panes.Contains(_pane) || (_pane.StartsWith("peer:", StringComparison.Ordinal) && panes.Contains("peer"))) Render();
+        else UpdateDeviceCard();
+    }
+
+    // ---- Pages ------------------------------------------------------------------------
+
+    private void SharePage(StackPanel p)
+    {
+        p.Children.Add(Ui.Hero("", "Share this PC",
+            "Let another computer on your network mirror this screen, or use itself as an extra display for this PC."));
+        p.Children.Add(Ui.Card("", "Sharing", ShareStatus(), Ui.Switch(_host is not null, SetHosting)));
+        if (_monitors.Count > 1)
+        {
+            var box = new ComboBox { ItemsSource = _monitors.Select(m => m.Label).ToList(), SelectedIndex = _monitorIndex, MinWidth = 220, IsEnabled = _host is null };
+            box.SelectionChanged += (_, _) => _monitorIndex = Math.Max(0, box.SelectedIndex);
+            p.Children.Add(Ui.Card("", "Display to share", null, box));
+        }
+        if (_hostError is not null)
+            p.Children.Add(Ui.Info("Sharing problem", _hostError, InfoBarSeverity.Warning));
+
+        if (_host is not null)
+        {
+            p.Children.Add(Ui.Section("Connect from another computer"));
+            p.Children.Add(Ui.Card("", "Open Annex on the other computer",
+                $"Choose “{_core?.DeviceName}” under Nearby, then Mirror or Extend."));
+            var addresses = LocalAddresses();
+            p.Children.Add(Ui.Card("", "Not listed? Connect by address",
+                addresses.Count == 0
+                    ? "This PC isn't on a network right now. Connect it to Wi-Fi, Ethernet or a cable."
+                    : "In Connect → Connect by address, type one of these:"));
+            foreach (var (ip, direct) in addresses)
+            {
+                var text = _host.Port == DefaultPort ? ip : $"{ip}:{_host.Port}";
+                var value = Ui.Text(text, "BodyStrongTextBlockStyle", wrap: false);
+                value.FontFamily = new FontFamily("Consolas");
+                value.FontSize = 16;
+                value.IsTextSelectionEnabled = true;
+                var copy = new Button { Content = "Copy" };
+                copy.Click += (_, _) =>
+                {
+                    var data = new DataPackage();
+                    data.SetText(text);
+                    Clipboard.SetContent(data);
+                    copy.Content = "Copied";
+                };
+                var card = Ui.Card(direct ? "" : "", text, direct ? "Direct cable" : "Network", copy);
+                card.Margin = new Thickness(36, 0, 0, 2);
+                p.Children.Add(card);
+            }
+            p.Children.Add(Ui.Card("", "First time? Enter the PIN",
+                $"This PC shows a 6-digit PIN. Check that the identity code matches: {Fingerprint}"));
+        }
+
+        if (_sessions.Count > 0)
+        {
+            p.Children.Add(Ui.Section("Connected"));
+            foreach (var (_, s) in _sessions)
+            {
+                var detail = s.Mode == "extend" ? "Extra display" :
+                    _hostStream is { } st ? $"Mirroring · {st.Width}×{st.Height} at {st.Fps} fps" : "Mirroring";
+                if (s.Input) detail += " · using your mouse and keyboard";
+                p.Children.Add(Ui.Card(s.Mode == "extend" ? "" : "", s.Name, detail));
+            }
+        }
+
+        p.Children.Add(Ui.Section("Video"));
+        p.Children.Add(Ui.Card("", "Hardware video encoder",
+            _host is null ? "Recommended. Uses the graphics card's encoder (NVENC, Quick Sync, AMF)." : "Stop sharing to change this.",
+            Ui.Switch(_settings.PreferHardwareEncoder, on => { _settings.PreferHardwareEncoder = on; _settings.Save(); }, enabled: _host is null)));
+    }
+
+    private string ShareStatus()
+    {
+        if (_host is null) return "Off";
+        if (_sessions.Count > 0) return $"Connected to {string.Join(", ", _sessions.Values.Select(s => s.Name).Distinct())}";
+        return _host.Port == DefaultPort ? "Waiting for a viewer" : $"Waiting for a viewer · port {_host.Port}";
+    }
+
+    private void ConnectPage(StackPanel p)
+    {
+        p.Children.Add(Ui.Hero("", "Connect to a computer",
+            "Show another computer's screen on this PC, or let it use this PC as an extra display. Works over Wi-Fi, Ethernet or a cable between the two."));
+        ViewerStatus(p);
+
+        var mode = new ComboBox { ItemsSource = new[] { "Mirror its screen", "Extra display" }, SelectedIndex = _extend ? 1 : 0, MinWidth = 180 };
+        mode.SelectionChanged += (_, _) => _extend = mode.SelectedIndex == 1;
+        p.Children.Add(Ui.Card("", "Show as", "Extra display: the other computer gets a new display that shows on this PC.", mode));
+
+        p.Children.Add(Ui.Section("Nearby"));
+        if (_hosts.Count == 0)
+            p.Children.Add(Ui.Card("", "Looking for computers…",
+                "Turn on sharing in Annex on the other computer. It appears here automatically.",
+                new ProgressRing { IsActive = true, Width = 20, Height = 20 }));
+        foreach (var h in _hosts)
+            p.Children.Add(Ui.Card("", h.Name, IsPaired(h) ? "Paired" : "Not paired yet · you'll enter a PIN",
+                Ui.Button("Connect", () => ConnectToPeer(h), accent: true)));
+
+        p.Children.Add(Ui.Section("Connect by address"));
+        p.Children.Add(Ui.Card("", "Address", "For computers on another subnet, or when discovery is blocked.",
+            Ui.Row(Ui.Reuse(_addressBox), Ui.Button("Connect", ConnectManual))));
+    }
+
+    private void ViewerStatus(StackPanel p)
+    {
+        if (_viewerStatus is null) return;
+        p.Children.Add(Ui.Card(_viewer is not null ? "" : "", _viewerStatus, _latency,
+            _viewer is not null ? Ui.Button("Disconnect", Disconnect) : null));
+        if (_viewer is not null && _controlling)
+            p.Children.Add(Ui.Card("", "Your mouse and keyboard control it", "Press Ctrl+Alt+Shift+Q in the viewer to leave."));
+        else if (_viewer is not null)
+            p.Children.Add(Ui.Card("", "Leave the viewer", "Press Esc, or close its window."));
+    }
+
+    private void PeerPage(StackPanel p, PeerInfo peer)
+    {
+        p.Children.Add(Ui.Hero("", peer.Name, IsPaired(peer)
+            ? "Paired with this PC. Connects without a PIN."
+            : $"On your network. The first connection asks for the PIN shown on {peer.Name}."));
+        ViewerStatus(p);
+        p.Children.Add(Ui.Card("", "Mirror its screen", $"See and use {peer.Name}'s screen on this PC.",
+            Ui.Button("Mirror", () => { _extend = false; ConnectToPeer(peer); }, accent: true)));
+        p.Children.Add(Ui.Card("", "Use this PC as its extra display", $"{peer.Name} gets a new display that shows up here.",
+            Ui.Button("Extend", () => { _extend = true; ConnectToPeer(peer); })));
+        p.Children.Add(Ui.Section("Details"));
+        p.Children.Add(Ui.Card("", "Addresses", $"{string.Join(", ", peer.Addresses)} · port {peer.Port}"));
+        if (peer.Fingerprint is { } fp)
+            p.Children.Add(Ui.Card("", "Identity code", AnnexNative.DisplayFingerprint(fp)));
+    }
+
+    private void DevicesPage(StackPanel p)
+    {
+        p.Children.Add(Ui.Hero("", "Paired devices",
+            "Devices you've paired with a PIN connect without asking again. Choose which ones may use this PC's mouse and keyboard."));
+        if (_trusted.Any(t => t.AllowInput))
+            p.Children.Add(Ui.Info("About remote control",
+                "Windows doesn't let other apps type into administrator windows or UAC prompts, so those ignore remote input.",
+                InfoBarSeverity.Informational));
+        if (_trusted.Count == 0)
+            p.Children.Add(Ui.Card("", "No paired devices yet", "Connect from another computer and enter the PIN this PC shows."));
+        foreach (var peer in _trusted)
+        {
+            var control = new ToggleSwitch { IsOn = peer.AllowInput, OnContent = "Can control", OffContent = "View only", MinWidth = 0 };
+            control.Toggled += (_, _) =>
+            {
+                _core?.SetAllowInput(peer.Fingerprint, control.IsOn);
+                RefreshTrusted();
+            };
+            var remove = new Button { Content = "Remove" };
+            remove.Click += async (_, _) => await ConfirmRemove(peer);
+            p.Children.Add(Ui.Card("", peer.Name, LastSeen(peer), Ui.Row(control, remove)));
+        }
+        p.Children.Add(Ui.Text($"This PC's identity code: {Fingerprint}", "CaptionTextBlockStyle", Ui.Secondary));
+    }
+
+    private void GeneralPage(StackPanel p)
+    {
+        p.Children.Add(Ui.Hero("", "General",
+            "How Annex starts. It lives in the system tray and keeps everything on your own network: no accounts, no cloud."));
+        p.Children.Add(Ui.Card("", "Device name",
+            "What other computers see. Leave it empty to use this PC's name.", Ui.Reuse(_nameBox)));
+        p.Children.Add(Ui.Card("", "Start with Windows", "Annex starts in the tray when you sign in.",
+            Ui.Switch(AppSettings.StartWithWindows, on => AppSettings.StartWithWindows = on)));
+        p.Children.Add(Ui.Card("", "Start sharing when Annex opens", null,
+            Ui.Switch(_settings.StartSharingAtLaunch, on => { _settings.StartSharingAtLaunch = on; _settings.Save(); })));
+    }
+
+    private void ViewingPage(StackPanel p)
+    {
+        p.Children.Add(Ui.Hero("", "Viewing", "How other computers appear on this PC."));
+        p.Children.Add(Ui.Card("", "Use as an extra display by default", null,
+            Ui.Switch(_settings.ExtendByDefault, on => { _settings.ExtendByDefault = on; _extend = on; _settings.Save(); })));
+        p.Children.Add(Ui.Card("", "Control the other computer",
+            "Use this PC's mouse and keyboard on it. It must allow this PC in its Paired devices. Press Ctrl+Alt+Shift+Q to leave.",
+            Ui.Switch(_settings.ControlWhenViewing, on => { _settings.ControlWhenViewing = on; _settings.Save(); })));
+    }
+
+    private void AboutPage(StackPanel p)
+    {
+        p.Children.Add(Ui.Hero("", "Annex", $"Version {AnnexNative.Version}. Use another computer as a second display, or mirror its screen. Encrypted end to end.",
+            Ui.AppIcon(64)));
+        p.Children.Add(Ui.Card("", "Website and source code", "github.com/NRanjan-17/Annex",
+            new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex") }));
+        p.Children.Add(Ui.Card("", "Report an issue", null,
+            new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex/issues") }));
+        p.Children.Add(Ui.Text("MIT License · Copyright © 2026 Annex contributors", "CaptionTextBlockStyle", Ui.Secondary));
+    }
+
+    // ---- Helpers ----------------------------------------------------------------------
+
+    private string Fingerprint => _core is null ? "" : AnnexNative.DisplayFingerprint(_core.Fingerprint);
+
+    private bool IsPaired(PeerInfo peer) => peer.Fingerprint is { } fp && _trusted.Any(t => t.Fingerprint == fp);
+
+    private static string LastSeen(TrustedPeer peer)
+    {
+        var parts = new List<string>();
+        if (peer.LastSeen > 0)
+        {
+            var ago = DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeSeconds((long)peer.LastSeen);
+            parts.Add("Last connected " + (ago.TotalMinutes < 1 ? "just now"
+                : ago.TotalHours < 1 ? $"{(int)ago.TotalMinutes} min ago"
+                : ago.TotalDays < 1 ? $"{(int)ago.TotalHours} h ago"
+                : $"{(int)ago.TotalDays} days ago"));
+        }
+        if (peer.AllowInput) parts.Add("can control this PC");
+        return parts.Count == 0 ? "Paired" : string.Join(" · ", parts);
+    }
+
+    /// <summary>IPv4 addresses of interfaces that are up; LAN first, direct-cable (169.254) last.</summary>
+    private static List<(string Ip, bool Direct)> LocalAddresses()
+    {
+        var list = new List<(string, bool)>();
+        try
+        {
+            foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus != OperationalStatus.Up
+                    || nic.NetworkInterfaceType is NetworkInterfaceType.Loopback or NetworkInterfaceType.Tunnel)
+                    continue;
+                foreach (var a in nic.GetIPProperties().UnicastAddresses)
+                {
+                    if (a.Address.AddressFamily != AddressFamily.InterNetwork) continue;
+                    var ip = a.Address.ToString();
+                    list.Add((ip, ip.StartsWith("169.254.", StringComparison.Ordinal)));
+                }
+            }
+        }
+        catch (NetworkInformationException)
+        {
+        }
+        return [.. list.Distinct().OrderBy(x => x.Item2)];
+    }
+
+    private async Task ConfirmRemove(TrustedPeer peer)
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            Title = $"Remove {peer.Name}?",
+            Content = "It will need a PIN to connect again.",
+            PrimaryButtonText = "Remove",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+        {
+            _core?.Untrust(peer.Fingerprint);
+            RefreshTrusted();
+        }
+    }
+
+    private void Rename(string name)
+    {
+        if (_core is null) return;
+        var trimmed = name.Trim();
+        if (trimmed == (_settings.DeviceName ?? "")) return;
+        var stored = _core.SetDeviceName(trimmed.Length == 0 ? Environment.MachineName : trimmed);
+        _settings.DeviceName = trimmed.Length == 0 ? null : stored;
+        _settings.Save();
+        _nameBox.Text = _settings.DeviceName ?? "";
+        // Discovery advertises the name: re-advertise if sharing and nobody is connected.
+        if (_host is not null && _sessions.Count == 0)
+        {
+            StopHosting();
+            StartHosting();
+        }
+        UpdateDeviceCard();
     }
 
     private IReadOnlyList<TrayIcon.MenuItem?> BuildTrayMenu()
     {
         var items = new List<TrayIcon.MenuItem?> { new("Open Annex", ShowFromTray), null };
         items.Add(_host is null
-            ? new("Share this screen", () => HostToggle.IsOn = true)
-            : new("Stop sharing", () => HostToggle.IsOn = false));
+            ? new("Share this screen", () => SetHosting(true))
+            : new("Stop sharing", () => SetHosting(false)));
         items.Add(null);
         if (_viewer is not null)
         {
@@ -84,7 +515,7 @@ public sealed partial class MainWindow : Window
         }
         else if (_hosts.Count == 0)
         {
-            items.Add(new("No hosts found", () => { }, Enabled: false));
+            items.Add(new("No computers found", () => { }, Enabled: false));
         }
         else
         {
@@ -119,42 +550,39 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            HostStatusText.Text = $"Can't list displays: {ex.Message}";
+            _hostError = $"Can't list displays: {ex.Message}";
             _monitors = [];
         }
-        MonitorBox.ItemsSource = _monitors.Select(m => m.Label).ToList();
-        MonitorBox.SelectedIndex = _monitors.Count > 0 ? 0 : -1;
+        _monitorIndex = Math.Clamp(_monitorIndex, 0, Math.Max(0, _monitors.Count - 1));
     }
 
-    private void HostToggle_Toggled(object sender, RoutedEventArgs e)
+    private void SetHosting(bool on)
     {
-        if (HostToggle.IsOn) StartHosting(); else StopHosting();
+        if (on) StartHosting(); else StopHosting();
+        RenderIf("share");
     }
 
     private void StartHosting()
     {
         if (_core is null || _host is not null) return;
-        var index = Math.Max(0, MonitorBox.SelectedIndex);
-        var hardware = HardwareBox.IsChecked == true;
+        _hostError = null;
+        var hardware = _settings.PreferHardwareEncoder;
         try
         {
             try
             {
-                _host = HostHandle.StartScreen(_core, index, 47800, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)));
+                _host = HostHandle.StartScreen(_core, _monitorIndex, DefaultPort, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)));
             }
             catch (AnnexException)
             {
                 // Default port busy: take any free port (discovery advertises it).
-                _host = HostHandle.StartScreen(_core, index, 0, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)));
+                _host = HostHandle.StartScreen(_core, _monitorIndex, 0, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)));
             }
-            HostStatusText.Text = $"Waiting for a viewer on port {_host.Port}…";
-            MonitorBox.IsEnabled = HardwareBox.IsEnabled = false;
             if (_tray is not null) _tray.Tooltip = "Annex — sharing this screen";
         }
         catch (AnnexException ex)
         {
-            HostStatusText.Text = $"Could not start sharing: {ex.Message}";
-            HostToggle.IsOn = false;
+            _hostError = $"Could not start sharing: {ex.Message}";
         }
     }
 
@@ -163,8 +591,8 @@ public sealed partial class MainWindow : Window
         var h = _host;
         _host = null;
         h?.Dispose();
-        HostStatusText.Text = "";
-        MonitorBox.IsEnabled = HardwareBox.IsEnabled = true;
+        _sessions.Clear();
+        _hostStream = null;
         if (_tray is not null) _tray.Tooltip = "Annex";
     }
 
@@ -177,15 +605,22 @@ public sealed partial class MainWindow : Window
                 break;
             case CoreEvent.PairingFinished f when f.RequestId == _pinRequest:
                 _pinDialog?.Hide();
-                if (!f.Success) HostStatusText.Text = $"Pairing with {f.PeerName} failed.";
+                if (!f.Success) _hostError = $"Pairing with {f.PeerName} failed.";
                 RefreshTrusted();
                 break;
             case CoreEvent.SessionStarted s:
-                HostStatusText.Text = $"Streaming to {s.PeerName} — {s.Stream.Width}×{s.Stream.Height} @ {s.Stream.Fps} fps";
+                _sessions[s.SessionId] = (s.PeerName, s.Mode, s.Input);
+                if (s.Mode == "mirror") _hostStream = s.Stream;
+                _hostError = null;
                 RefreshTrusted();
                 break;
-            case CoreEvent.SessionEnded:
-                if (_host is not null) HostStatusText.Text = $"Waiting for a viewer on port {_host.Port}…";
+            case CoreEvent.InputAllowed a when _sessions.TryGetValue(a.SessionId, out var s):
+                _sessions[a.SessionId] = s with { Input = a.Allowed };
+                RenderIf("share");
+                break;
+            case CoreEvent.SessionEnded ended:
+                _sessions.Remove(ended.SessionId);
+                RenderIf("share");
                 break;
         }
     }
@@ -196,20 +631,17 @@ public sealed partial class MainWindow : Window
         ShowFromTray();
         _pinRequest = pin.RequestId;
         var panel = new StackPanel { Spacing = 8 };
-        panel.Children.Add(new TextBlock { Text = $"Enter this PIN on {pin.PeerName}:", TextWrapping = TextWrapping.Wrap });
-        panel.Children.Add(new TextBlock
-        {
-            Text = pin.Pin,
-            FontSize = 40,
-            FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Consolas"),
-            HorizontalAlignment = HorizontalAlignment.Center,
-            IsTextSelectionEnabled = true,
-        });
-        panel.Children.Add(new TextBlock { Text = $"Its identity code: {pin.FingerprintDisplay}" });
+        panel.Children.Add(Ui.Text($"Enter this PIN on {pin.PeerName}:"));
+        var code = Ui.Text(pin.Pin, "TitleLargeTextBlockStyle", wrap: false);
+        code.FontFamily = new FontFamily("Consolas");
+        code.HorizontalAlignment = HorizontalAlignment.Center;
+        code.IsTextSelectionEnabled = true;
+        panel.Children.Add(code);
+        panel.Children.Add(Ui.Text($"Its identity code: {pin.FingerprintDisplay}", "CaptionTextBlockStyle", Ui.Secondary));
         _pinDialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
-            Title = $"“{pin.PeerName}” wants to view this PC",
+            Title = $"“{pin.PeerName}” wants to connect",
             Content = panel,
             CloseButtonText = "Don't allow",
         };
@@ -223,7 +655,8 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             // Another dialog is already open; the viewer side will time out.
-            HostStatusText.Text = $"PIN {pin.Pin} for {pin.PeerName} ({ex.Message})";
+            _hostError = $"PIN {pin.Pin} for {pin.PeerName} ({ex.Message})";
+            RenderIf("share");
         }
         finally
         {
@@ -238,21 +671,18 @@ public sealed partial class MainWindow : Window
         switch (e)
         {
             case CoreEvent.PeerFound(var peer):
-                var existing = _hosts.FirstOrDefault(h => h.Instance == peer.Instance);
-                if (existing is not null) _hosts.Remove(existing);
+                _hosts.RemoveAll(h => h.Instance == peer.Instance);
                 _hosts.Add(peer);
+                _hosts.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.CurrentCultureIgnoreCase));
                 break;
             case CoreEvent.PeerLost(var instance):
-                var gone = _hosts.FirstOrDefault(h => h.Instance == instance);
-                if (gone is not null) _hosts.Remove(gone);
+                _hosts.RemoveAll(h => h.Instance == instance);
                 break;
+            default:
+                return;
         }
-        NoHostsText.Visibility = _hosts.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private void HostsList_ItemClick(object sender, ItemClickEventArgs e)
-    {
-        if (e.ClickedItem is PeerInfo peer) ConnectToPeer(peer);
+        BuildNav();
+        RenderIf("connect", "peer");
     }
 
     private void ConnectToPeer(PeerInfo peer)
@@ -263,16 +693,9 @@ public sealed partial class MainWindow : Window
         Connect(address, peer.Name, pinned);
     }
 
-    private void Connect_Click(object sender, RoutedEventArgs e) => ConnectManual();
-
-    private void AddressBox_KeyDown(object sender, KeyRoutedEventArgs e)
-    {
-        if (e.Key == Windows.System.VirtualKey.Enter) ConnectManual();
-    }
-
     private void ConnectManual()
     {
-        var address = AddressBox.Text.Trim();
+        var address = _addressBox.Text.Trim();
         if (address.Length > 0) Connect(address, address, null);
     }
 
@@ -283,15 +706,16 @@ public sealed partial class MainWindow : Window
         try
         {
             _viewer = ViewerHandle.ConnectWindowed(_core, address, pinnedFingerprint, e => _ui.TryEnqueue(() => OnViewerEvent(e)),
-                extend: ExtendToggle.IsOn);
+                extend: _extend, input: _settings.ControlWhenViewing);
             _viewingName = title;
-            StatusText.Text = $"Connecting to {title}…";
+            _viewerStatus = $"Connecting to {title}…";
             if (_tray is not null) _tray.Tooltip = $"Annex — connecting to {title}";
         }
         catch (AnnexException ex)
         {
-            StatusText.Text = $"Connect failed: {ex.Message}";
+            _viewerStatus = $"Connect failed: {ex.Message}";
         }
+        RenderIf("connect", "peer");
     }
 
     private async void OnViewerEvent(CoreEvent e)
@@ -300,30 +724,38 @@ public sealed partial class MainWindow : Window
         {
             case CoreEvent.PairingPinRequired req:
                 await PromptForPin(req);
-                break;
+                return;
             case CoreEvent.PairingFinished { Success: false } f:
-                StatusText.Text = $"Pairing with {f.PeerName} failed: the PIN didn't match or pairing was cancelled.";
+                _viewerStatus = $"Pairing with {f.PeerName} failed: the PIN didn't match or pairing was cancelled.";
                 break;
             case CoreEvent.SessionStarted s:
-                StatusText.Text = (s.Mode == "extend" ? $"Extra display for {s.PeerName}" : $"Viewing {s.PeerName}")
+                _viewerStatus = (s.Mode == "extend" ? $"Extra display for {s.PeerName}" : $"Viewing {s.PeerName}")
                     + (s.ConnectionDescription.Length > 0 ? $" ({s.ConnectionDescription})" : "");
                 _viewingName = s.PeerName;
+                _controlling = s.Input;
                 if (_tray is not null) _tray.Tooltip = $"Annex — viewing {s.PeerName}";
                 RefreshTrusted();
                 break;
+            case CoreEvent.InputAllowed a:
+                _controlling = a.Allowed;
+                break;
             case CoreEvent.StreamChanged(var st):
-                StatusText.Text = $"Viewing — {st.Width}×{st.Height} @ {st.Fps} fps";
+                _viewerStatus = $"Viewing {_viewingName} — {st.Width}×{st.Height} at {st.Fps} fps";
                 break;
             case CoreEvent.Latency(var l):
-                LatencyText.Text = $"Latency p50 {l.P50Ms:F0} ms · p95 {l.P95Ms:F0} ms · {l.Fps:F0} fps";
+                _latency = $"Latency {l.P50Ms:F0} ms (p95 {l.P95Ms:F0} ms) · {l.Fps:F0} fps";
                 break;
             case CoreEvent.SessionEnded(_, var reason):
-                StatusText.Text = reason == "user" ? "Disconnected." : $"Disconnected: {reason}";
-                LatencyText.Text = "";
+                _viewerStatus = reason == "user" ? null : $"Disconnected: {reason}";
+                _latency = null;
+                _controlling = false;
                 if (_tray is not null) _tray.Tooltip = "Annex";
                 Disconnect();
                 break;
+            default:
+                return;
         }
+        RenderIf("connect", "peer");
     }
 
     private async Task PromptForPin(CoreEvent.PairingPinRequired req)
@@ -339,13 +771,9 @@ public sealed partial class MainWindow : Window
             InputScope = new InputScope { Names = { new InputScopeName(InputScopeNameValue.Number) } },
         };
         var panel = new StackPanel { Spacing = 12 };
-        panel.Children.Add(new TextBlock { Text = $"Enter the 6-digit PIN shown on {req.PeerName}.", TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(Ui.Text($"Enter the 6-digit PIN shown on {req.PeerName}."));
         panel.Children.Add(box);
-        panel.Children.Add(new TextBlock
-        {
-            Text = $"Its identity code: {req.FingerprintDisplay}",
-            Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current.Resources["TextFillColorSecondaryBrush"],
-        });
+        panel.Children.Add(Ui.Text($"Its identity code: {req.FingerprintDisplay}", "CaptionTextBlockStyle", Ui.Secondary));
         var dialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
@@ -363,18 +791,11 @@ public sealed partial class MainWindow : Window
         RefreshTrusted();
     }
 
-    private void RemoveTrusted_Click(object sender, RoutedEventArgs e)
-    {
-        if (_core is null || TrustedList.SelectedItem is not TrustedPeer peer) return;
-        _core.Untrust(peer.Fingerprint);
-        RefreshTrusted();
-    }
-
     private void RefreshTrusted()
     {
         if (_core is null) return;
-        _trusted.Clear();
-        foreach (var p in _core.TrustedPeers) _trusted.Add(p);
+        _trusted = [.. _core.TrustedPeers];
+        RenderIf("devices", "connect", "peer", "share");
     }
 
     private void Disconnect()

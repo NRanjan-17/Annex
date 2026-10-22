@@ -59,6 +59,9 @@ cat > "$GLYPH/Contents.json" <<'JSON'
 }
 JSON
 
+echo "==> Windows app image"
+"$TMP/render" "$ROOT/apps/windows/src/Annex.App/Assets/Annex.png" 256 --flat
+
 echo "==> Windows .ico"
 for s in 16 20 24 32 40 48 64 128 256; do
   "$TMP/render" "$TMP/win-$s.png" "$s" --flat

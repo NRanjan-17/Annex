@@ -102,6 +102,9 @@ public sealed class CoreClient : IDisposable
 
     public bool Untrust(string fingerprint) => NativeMethods.Check(NativeMethods.annex_core_untrust(Raw, fingerprint)) == 1;
 
+    /// <summary>Renames this device; returns the name as stored (cleaned and shortened).</summary>
+    public string SetDeviceName(string name) => NativeMethods.TakeString(NativeMethods.annex_core_set_device_name(Raw, name));
+
     /// <summary>Lets a trusted device control this PC's mouse and keyboard (off by default). False if it isn't trusted.</summary>
     public bool SetAllowInput(string fingerprint, bool allow) =>
         NativeMethods.Check(NativeMethods.annex_core_set_allow_input(Raw, fingerprint, allow)) == 1;

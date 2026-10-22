@@ -1,46 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- The UI is built in MainWindow.xaml.cs (and Ui.cs) so it can be compile-checked off Windows. -->
 <Window
     x:Class="Annex.App.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="Annex">
-    <ScrollViewer>
-        <StackPanel Padding="24" Spacing="12" MaxWidth="560" HorizontalAlignment="Stretch">
-            <StackPanel Spacing="2">
-                <TextBlock x:Name="DeviceNameText" Style="{StaticResource SubtitleTextBlockStyle}" />
-                <TextBlock x:Name="FingerprintText" FontFamily="Consolas" IsTextSelectionEnabled="True"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                           ToolTipService.ToolTip="This device's identity code. Compare it with what the other device shows when pairing." />
-            </StackPanel>
-
-            <TextBlock Text="Share this PC's screen" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,8,0,0" />
-            <ToggleSwitch x:Name="HostToggle" Header="Mirror to another computer" Toggled="HostToggle_Toggled" />
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <ComboBox x:Name="MonitorBox" Header="Display" MinWidth="260" />
-                <CheckBox x:Name="HardwareBox" Content="Hardware encoder" IsChecked="True" VerticalAlignment="Bottom" />
-            </StackPanel>
-            <TextBlock x:Name="HostStatusText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-
-            <TextBlock Text="View another computer" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,12,0,0" />
-            <ToggleSwitch x:Name="ExtendToggle" Header="Use this PC as an extra display (Extend)" OffContent="Mirror its screen" OnContent="Extra display" />
-            <TextBlock x:Name="NoHostsText" Text="Looking for hosts…" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            <ListView x:Name="HostsList" SelectionMode="None" IsItemClickEnabled="True"
-                      ItemClick="HostsList_ItemClick" DisplayMemberPath="Name" MaxHeight="220" />
-
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <TextBox x:Name="AddressBox" PlaceholderText="IP address or host:port" Width="280" KeyDown="AddressBox_KeyDown" />
-                <Button Content="Connect" Click="Connect_Click" Style="{StaticResource AccentButtonStyle}" />
-            </StackPanel>
-            <TextBlock x:Name="StatusText" TextWrapping="Wrap" />
-            <TextBlock x:Name="LatencyText" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-            <TextBlock Text="Press Esc in the viewer window to disconnect." Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-
-            <TextBlock Text="Trusted devices" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,12,0,0" />
-            <ListView x:Name="TrustedList" SelectionMode="Single" DisplayMemberPath="Name" MaxHeight="200" />
-            <Button Content="Remove selected device" Click="RemoveTrusted_Click"
-                    ToolTipService.ToolTip="Revoke trust. The device must be approved again to connect." />
-
-            <TextBlock x:Name="VersionText" Foreground="{ThemeResource TextFillColorTertiaryBrush}" Margin="0,12,0,0" />
-        </StackPanel>
-    </ScrollViewer>
+    <Grid x:Name="RootGrid" />
 </Window>
