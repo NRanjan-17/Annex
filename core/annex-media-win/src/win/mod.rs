@@ -20,3 +20,20 @@ pub enum MediaError {
     #[error("{0}")]
     Other(String),
 }
+
+/// Starts Media Foundation once per process. It is never shut down: MFShutdown while any MF
+/// object is still alive (e.g. a transform released after its owner's Drop body ran) crashes.
+pub(crate) fn mf_startup() -> Result<(), MediaError> {
+    use std::sync::OnceLock;
+    static STARTED: OnceLock<Result<(), String>> = OnceLock::new();
+    STARTED
+        .get_or_init(|| unsafe {
+            windows::Win32::Media::MediaFoundation::MFStartup(
+                windows::Win32::Media::MediaFoundation::MF_VERSION,
+                windows::Win32::Media::MediaFoundation::MFSTARTUP_NOSOCKET,
+            )
+            .map_err(|e| e.to_string())
+        })
+        .clone()
+        .map_err(MediaError::Other)
+}

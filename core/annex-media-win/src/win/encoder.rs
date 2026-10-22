@@ -150,7 +150,7 @@ pub struct SoftwareEncoder {
 impl SoftwareEncoder {
     pub fn new(cfg: EncoderConfig, output: OutputFn) -> Result<Self, MediaError> {
         unsafe {
-            MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)?;
+            super::mf_startup()?;
             let mft: IMFTransform = CoCreateInstance(&CLSID_MSH264EncoderMFT, None, CLSCTX_INPROC_SERVER)?;
             configure(&mft, cfg)?;
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
@@ -232,7 +232,6 @@ impl Drop for SoftwareEncoder {
     fn drop(&mut self) {
         unsafe {
             let _ = self.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
-            let _ = MFShutdown();
         }
     }
 }
@@ -260,7 +259,7 @@ unsafe impl Sync for HardwareEncoder {}
 impl HardwareEncoder {
     pub fn new(device: &ID3D11Device, cfg: EncoderConfig, output: OutputFn) -> Result<Self, MediaError> {
         unsafe {
-            MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)?;
+            super::mf_startup()?;
             let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
             let output_t = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
             let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
@@ -412,8 +411,6 @@ impl Drop for HardwareEncoder {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        unsafe {
-            let _ = MFShutdown();
-        }
+        unsafe {}
     }
 }

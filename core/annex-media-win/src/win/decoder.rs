@@ -56,7 +56,7 @@ impl H264Decoder {
             // S_FALSE (already initialised) is fine; RPC_E_CHANGED_MODE means the thread uses STA,
             // which the MFT also tolerates.
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)?;
+            super::mf_startup()?;
             let mft: IMFTransform = CoCreateInstance(&CLSID_MSH264DecoderMFT, None, CLSCTX_INPROC_SERVER)?;
             if let Ok(attrs) = mft.GetAttributes() {
                 let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
@@ -238,7 +238,6 @@ impl Drop for H264Decoder {
     fn drop(&mut self) {
         unsafe {
             let _ = self.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_END_STREAMING, 0);
-            let _ = MFShutdown();
         }
     }
 }
