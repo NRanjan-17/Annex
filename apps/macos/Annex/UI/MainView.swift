@@ -221,11 +221,11 @@ private struct Row<Trailing: View>: View {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             }
+            // The text gets the room; controls take only their natural size (never truncated).
+            .layoutPriority(1)
             Spacer(minLength: 12)
-            // Controls keep their full size; the text on the left wraps instead (no "C…" buttons).
             trailing
                 .fixedSize()
-                .layoutPriority(1)
         }
         .padding(.vertical, 2)
     }
@@ -303,7 +303,7 @@ private struct SharePage: View {
             if model.isHosting && !model.screenRecordingAllowed {
                 Section {
                     Row(symbol: "record.circle", tint: .orange, title: "Allow Screen Recording for Annex",
-                        subtitle: "macOS needs this to share the screen. Turn on Annex in Privacy & Security → Screen & System Audio Recording, then quit and reopen Annex.") {
+                        subtitle: "macOS needs this to share the screen. Turn on Annex in Privacy & Security → Screen & System Audio Recording, then quit and reopen Annex. If it's already on, remove it with − and add it again: each new Annex version needs to be allowed once.") {
                         Button("Open Settings") {
                             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
                                 NSWorkspace.shared.open(url)
@@ -619,7 +619,7 @@ private struct DevicesPage: View {
             if model.trusted.contains(where: \.allowInput) && !model.accessibilityTrusted {
                 Section {
                     Row(symbol: "hand.raised.fill", tint: .orange, title: "Annex needs Accessibility access",
-                        subtitle: "macOS only lets apps use the mouse and keyboard with this permission.") {
+                        subtitle: "macOS only lets apps use the mouse and keyboard with this permission. If Annex is already switched on there, select it, remove it with −, and add it again: each new Annex version needs to be allowed once.") {
                         Button("Open Settings") { InputInjector.openAccessibilitySettings() }
                     }
                 }
@@ -652,10 +652,14 @@ private struct DeviceRow: View {
 
     var body: some View {
         Row(symbol: "desktopcomputer", tint: .teal, title: peer.name, subtitle: lastSeen) {
-            Toggle("Control", isOn: Binding(get: { peer.allowInput }, set: { model.setAllowInput(peer, $0) }))
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .help("Let \(peer.name) use this Mac's mouse and keyboard")
+            HStack(spacing: 8) {
+                Text("Can control").font(.callout).foregroundStyle(.secondary)
+                Toggle("", isOn: Binding(get: { peer.allowInput }, set: { model.setAllowInput(peer, $0) }))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
+            .help("Let \(peer.name) use this Mac's mouse and keyboard")
             Menu {
                 Button("Remove \(peer.name)…", role: .destructive) { confirmRemove = true }
             } label: {
@@ -677,7 +681,6 @@ private struct DeviceRow: View {
         if peer.lastSeen > 0 {
             parts.append("Last connected " + Date(timeIntervalSince1970: TimeInterval(peer.lastSeen)).formatted(.relative(presentation: .named)))
         }
-        if peer.allowInput { parts.append("can control this Mac") }
         return parts.isEmpty ? "Paired" : parts.joined(separator: " · ")
     }
 }
