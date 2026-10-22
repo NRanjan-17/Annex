@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Annex Indirect Display Driver (UMDF 2, IddCx 1.4). Built with the WDK NuGet packages:
+     see ../Directory.Build.props and ../packages.config. -->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|ARM64"><Configuration>Debug</Configuration><Platform>ARM64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ARM64"><Configuration>Release</Configuration><Platform>ARM64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{5B1E7F3A-2C44-4D8E-9A61-0F3C2D7B8E10}</ProjectGuid>
+    <RootNamespace>AnnexIdd</RootNamespace>
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+    <WindowsTargetPlatformVersion>$(AnnexWindowsSdkVersion)</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'!='Debug'">false</UseDebugLibraries>
+    <PlatformToolset>WindowsUserModeDriver10.0</PlatformToolset>
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <DriverType>UMDF</DriverType>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+    <UMDF_VERSION_MAJOR>2</UMDF_VERSION_MAJOR>
+    <UMDF_VERSION_MINOR>25</UMDF_VERSION_MINOR>
+    <IndirectDisplayDriver>true</IndirectDisplayDriver>
+    <IDDCX_VERSION_MAJOR>1</IDDCX_VERSION_MAJOR>
+    <IDDCX_VERSION_MINOR>4</IDDCX_VERSION_MINOR>
+    <IDDCX_MINIMUM_VERSION_REQUIRED>4</IDDCX_MINIMUM_VERSION_REQUIRED>
+    <!-- Signing is a separate step (scripts/sign-test.ps1 or attestation via Partner Center). -->
+    <SignMode>Off</SignMode>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);IDDCX_VERSION_MAJOR=$(IDDCX_VERSION_MAJOR);IDDCX_VERSION_MINOR=$(IDDCX_VERSION_MINOR);IDDCX_MINIMUM_VERSION_REQUIRED=$(IDDCX_MINIMUM_VERSION_REQUIRED)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>%(AdditionalDependencies);OneCoreUAP.lib;avrt.lib;d3d11.lib;dxgi.lib</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="Driver.cpp" />
+    <ClCompile Include="Edid.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="AnnexIddControl.h" />
+    <ClInclude Include="Driver.h" />
+    <ClInclude Include="Edid.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Inf Include="AnnexIdd.inf" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

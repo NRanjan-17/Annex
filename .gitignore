@@ -51,3 +51,5 @@ BundleArtifacts/
 *.h264
 *.hevc
 latency*.csv
+/drivers/windows/packages/
+/drivers/windows/out/

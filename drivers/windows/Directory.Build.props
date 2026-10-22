@@ -1,0 +1,18 @@
+<Project>
+  <!-- Point the C++ build at the WDK/SDK NuGet packages restored into ./packages. -->
+  <PropertyGroup>
+    <AnnexKitVersion>10.0.28000.2526</AnnexKitVersion>
+    <AnnexWindowsSdkVersion>10.0.28000.0</AnnexWindowsSdkVersion>
+    <AnnexPackages>$(MSBuildThisFileDirectory)packages\</AnnexPackages>
+  </PropertyGroup>
+  <Import Project="$(AnnexPackages)Microsoft.Windows.SDK.CPP.$(AnnexKitVersion)\build\native\Microsoft.Windows.SDK.cpp.props"
+          Condition="Exists('$(AnnexPackages)Microsoft.Windows.SDK.CPP.$(AnnexKitVersion)\build\native\Microsoft.Windows.SDK.cpp.props')" />
+  <Import Project="$(AnnexPackages)Microsoft.Windows.SDK.CPP.x64.$(AnnexKitVersion)\build\native\Microsoft.Windows.SDK.cpp.x64.props"
+          Condition="'$(Platform)' == 'x64' And Exists('$(AnnexPackages)Microsoft.Windows.SDK.CPP.x64.$(AnnexKitVersion)\build\native\Microsoft.Windows.SDK.cpp.x64.props')" />
+  <Import Project="$(AnnexPackages)Microsoft.Windows.SDK.CPP.arm64.$(AnnexKitVersion)\build\native\Microsoft.Windows.SDK.cpp.arm64.props"
+          Condition="'$(Platform)' == 'ARM64' And Exists('$(AnnexPackages)Microsoft.Windows.SDK.CPP.arm64.$(AnnexKitVersion)\build\native\Microsoft.Windows.SDK.cpp.arm64.props')" />
+  <Import Project="$(AnnexPackages)Microsoft.Windows.WDK.x64.$(AnnexKitVersion)\build\native\Microsoft.Windows.WDK.x64.props"
+          Condition="'$(Platform)' == 'x64' And Exists('$(AnnexPackages)Microsoft.Windows.WDK.x64.$(AnnexKitVersion)\build\native\Microsoft.Windows.WDK.x64.props')" />
+  <Import Project="$(AnnexPackages)Microsoft.Windows.WDK.ARM64.$(AnnexKitVersion)\build\native\Microsoft.Windows.WDK.arm64.props"
+          Condition="'$(Platform)' == 'ARM64' And Exists('$(AnnexPackages)Microsoft.Windows.WDK.ARM64.$(AnnexKitVersion)\build\native\Microsoft.Windows.WDK.arm64.props')" />
+</Project>

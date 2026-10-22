@@ -1,0 +1,74 @@
+;
+; AnnexIdd.inf - Annex virtual display (Indirect Display Driver, UMDF 2)
+;
+; SPDX-License-Identifier: MIT
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = Display
+ClassGUID   = {4D36E968-E325-11CE-BFC1-08002BE10318}
+ClassVer    = 2.0
+Provider    = %ProviderName%
+CatalogFile = AnnexIdd.cat
+DriverVer   = 01/01/2026,0.1.0.0
+PnpLockdown = 1
+
+[Manufacturer]
+%ManufacturerName% = Standard, NT$ARCH$.10.0...19041
+
+[Standard.NT$ARCH$.10.0...19041]
+%DeviceName% = AnnexIdd_Install, Root\AnnexIdd
+
+[SourceDisksFiles]
+AnnexIdd.dll = 1
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[DestinationDirs]
+AnnexIdd_CopyFiles = 13
+
+[AnnexIdd_Install.NT]
+CopyFiles = AnnexIdd_CopyFiles
+
+[AnnexIdd_CopyFiles]
+AnnexIdd.dll
+
+[AnnexIdd_Install.NT.hw]
+AddReg = AnnexIdd_HardwareSettings
+
+[AnnexIdd_HardwareSettings]
+HKR, , UpperFilters, %REG_MULTI_SZ%, "IndirectKmd"
+HKR, "WUDF", "DeviceGroupId", %REG_SZ%, "AnnexIddGroup"
+; Only SYSTEM, Administrators and interactive users may open the control interface.
+HKR, , Security, , "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;IU)"
+
+[AnnexIdd_Install.NT.Services]
+AddService = WUDFRd, 0x000001fa, WUDFRD_ServiceInstall
+
+[AnnexIdd_Install.NT.Wdf]
+UmdfService              = AnnexIdd, AnnexIdd_UmdfService
+UmdfServiceOrder         = AnnexIdd
+UmdfKernelModeClientPolicy = AllowKernelModeClients
+UmdfHostProcessSharing   = ProcessSharingDisabled
+
+[AnnexIdd_UmdfService]
+UmdfLibraryVersion = $UMDFVERSION$
+ServiceBinary      = %13%\AnnexIdd.dll
+UmdfExtensions     = IddCx0102
+
+[WUDFRD_ServiceInstall]
+DisplayName   = %WudfRdDisplayName%
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %12%\WUDFRd.sys
+
+[Strings]
+ProviderName      = "Annex"
+ManufacturerName  = "Annex"
+DeviceName        = "Annex Virtual Display Adapter"
+DiskName          = "Annex driver installation media"
+WudfRdDisplayName = "Windows Driver Foundation - User-mode Driver Framework Reflector"
+REG_SZ            = 0x00000000
+REG_MULTI_SZ      = 0x00010000

@@ -151,6 +151,35 @@ jobs:
           name: windows-installer-unsigned
           path: dist/Annex-Setup-*
 
+  windows-driver:
+    name: Windows virtual display driver (build only)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: drivers/windows/packages
+          key: wdk-${{ hashFiles('drivers/windows/packages.config') }}
+      - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+      - name: EDID unit tests (MSVC)
+        shell: cmd
+        working-directory: drivers/windows/AnnexIdd/tests
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set VS=%%i
+          call "%VS%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cl /nologo /std:c++17 /EHsc /W4 /WX /I.. EdidTest.cpp ..\Edid.cpp /Fe:EdidTest.exe || exit /b 1
+          EdidTest.exe
+      - name: Build x64
+        shell: pwsh
+        run: drivers/windows/scripts/build.ps1 -Platform x64
+      - name: Build ARM64
+        shell: pwsh
+        run: drivers/windows/scripts/build.ps1 -Platform ARM64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: annex-idd-unsigned
+          path: drivers/windows/out/
+
   audit:
     name: Supply chain (cargo audit + cargo deny)
     runs-on: ubuntu-latest
