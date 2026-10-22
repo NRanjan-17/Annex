@@ -1,0 +1,47 @@
+//! Annex session layer: TLS transport, host/viewer state machines, trust prompts,
+//! clock synchronisation and latency statistics.
+//!
+//! Everything is async (tokio). The FFI crate owns the runtime and turns [`Event`]s into
+//! JSON for the native apps.
+
+pub mod clock;
+mod conn;
+mod core;
+mod events;
+mod host;
+pub mod stats;
+mod viewer;
+
+pub use crate::core::{Core, TrustPolicy};
+pub use events::{Event, EventSink, FrameOut, FrameSink, PeerRole};
+pub use host::{HostConfig, HostHandle, SubmitResult, start_host};
+pub use stats::LatencyStats;
+pub use viewer::{ViewerConfig, ViewerHandle, connect_viewer};
+
+pub use annex_proto::{Codec, DisplayInfo, Mode, StreamConfig};
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+    #[error("i/o: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("protocol: {0}")]
+    Proto(#[from] annex_proto::ProtoError),
+    #[error("crypto: {0}")]
+    Crypto(#[from] annex_crypto::CryptoError),
+    #[error("timed out: {0}")]
+    Timeout(&'static str),
+    #[error("peer is not trusted")]
+    NotTrusted,
+    #[error("rejected by peer: {0}")]
+    Rejected(String),
+    #[error("protocol violation: {0}")]
+    Violation(String),
+    #[error("closed")]
+    Closed,
+}
+
+impl From<tokio::time::error::Elapsed> for SessionError {
+    fn from(_: tokio::time::error::Elapsed) -> Self {
+        SessionError::Timeout("operation")
+    }
+}

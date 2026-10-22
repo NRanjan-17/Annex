@@ -1,0 +1,21 @@
+[package]
+name = "annex-discovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+annex-proto = { version = "0.1.0", path = "../annex-proto" }
+mdns-sd = "0.21.6"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+tracing = "0.1.44"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = "1.0.154"

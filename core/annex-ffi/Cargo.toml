@@ -1,0 +1,31 @@
+[package]
+name = "annex-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+annex-crypto = { version = "0.1.0", path = "../annex-crypto" }
+annex-discovery = { version = "0.1.0", path = "../annex-discovery" }
+annex-proto = { version = "0.1.0", path = "../annex-proto" }
+annex-session = { version = "0.1.0", path = "../annex-session" }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt-multi-thread"] }
+tracing = "0.1.44"
+
+[lints]
+workspace = true
+
+[lib]
+# staticlib: linked into the macOS app. cdylib: annex_ffi.dll for Windows (and a dylib for the
+# .NET interop tests on any OS). lib: lets the CLI/bench reuse the code in-process.
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[target."cfg(windows)".dependencies]
+annex-media-win = { version = "0.1.0", path = "../annex-media-win" }

@@ -1,0 +1,316 @@
+//! `annex`: headless host / viewer / discovery tool for development and testing.
+//!
+//! ```text
+//! annex identity                      print this device's name and fingerprint
+//! annex peers [remove <fingerprint>]  list or revoke trusted devices
+//! annex discover [--seconds N]        list hosts on the LAN
+//! annex host [--port P] [--replay file.h264 | --synthetic] [--fps N] [--no-advertise]
+//! annex viewer <address> [--dump file.h264] [--expect <fingerprint>] [--seconds N]
+//! ```
+//! Common options: `--data-dir DIR`, `--name NAME`, `--trust-all` (accept unknown peers
+//! without asking; for automated tests only).
+
+mod h264;
+
+use std::io::{BufRead, Write};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use annex_session::*;
+
+struct Opts {
+    args: Vec<String>,
+}
+
+impl Opts {
+    fn flag(&mut self, name: &str) -> bool {
+        if let Some(i) = self.args.iter().position(|a| a == name) {
+            self.args.remove(i);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn value(&mut self, name: &str) -> Option<String> {
+        let i = self.args.iter().position(|a| a == name)?;
+        if i + 1 >= self.args.len() {
+            die(&format!("{name} needs a value"));
+        }
+        self.args.remove(i);
+        Some(self.args.remove(i))
+    }
+
+    fn num<T: std::str::FromStr>(&mut self, name: &str, default: T) -> T {
+        self.value(name).map(|v| v.parse().unwrap_or_else(|_| die(&format!("bad value for {name}")))).unwrap_or(default)
+    }
+
+    fn positional(&mut self) -> Option<String> {
+        if self.args.first().is_some_and(|a| !a.starts_with("--")) { Some(self.args.remove(0)) } else { None }
+    }
+}
+
+fn die(msg: &str) -> ! {
+    eprintln!("annex: {msg}");
+    std::process::exit(2)
+}
+
+fn default_data_dir() -> PathBuf {
+    let home = || std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| ".".into());
+    if cfg!(target_os = "macos") {
+        home().join("Library/Application Support/Annex")
+    } else if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(home).join("Annex")
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".local/share"))
+            .join("annex")
+    }
+}
+
+fn default_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| {
+            std::process::Command::new("hostname")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().trim_end_matches(".local").to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Annex CLI".into())
+}
+
+fn open_core(o: &mut Opts) -> Arc<Core> {
+    let dir = o.value("--data-dir").map(PathBuf::from).unwrap_or_else(default_data_dir);
+    let name = o.value("--name").unwrap_or_else(default_name);
+    let policy = if o.flag("--trust-all") { TrustPolicy::AcceptAllInsecure } else { TrustPolicy::Prompt };
+    Core::open(&dir, &name, policy).unwrap_or_else(|e| die(&format!("cannot open data dir {}: {e}", dir.display())))
+}
+
+/// Prints events and answers trust prompts interactively on stdin.
+fn event_printer(core: Arc<Core>) -> EventSink {
+    let prompt_lock = Arc::new(Mutex::new(()));
+    Arc::new(move |e: Event| match e {
+        Event::TrustRequest { request_id, peer_name, peer_role, fingerprint_display, .. } => {
+            let core = core.clone();
+            let lock = prompt_lock.clone();
+            std::thread::spawn(move || {
+                let _g = lock.lock().unwrap();
+                eprint!(
+                    "\nUnknown {:?} \"{peer_name}\" wants to connect.\nFingerprint: {fingerprint_display}\n\
+                     Check that the other device shows the same fingerprint. Trust it? [y/N] ",
+                    peer_role
+                );
+                let _ = std::io::stderr().flush();
+                let mut line = String::new();
+                let _ = std::io::stdin().lock().read_line(&mut line);
+                core.respond_trust(request_id, line.trim().eq_ignore_ascii_case("y"));
+            });
+        }
+        Event::LatencyStats { stats, clock_rtt_ms } => eprintln!(
+            "latency: {} frames, {:.1} fps, p50 {:.1} ms, p95 {:.1} ms, p99 {:.1} ms, max {:.1} ms (clock rtt {:.2} ms)",
+            stats.frames,
+            stats.fps,
+            stats.p50_ms,
+            stats.p95_ms,
+            stats.p99_ms,
+            stats.max_ms,
+            clock_rtt_ms.unwrap_or(f64::NAN)
+        ),
+        other => eprintln!("{}", serde_json::to_string(&other).unwrap_or_default()),
+    })
+}
+
+#[tokio::main]
+async fn main() {
+    let mut o = Opts { args: std::env::args().skip(1).collect() };
+    let cmd = o.positional().unwrap_or_else(|| "help".into());
+    match cmd.as_str() {
+        "identity" => {
+            let core = open_core(&mut o);
+            println!("name:        {}", core.device_name());
+            println!("fingerprint: {}", core.fingerprint());
+            println!("display:     {}", display(core.fingerprint()));
+        }
+        "peers" => {
+            let core = open_core(&mut o);
+            if o.positional().as_deref() == Some("remove") {
+                let fp = o.positional().unwrap_or_else(|| die("peers remove <fingerprint>"));
+                match core.untrust(&fp) {
+                    Ok(true) => println!("revoked {fp}"),
+                    Ok(false) => die("not a trusted peer"),
+                    Err(e) => die(&e.to_string()),
+                }
+            } else {
+                for p in core.trusted_peers() {
+                    println!("{}  {}  {}", p.fingerprint, display(&p.fingerprint), p.name);
+                }
+            }
+        }
+        "discover" => discover(&mut o).await,
+        "host" => host(&mut o).await,
+        "viewer" => viewer(&mut o).await,
+        _ => {
+            eprintln!(
+                "{}",
+                include_str!("main.rs")
+                    .lines()
+                    .take(12)
+                    .skip(2)
+                    .map(|l| l.trim_start_matches("//!").trim_start_matches(' '))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            std::process::exit(if cmd == "help" { 0 } else { 2 });
+        }
+    }
+}
+
+fn display(fp: &str) -> String {
+    fp.as_bytes().chunks(4).take(5).map(|c| String::from_utf8_lossy(c).to_uppercase()).collect::<Vec<_>>().join(" ")
+}
+
+async fn discover(o: &mut Opts) {
+    let core = open_core(o);
+    let secs: u64 = o.num("--seconds", 5);
+    let d = annex_discovery::Discovery::new(core.fingerprint()).unwrap_or_else(|e| die(&e.to_string()));
+    let _b = d
+        .browse(|e| println!("{}", serde_json::to_string(&e).unwrap_or_default()))
+        .unwrap_or_else(|e| die(&e.to_string()));
+    tokio::time::sleep(Duration::from_secs(secs)).await;
+}
+
+async fn host(o: &mut Opts) {
+    let core = open_core(o);
+    let port: u16 = o.num("--port", annex_proto_port());
+    let fps: u32 = o.num("--fps", 60);
+    let replay = o.value("--replay").map(PathBuf::from);
+    let synthetic = o.flag("--synthetic");
+    let advertise = !o.flag("--no-advertise");
+    let (aus, codec, w, h) = match &replay {
+        Some(p) => {
+            let data = std::fs::read(p).unwrap_or_else(|e| die(&format!("{}: {e}", p.display())));
+            let aus = h264::split_access_units(&data);
+            if aus.is_empty() {
+                die("no H.264 access units in replay file");
+            }
+            let w: u32 = o.num("--width", 1920);
+            let h: u32 = o.num("--height", 1080);
+            (aus, Codec::H264, w, h)
+        }
+        None if synthetic => (Vec::new(), Codec::Raw, 1920, 1080),
+        None => die("host needs --replay <file.h264> or --synthetic (live capture is in the desktop apps)"),
+    };
+    let events = event_printer(core.clone());
+    let handle =
+        start_host(core.clone(), HostConfig { port, stream: StreamConfig { codec, width: w, height: h, fps } }, events)
+            .await
+            .unwrap_or_else(|e| die(&e.to_string()));
+    let _ad = if advertise {
+        let d = annex_discovery::Discovery::new(core.fingerprint()).unwrap_or_else(|e| die(&e.to_string()));
+        let ad = d.advertise_host(core.device_name(), handle.port()).unwrap_or_else(|e| die(&e.to_string()));
+        Some((d, ad))
+    } else {
+        None
+    };
+    eprintln!(
+        "hosting as \"{}\" on port {} — fingerprint {}",
+        core.device_name(),
+        handle.port(),
+        display(core.fingerprint())
+    );
+
+    let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / fps as f64));
+    let mut i = 0usize;
+    let mut synthetic_buf = vec![0u8; 30_000];
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {}
+            _ = tokio::signal::ctrl_c() => break,
+        }
+        if !handle.has_session() {
+            i = 0;
+            continue;
+        }
+        let ts = clock::now_us();
+        if aus.is_empty() {
+            let key = i.is_multiple_of(120);
+            synthetic_buf[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            handle.submit_frame(&synthetic_buf, ts, key);
+        } else {
+            let au = &aus[i % aus.len()];
+            handle.submit_frame(au, ts, h264::is_keyframe(au));
+        }
+        i += 1;
+    }
+    handle.stop().await;
+}
+
+fn annex_proto_port() -> u16 {
+    47800
+}
+
+async fn viewer(o: &mut Opts) {
+    let core = open_core(o);
+    let address = o.positional().unwrap_or_else(|| die("viewer <address>"));
+    let dump = o.value("--dump").map(PathBuf::from);
+    let expected = o.value("--expect");
+    let secs: u64 = o.num("--seconds", 0);
+    let latency_csv = o.value("--latency-csv").map(PathBuf::from);
+    let file = dump.map(|p| {
+        Arc::new(Mutex::new(std::fs::File::create(&p).unwrap_or_else(|e| die(&format!("{}: {e}", p.display())))))
+    });
+    let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let printer = event_printer(core.clone());
+    let events: EventSink = Arc::new(move |e: Event| {
+        let end = matches!(e, Event::SessionEnded { .. });
+        printer(e);
+        if end {
+            let _ = done_tx.send(());
+        }
+    });
+    let (fid_tx, mut fid_rx) = tokio::sync::mpsc::unbounded_channel::<u32>();
+    let frames: FrameSink = Arc::new(move |f: FrameOut<'_>| {
+        if let Some(file) = &file {
+            let _ = file.lock().unwrap().write_all(f.data);
+        }
+        let _ = fid_tx.send(f.frame_id);
+    });
+    let cfg = ViewerConfig {
+        address,
+        display: DisplayInfo {
+            width_px: 1920,
+            height_px: 1080,
+            width_mm: 0,
+            height_mm: 0,
+            refresh_hz: 60,
+            scale_percent: 100,
+        },
+        codecs: vec![Codec::H264, Codec::Raw],
+        expected_fingerprint: expected,
+        latency_csv,
+    };
+    let v = Arc::new(connect_viewer(core, cfg, events, frames));
+    let presenter = {
+        let v = v.clone();
+        tokio::spawn(async move {
+            // The CLI doesn't render; count arrival as presentation.
+            while let Some(id) = fid_rx.recv().await {
+                v.frame_presented(id);
+            }
+        })
+    };
+    let timer = async {
+        if secs == 0 { std::future::pending::<()>().await } else { tokio::time::sleep(Duration::from_secs(secs)).await }
+    };
+    tokio::select! {
+        _ = done_rx.recv() => {}
+        _ = tokio::signal::ctrl_c() => v.disconnect().await,
+        _ = timer => v.disconnect().await,
+    }
+    presenter.abort();
+}
