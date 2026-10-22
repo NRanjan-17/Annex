@@ -5,6 +5,7 @@
 
 pub mod annexb;
 pub mod geometry;
+pub mod idd;
 
 #[cfg(windows)]
 mod win;

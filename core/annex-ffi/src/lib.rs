@@ -578,62 +578,219 @@ pub unsafe extern "C" fn annex_host_start_screen(
 
 #[cfg(windows)]
 mod win_host {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, OnceLock, Weak};
+    use std::time::Duration;
 
-    use annex_media_win::{HostPipeline, HostPipelineConfig, Monitor, stream_size};
-    use annex_session::{Codec, Event, EventSink, HostConfig, HostHandle, StreamConfig};
+    use annex_media_win::{
+        EncodedFrame, HostPipeline, HostPipelineConfig, Monitor, VirtualDisplayDriver, idd, monitor_size, stream_size,
+    };
+    use annex_session::{Codec, DisplayInfo, Event, EventSink, HostConfig, HostHandle, Mode, StreamConfig};
 
     use crate::AnnexCore;
 
-    /// Pipeline lifecycle follows the session: started on `session_started`, dropped on
-    /// `session_ended`, asked for an IDR on `keyframe_requested`.
+    type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+    fn clock() -> Clock {
+        Arc::new(annex_session::clock::now_us)
+    }
+
+    /// One Extend session: a virtual monitor from the AnnexIdd driver, captured for one viewer.
+    struct ExtendSession {
+        connector: u32,
+        stop: Arc<AtomicBool>,
+        pipeline: Arc<Mutex<Option<HostPipeline>>>,
+    }
+
+    /// Capture lifecycles follow the sessions: one shared mirror pipeline for all mirror viewers,
+    /// one virtual monitor + pipeline per extend viewer.
     pub struct ScreenState {
-        cfg: HostPipelineConfig,
+        mirror_cfg: HostPipelineConfig,
+        prefer_hardware: bool,
         host: OnceLock<Weak<HostHandle>>,
-        pipeline: Mutex<Option<HostPipeline>>,
+        mirror: Mutex<Option<HostPipeline>>,
+        mirror_sessions: Mutex<HashSet<u64>>,
+        driver: Option<Arc<VirtualDisplayDriver>>,
+        extends: Mutex<HashMap<u64, ExtendSession>>,
+    }
+
+    fn bitrate(w: u32, h: u32, fps: u32) -> u32 {
+        (w * h * fps / 8).clamp(4_000_000, 40_000_000)
     }
 
     impl ScreenState {
-        fn start_pipeline(self: &Arc<Self>) {
-            let mut slot = self.pipeline.lock().unwrap();
+        fn host(&self) -> Option<Arc<HostHandle>> {
+            self.host.get().and_then(|w| w.upgrade())
+        }
+
+        fn start_mirror(self: &Arc<Self>) {
+            let mut slot = self.mirror.lock().unwrap();
             if let Some(p) = slot.as_ref() {
                 // Another mirror viewer joined: one capture feeds everyone; just resync.
                 p.request_keyframe();
                 return;
             }
             let Some(host) = self.host.get().cloned() else { return };
-            let clock: Arc<dyn Fn() -> i64 + Send + Sync> = Arc::new(annex_session::clock::now_us);
             // Weak: the host owns this pipeline (via the event sink), not the other way round.
-            let output = Arc::new(move |f: annex_media_win::EncodedFrame| {
+            let output = Arc::new(move |f: EncodedFrame| {
                 if let Some(h) = host.upgrade() {
                     h.submit_frame(&f.data, f.capture_us, f.keyframe);
                 }
             });
-            match HostPipeline::start(self.cfg.clone(), clock, output) {
+            match HostPipeline::start(self.mirror_cfg.clone(), clock(), output) {
                 Ok(p) => *slot = Some(p),
                 Err(e) => tracing::error!("screen capture failed to start: {e}"),
             }
         }
 
         pub fn stop(&self) {
-            self.pipeline.lock().unwrap().take();
+            self.mirror.lock().unwrap().take();
+            let ids: Vec<u64> = self.extends.lock().unwrap().keys().copied().collect();
+            for id in ids {
+                self.end_extend(id);
+            }
+        }
+
+        fn start_extend(self: &Arc<Self>, id: u64, display: DisplayInfo, fingerprint: String) {
+            let Some(driver) = self.driver.clone() else { return };
+            let Some(host) = self.host() else { return };
+            let fail = |e: String| {
+                tracing::error!("extend session {id} failed: {e}");
+                host.end_session(id);
+            };
+            let serial = idd::serial_for(&fingerprint);
+            let hz = if display.refresh_hz == 0 { 60 } else { display.refresh_hz.clamp(24, 60) };
+            let connector = match driver.add_monitor(
+                serial,
+                display.width_px.max(640),
+                display.height_px.max(480),
+                hz,
+                display.width_mm,
+                display.height_mm,
+            ) {
+                Ok(c) => c,
+                Err(e) => return fail(e.to_string()),
+            };
+            let monitor = match driver.wait_for_monitor(connector, Duration::from_secs(5)) {
+                Ok(m) => m,
+                Err(e) => {
+                    let _ = driver.remove_monitor(connector);
+                    return fail(e.to_string());
+                }
+            };
+            let stop = Arc::new(AtomicBool::new(false));
+            let pipeline: Arc<Mutex<Option<HostPipeline>>> = Arc::default();
+            self.extends
+                .lock()
+                .unwrap()
+                .insert(id, ExtendSession { connector, stop: stop.clone(), pipeline: pipeline.clone() });
+            let weak_host = Arc::downgrade(&host);
+            let prefer_hardware = self.prefer_hardware;
+            let start = move |m: &Monitor| -> Option<(u32, u32)> {
+                let host = weak_host.upgrade()?;
+                let (w, h) = (m.width & !1, m.height & !1);
+                host.set_session_stream(id, StreamConfig { codec: Codec::H264, width: w, height: h, fps: hz });
+                let weak = weak_host.clone();
+                let output = Arc::new(move |f: EncodedFrame| {
+                    if let Some(h) = weak.upgrade() {
+                        h.submit_session_frame(id, &f.data, f.capture_us, f.keyframe);
+                    }
+                });
+                let cfg = HostPipelineConfig {
+                    monitor: m.clone(),
+                    width: w,
+                    height: h,
+                    fps: hz,
+                    bitrate: bitrate(w, h, hz),
+                    prefer_hardware,
+                };
+                match HostPipeline::start(cfg, clock(), output) {
+                    Ok(p) => {
+                        *pipeline.lock().unwrap() = Some(p);
+                        Some((w, h))
+                    }
+                    Err(e) => {
+                        tracing::error!("capturing the virtual monitor failed: {e}");
+                        None
+                    }
+                }
+            };
+            let mut current = start(&monitor);
+            // Follow resolution changes made in Settings → Display (viewer updates within ~0.5 s).
+            while !stop.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(250));
+                let Some((w, h)) = monitor_size(&monitor.name) else { continue };
+                if current != Some((w & !1, h & !1)) {
+                    // Stop the old pipeline before capturing at the new size.
+                    let old = self.extends.lock().unwrap().get(&id).map(|e| e.pipeline.clone());
+                    if let Some(p) = old {
+                        p.lock().unwrap().take();
+                    }
+                    let resized = Monitor { width: w, height: h, ..monitor.clone() };
+                    current = start(&resized);
+                }
+            }
+        }
+
+        fn end_extend(&self, id: u64) {
+            let Some(session) = self.extends.lock().unwrap().remove(&id) else { return };
+            session.stop.store(true, Ordering::Release);
+            session.pipeline.lock().unwrap().take();
+            if let Some(driver) = &self.driver {
+                // Windows moves the monitor's windows back to the remaining displays.
+                let _ = driver.remove_monitor(session.connector);
+            }
         }
 
         fn on_event(self: &Arc<Self>, e: &Event) {
             match e {
-                Event::SessionStarted { mode: annex_session::Mode::Mirror, .. } => {
+                Event::SessionStarted { session_id, mode: Mode::Mirror, .. } => {
+                    self.mirror_sessions.lock().unwrap().insert(*session_id);
                     // Capture setup touches COM/WinRT; keep it off the async runtime threads.
                     let me = self.clone();
-                    std::thread::spawn(move || me.start_pipeline());
+                    std::thread::spawn(move || me.start_mirror());
                 }
-                Event::SessionEnded { .. } => {
-                    if self.host.get().and_then(|w| w.upgrade()).is_none_or(|h| !h.has_session()) {
-                        self.stop();
+                Event::SessionStarted { session_id, mode: Mode::Extend, viewer_display, fingerprint, .. } => {
+                    let me = self.clone();
+                    let (id, display, fp) = (
+                        *session_id,
+                        viewer_display.clone().unwrap_or(DisplayInfo {
+                            width_px: 1920,
+                            height_px: 1080,
+                            width_mm: 0,
+                            height_mm: 0,
+                            refresh_hz: 60,
+                            scale_percent: 100,
+                        }),
+                        fingerprint.clone(),
+                    );
+                    std::thread::spawn(move || me.start_extend(id, display, fp));
+                }
+                Event::SessionEnded { session_id, .. } => {
+                    if self.mirror_sessions.lock().unwrap().remove(session_id) {
+                        if self.mirror_sessions.lock().unwrap().is_empty() {
+                            self.mirror.lock().unwrap().take();
+                        }
+                    } else {
+                        let me = self.clone();
+                        let id = *session_id;
+                        std::thread::spawn(move || me.end_extend(id));
                     }
                 }
-                Event::KeyframeRequested { .. } => {
-                    if let Some(p) = self.pipeline.lock().unwrap().as_ref() {
-                        p.request_keyframe();
+                Event::KeyframeRequested { session_id } => {
+                    let pipeline = self.extends.lock().unwrap().get(session_id).map(|e| e.pipeline.clone());
+                    match pipeline {
+                        Some(p) => {
+                            if let Some(p) = p.lock().unwrap().as_ref() {
+                                p.request_keyframe();
+                            }
+                        }
+                        None => {
+                            if let Some(p) = self.mirror.lock().unwrap().as_ref() {
+                                p.request_keyframe();
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -652,11 +809,29 @@ mod win_host {
         let (max_w, max_h) = if prefer_hardware { (2560, 1600) } else { (1920, 1200) };
         let (width, height) = stream_size(monitor.width, monitor.height, max_w, max_h);
         let fps = monitor.refresh_hz.clamp(30, 60);
-        let bitrate = (width * height * fps / 8).clamp(4_000_000, 40_000_000);
+        // Extend needs the AnnexIdd driver (installed with the "Extend mode" installer option).
+        let driver = match VirtualDisplayDriver::open() {
+            Ok(d) => Some(Arc::new(d)),
+            Err(e) => {
+                tracing::info!("extend mode unavailable: {e}");
+                None
+            }
+        };
         let state = Arc::new(ScreenState {
-            cfg: HostPipelineConfig { monitor, width, height, fps, bitrate, prefer_hardware },
+            mirror_cfg: HostPipelineConfig {
+                monitor,
+                width,
+                height,
+                fps,
+                bitrate: bitrate(width, height, fps),
+                prefer_hardware,
+            },
+            prefer_hardware,
             host: OnceLock::new(),
-            pipeline: Mutex::new(None),
+            mirror: Mutex::new(None),
+            mirror_sessions: Mutex::new(HashSet::new()),
+            extends: Mutex::new(HashMap::new()),
+            driver,
         });
         let events: EventSink = {
             let state = state.clone();
@@ -665,7 +840,8 @@ mod win_host {
                 app_events(e);
             })
         };
-        let cfg = HostConfig { port, stream: StreamConfig { codec: Codec::H264, width, height, fps }, extend: false };
+        let extend = state.driver.is_some();
+        let cfg = HostConfig { port, stream: StreamConfig { codec: Codec::H264, width, height, fps }, extend };
         let handle = Arc::new(c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, events))?);
         let _ = state.host.set(Arc::downgrade(&handle));
         Ok((handle, state))
