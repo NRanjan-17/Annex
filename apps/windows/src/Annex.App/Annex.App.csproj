@@ -13,6 +13,9 @@
     <UseWinUI>true</UseWinUI>
     <!-- Unpackaged, self-contained: installed by the Inno Setup installer, no Store/MSIX needed. -->
     <WindowsPackageType>None</WindowsPackageType>
+    <!-- Unpackaged apps still need the MSIX tooling to generate Annex.pri (the index WinUI uses to
+         find compiled XAML at runtime). Without it MainWindow.xaml fails to load: XamlParseException. -->
+    <EnableMsixTooling>true</EnableMsixTooling>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <SelfContained>true</SelfContained>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>

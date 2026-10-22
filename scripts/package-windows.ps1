@@ -39,6 +39,8 @@ dotnet publish "$Root\apps\windows\src\Annex.App\Annex.App.csproj" -c Release -p
   -p:Version=$NumericVersion -p:InformationalVersion=$Version -p:SelfContained=true -o $Out
 if ($LASTEXITCODE) { throw "dotnet publish failed" }
 if (-not (Test-Path "$Out\annex_ffi.dll")) { throw "annex_ffi.dll missing from $Out" }
+# The app's resource index: without it WinUI can't load MainWindow and the app crashes at start.
+if (-not (Test-Path "$Out\Annex.pri")) { throw "Annex.pri missing from $Out (EnableMsixTooling?)" }
 Copy-Item "$Root\core\target\$Triple\release\annex-driver.exe" $Out -Force
 
 # Extend-mode driver (built by drivers\windows\scripts\build.ps1). Optional: without it the installer has no
