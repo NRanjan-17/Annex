@@ -98,6 +98,7 @@ async fn main() {
             codecs: vec![Codec::Raw],
             expected_fingerprint: None,
             mode: Mode::Mirror,
+            input: false,
             latency_csv: None,
         },
         Arc::new(|_| {}),

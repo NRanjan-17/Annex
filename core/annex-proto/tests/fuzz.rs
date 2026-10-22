@@ -22,7 +22,7 @@ fn arb_control() -> impl Strategy<Value = Control> {
         })),
         proptest::collection::vec(any::<u8>(), 1..=128).prop_map(|msg| Control::PairSpake { msg }),
         proptest::collection::vec(any::<u8>(), 32..=32).prop_map(|mac| Control::PairConfirm { mac }),
-        arb_stream().prop_map(|stream| Control::SessionAccept { stream }),
+        (arb_stream(), any::<bool>()).prop_map(|(stream, input)| Control::SessionAccept { stream, input }),
         arb_stream().prop_map(Control::StreamConfig),
         (any::<u32>(), any::<i64>()).prop_map(|(seq, t_viewer_us)| Control::ClockPing { seq, t_viewer_us }),
         (any::<u32>(), any::<i64>(), any::<i64>()).prop_map(|(seq, t_viewer_us, t_host_us)| Control::ClockPong {
@@ -32,6 +32,11 @@ fn arb_control() -> impl Strategy<Value = Control> {
         }),
         "[ -~]{0,256}".prop_map(|reason| Control::Bye { reason }),
         Just(Control::KeyframeRequest),
+        (any::<u16>(), any::<u16>()).prop_map(|(x, y)| Control::Input(InputEvent::MouseMove { x, y })),
+        (-100_000i32..=100_000, -100_000i32..=100_000)
+            .prop_map(|(dx, dy)| Control::Input(InputEvent::Scroll { dx, dy })),
+        (any::<u16>(), any::<bool>()).prop_map(|(usage, down)| Control::Input(InputEvent::Key { usage, down })),
+        any::<bool>().prop_map(|allowed| Control::InputAllowed { allowed }),
     ]
 }
 

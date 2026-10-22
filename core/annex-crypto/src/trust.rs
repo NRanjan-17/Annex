@@ -13,6 +13,9 @@ pub struct TrustedPeer {
     pub added_at: u64,
     #[serde(default)]
     pub last_seen: u64,
+    /// Host side: this device may control our mouse and keyboard. Off until the user turns it on.
+    #[serde(default)]
+    pub allow_input: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -74,6 +77,7 @@ impl TrustStore {
                 name: name.to_string(),
                 added_at: t,
                 last_seen: t,
+                allow_input: false,
             }),
         }
         self.save()
@@ -88,6 +92,14 @@ impl TrustStore {
             self.save()?;
         }
         Ok(removed)
+    }
+
+    /// Returns false if the peer isn't trusted.
+    pub fn set_allow_input(&mut self, fingerprint: &str, allow: bool) -> Result<bool, CryptoError> {
+        let Some(p) = self.peers.iter_mut().find(|p| p.fingerprint == fingerprint) else { return Ok(false) };
+        p.allow_input = allow;
+        self.save()?;
+        Ok(true)
     }
 
     pub fn touch(&mut self, fingerprint: &str) -> Result<(), CryptoError> {
@@ -126,6 +138,13 @@ mod tests {
         }
         let mut s = TrustStore::open(&path).unwrap();
         assert_eq!(s.get(&fp).unwrap().name, "Laptop");
+        assert!(!s.get(&fp).unwrap().allow_input);
+        assert!(s.set_allow_input(&fp, true).unwrap());
+        assert!(TrustStore::open(&path).unwrap().get(&fp).unwrap().allow_input);
+        // Re-pairing keeps the setting.
+        s.add(&fp, "Laptop 2").unwrap();
+        assert!(s.get(&fp).unwrap().allow_input);
+        assert!(!s.set_allow_input(&"b".repeat(64), true).unwrap());
         assert!(s.remove(&fp).unwrap());
         assert!(!s.remove(&fp).unwrap());
         assert!(!TrustStore::open(&path).unwrap().is_trusted(&fp));

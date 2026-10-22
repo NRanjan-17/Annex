@@ -438,7 +438,9 @@ async fn run_session(
         writer.send_control(&Control::SessionReject { reason: reason.into() }).await?;
         return Ok(reason.into());
     }
-    writer.send_control(&Control::SessionAccept { stream: stream.clone() }).await?;
+    // Input needs the viewer to ask and the user to have allowed this device on the host.
+    let mut input = req.input && shared.core.allows_input(fp);
+    writer.send_control(&Control::SessionAccept { stream: stream.clone(), input }).await?;
 
     let (frame_tx, mut frame_rx) = mpsc::channel::<OutFrame>(FRAME_QUEUE);
     let (stream_tx, mut stream_rx) = watch::channel(stream.clone());
@@ -462,6 +464,7 @@ async fn run_session(
         stream,
         transport: link.transport,
         link: if link.direct { crate::events::LinkKind::Direct } else { crate::events::LinkKind::Network },
+        input,
     });
     shared.request_keyframe(&slot);
 
@@ -498,7 +501,21 @@ async fn run_session(
                 },
                 c = ctl_rx.recv() => match c {
                     Some(Ok(Control::KeyframeRequest)) => shared.request_keyframe(&slot),
+                    Some(Ok(Control::Input(event))) => {
+                        // Re-checked per event so revoking takes effect immediately.
+                        if input && shared.core.allows_input(fp) {
+                            (shared.events)(Event::Input { session_id: id, event });
+                        }
+                    }
                     Some(Ok(Control::ReceiverReport(r))) => {
+                        // Reports arrive about once a second: a good moment to pick up a changed
+                        // input setting.
+                        let allowed = req.input && shared.core.allows_input(fp);
+                        if allowed != input {
+                            input = allowed;
+                            writer.send_control(&Control::InputAllowed { allowed }).await?;
+                            (shared.events)(Event::InputAllowed { session_id: id, allowed });
+                        }
                         let d = rate.on_report(&r);
                         if let VideoOut::Datagrams { fec_percent, .. } = video {
                             fec_percent.store(d.fec_percent, Ordering::Relaxed);

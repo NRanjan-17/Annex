@@ -62,6 +62,12 @@ char *annex_core_device_name(const AnnexCore *core);
 char *annex_core_trusted_peers_json(const AnnexCore *core);
 /* Returns 1 if removed, 0 if not trusted. */
 int32_t annex_core_untrust(const AnnexCore *core, const char *fingerprint);
+/* Host: lets a trusted device control this computer's mouse and keyboard (off by default).
+ * Returns 1 if changed, 0 if the device isn't trusted. Running sessions follow within ~1 s. */
+int32_t annex_core_set_allow_input(const AnnexCore *core, const char *fingerprint, bool allow);
+/* This platform's key code (macOS virtual key code / Windows scancode, 0xE0xx = extended) for a
+ * HID usage from an "input" event, or -1 if there is no such key. */
+int32_t annex_key_native_from_hid(uint16_t usage);
 /* Answers a "pairing_pin_required" event with the PIN the user typed. Returns 1 if pending. */
 int32_t annex_core_submit_pin(const AnnexCore *core, uint64_t request_id, const char *pin);
 /* Cancels a pending pairing ("pairing_pin" or "pairing_pin_required"). Returns 1 if pending. */
@@ -103,16 +109,26 @@ int32_t annex_host_start_screen(const AnnexCore *core, uint32_t monitor_index, u
  * instead of mirroring. */
 int32_t annex_viewer_connect(const AnnexCore *core, const char *address,
                              const char *expected_fingerprint, const char *display_json, bool extend,
-                             AnnexEventCallback on_event, AnnexFrameCallback on_frame, void *ctx,
+                             bool input, AnnexEventCallback on_event, AnnexFrameCallback on_frame, void *ctx,
                              AnnexViewer **out);
 #ifdef _WIN32
-/* Windows: decode + render in a full-screen window owned by the core. Esc closes it. */
+/* Windows: decode + render in a full-screen window owned by the core. Esc closes it
+ * (Ctrl+Alt+Shift+Q while forwarding input, which the window then does by itself). */
 int32_t annex_viewer_connect_windowed(const AnnexCore *core, const char *address,
-                                      const char *expected_fingerprint, bool extend,
+                                      const char *expected_fingerprint, bool extend, bool input,
                                       AnnexEventCallback on_event, void *ctx, AnnexViewer **out);
 #endif
 void annex_viewer_request_keyframe(const AnnexViewer *viewer);
 void annex_viewer_frame_presented(const AnnexViewer *viewer, uint32_t frame_id);
+/* Input (connect with input = true; ignored unless session_started/input_allowed says the host
+ * allows it). Pointer positions are normalized to the video: (0,0) top-left, (1,1) bottom-right. */
+void annex_viewer_send_mouse_move(const AnnexViewer *viewer, double x, double y);
+/* button: 0 left, 1 right, 2 middle. */
+void annex_viewer_send_mouse_button(const AnnexViewer *viewer, uint32_t button, bool down);
+/* Pixels; positive dy scrolls up (content moves down), positive dx scrolls left. */
+void annex_viewer_send_scroll(const AnnexViewer *viewer, int32_t dx, int32_t dy);
+/* native_code: macOS virtual key code / Windows scancode. Returns 1 if sent, 0 if unmapped. */
+int32_t annex_viewer_send_key(const AnnexViewer *viewer, uint32_t native_code, bool down);
 void annex_viewer_free(AnnexViewer *viewer);
 
 /* ---- Discovery -------------------------------------------------------------------- */

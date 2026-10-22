@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod fragment;
+pub mod keys;
 mod record;
 mod video;
 
@@ -18,7 +19,7 @@ pub use video::{VIDEO_HEADER_LEN, VideoFlags, VideoFrame, VideoHeader};
 /// Major protocol version. Changes only for incompatible changes and is part of the ALPN.
 pub const PROTOCOL_MAJOR: u16 = 1;
 /// Minor protocol version. Bumped for backwards-compatible additions.
-pub const PROTOCOL_MINOR: u16 = 0;
+pub const PROTOCOL_MINOR: u16 = 1;
 /// TLS ALPN identifier. Peers that don't speak the same major version fail the handshake.
 pub const ALPN: &[u8] = b"annex/1";
 /// Default TCP port for the M1 transport.
@@ -112,8 +113,47 @@ pub struct SessionRequest {
     pub mode: Mode,
     pub display: DisplayInfo,
     pub codecs: Vec<Codec>,
+    /// The viewer wants to control the host with its mouse and keyboard.
     #[serde(default)]
     pub input: bool,
+}
+
+/// Largest value of a normalized pointer coordinate (the right or bottom edge of the stream).
+pub const POINTER_MAX: u16 = u16::MAX;
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+/// One viewer input event (M6). Pointer positions are normalized to the stream: 0 is the left
+/// or top edge, [`POINTER_MAX`] the right or bottom edge, so they don't depend on either side's
+/// resolution or scaling.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(tag = "k", rename_all = "snake_case")]
+pub enum InputEvent {
+    MouseMove {
+        x: u16,
+        y: u16,
+    },
+    MouseButton {
+        button: MouseButton,
+        down: bool,
+    },
+    /// Scroll distance in pixels. Positive `dy` moves the content down (scrolling up), positive
+    /// `dx` moves it right, matching both platforms' wheel conventions.
+    Scroll {
+        dx: i32,
+        dy: i32,
+    },
+    /// A key, as a USB HID usage on the keyboard page (0x07); see [`keys`].
+    Key {
+        usage: u16,
+        down: bool,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -151,6 +191,9 @@ pub enum Control {
     SessionRequest(SessionRequest),
     SessionAccept {
         stream: StreamConfig,
+        /// The host accepts input from this viewer (it asked, and the host allows it).
+        #[serde(default)]
+        input: bool,
     },
     SessionReject {
         reason: String,
@@ -169,6 +212,12 @@ pub enum Control {
     },
     /// Viewer → host, about once a second: how the last interval went (drives adaptive bitrate).
     ReceiverReport(ReceiverReport),
+    /// Viewer → host: mouse or keyboard input. Only sent while input is allowed; hosts drop it otherwise.
+    Input(InputEvent),
+    /// Host → viewer: input was allowed or revoked during the session.
+    InputAllowed {
+        allowed: bool,
+    },
     ClockPing {
         seq: u32,
         t_viewer_us: i64,
@@ -192,6 +241,8 @@ const KNOWN_CONTROL_TYPES: &[&str] = &[
     "keyframe_request",
     "pair_spake",
     "receiver_report",
+    "input",
+    "input_allowed",
     "pair_confirm",
     "clock_ping",
     "clock_pong",
@@ -243,7 +294,7 @@ impl Control {
                     return Err(ProtoError::InvalidField("codecs"));
                 }
             }
-            Control::SessionAccept { stream } | Control::StreamConfig(stream) => {
+            Control::SessionAccept { stream, .. } | Control::StreamConfig(stream) => {
                 if stream.width == 0 || stream.height == 0 || stream.fps == 0 {
                     return Err(ProtoError::InvalidField("stream"));
                 }
@@ -263,7 +314,15 @@ impl Control {
                     return Err(ProtoError::InvalidField("mac"));
                 }
             }
-            Control::KeyframeRequest
+            Control::Input(InputEvent::Scroll { dx, dy }) => {
+                // One event is at most a few screens' worth; anything bigger is garbage.
+                if dx.unsigned_abs() > 100_000 || dy.unsigned_abs() > 100_000 {
+                    return Err(ProtoError::InvalidField("scroll"));
+                }
+            }
+            Control::Input(_)
+            | Control::InputAllowed { .. }
+            | Control::KeyframeRequest
             | Control::ClockPing { .. }
             | Control::ClockPong { .. }
             | Control::ReceiverReport(_) => {}
@@ -306,7 +365,15 @@ mod tests {
                 codecs: vec![Codec::H264],
                 input: false,
             }),
-            Control::SessionAccept { stream: StreamConfig { codec: Codec::H264, width: 1920, height: 1080, fps: 60 } },
+            Control::SessionAccept {
+                stream: StreamConfig { codec: Codec::H264, width: 1920, height: 1080, fps: 60 },
+                input: true,
+            },
+            Control::Input(InputEvent::MouseMove { x: 0, y: POINTER_MAX }),
+            Control::Input(InputEvent::MouseButton { button: MouseButton::Right, down: true }),
+            Control::Input(InputEvent::Scroll { dx: -3, dy: 120 }),
+            Control::Input(InputEvent::Key { usage: 0x04, down: false }),
+            Control::InputAllowed { allowed: false },
             Control::SessionReject { reason: "busy".into() },
             Control::KeyframeRequest,
             Control::PairSpake { msg: vec![1; 33] },
@@ -375,6 +442,16 @@ mod tests {
         assert!(Control::decode(&Control::PairConfirm { mac: vec![0; 31] }.encode()).is_err());
         assert!(Control::decode(&Control::PairSpake { msg: vec![] }.encode()).is_err());
         assert!(Control::decode(&Control::PairSpake { msg: vec![0; 129] }.encode()).is_err());
+    }
+
+    #[test]
+    fn input_wire_format_is_flat() {
+        // `t` names the control message and `k` the input kind, side by side in one map.
+        let bytes = Control::Input(InputEvent::Key { usage: 0x29, down: true }).encode();
+        let v: ciborium::Value = ciborium::from_reader(&bytes[..]).unwrap();
+        let keys: Vec<&str> = v.as_map().unwrap().iter().filter_map(|(k, _)| k.as_text()).collect();
+        assert_eq!(keys, ["t", "k", "usage", "down"]);
+        assert!(Control::decode(&Control::Input(InputEvent::Scroll { dx: 0, dy: 200_000 }).encode()).is_err());
     }
 
     #[test]

@@ -23,7 +23,7 @@ pub use transport::is_link_local;
 pub use viewer::{ViewerConfig, ViewerHandle, connect_viewer};
 
 pub use annex_crypto::KeyStorage;
-pub use annex_proto::{Codec, DisplayInfo, Mode, StreamConfig};
+pub use annex_proto::{Codec, DisplayInfo, InputEvent, Mode, MouseButton, StreamConfig, keys};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {

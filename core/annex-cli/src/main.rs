@@ -303,6 +303,7 @@ async fn viewer(o: &mut Opts) {
         codecs: vec![Codec::H264, Codec::Raw],
         expected_fingerprint: expected,
         mode,
+        input: false,
         latency_csv,
     };
     let v = Arc::new(connect_viewer(core, cfg, events, frames));

@@ -22,6 +22,7 @@ fn viewer_cfg(port: u16) -> ViewerConfig {
         codecs: vec![Codec::H264],
         expected_fingerprint: None,
         mode: Mode::Mirror,
+        input: false,
         latency_csv: None,
     }
 }
@@ -696,4 +697,74 @@ async fn heavy_loss_triggers_a_lower_bitrate_hint() {
     assert!(scale_percent < 100, "loss must lower the bitrate, got {scale_percent} %");
     viewer.disconnect().await;
     feeder.await.unwrap().stop().await;
+}
+
+/// Pairs, then connects with `input` requested. Returns the running pair plus event streams.
+async fn input_session(
+    allow: bool,
+) -> (HostHandle, ViewerHandle, mpsc::UnboundedReceiver<Event>, mpsc::UnboundedReceiver<Event>, Arc<Core>, Arc<Core>) {
+    let host_core = Core::ephemeral("Host", TrustPolicy::Pair).unwrap();
+    let viewer_core = Core::ephemeral("Viewer", TrustPolicy::Pair).unwrap();
+    assert_eq!(pair_attempt(&host_core, &viewer_core, Some("RIGHT")).await.0, "started");
+    assert!(!host_core.allows_input(viewer_core.fingerprint()), "input is off by default");
+    if allow {
+        assert!(host_core.set_allow_input(viewer_core.fingerprint(), true).unwrap());
+    }
+    let (hev, hrx) = channel_sink();
+    let host = start_host(host_core.clone(), host_cfg(), hev).await.unwrap();
+    let (vev, vrx) = channel_sink();
+    let viewer = connect_viewer(
+        viewer_core.clone(),
+        ViewerConfig { input: true, ..viewer_cfg(host.port()) },
+        vev,
+        Arc::new(|_| {}),
+    );
+    (host, viewer, hrx, vrx, host_core, viewer_core)
+}
+
+fn started_input(e: &Event) -> bool {
+    match e {
+        Event::SessionStarted { input, .. } => *input,
+        _ => unreachable!(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn input_is_forwarded_only_while_allowed() {
+    let (host, viewer, mut hrx, mut vrx, host_core, viewer_core) = input_session(true).await;
+    assert!(started_input(&wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await));
+    assert!(started_input(&wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await));
+
+    let key = InputEvent::Key { usage: 0x04, down: true };
+    viewer.send_input(key);
+    let Event::Input { event, .. } = wait_for(&mut hrx, |e| matches!(e, Event::Input { .. })).await else {
+        unreachable!()
+    };
+    assert_eq!(event, key);
+
+    // Revoking mid-session: the viewer is told (with the next receiver report) and stops sending.
+    host_core.set_allow_input(viewer_core.fingerprint(), false).unwrap();
+    let e = wait_for(&mut vrx, |e| matches!(e, Event::InputAllowed { .. })).await;
+    assert!(matches!(e, Event::InputAllowed { allowed: false, .. }));
+    viewer.send_input(InputEvent::MouseMove { x: 1, y: 2 });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(e) = hrx.try_recv() {
+        assert!(!matches!(e, Event::Input { .. }), "input after revocation: {e:?}");
+    }
+    viewer.disconnect().await;
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn input_needs_the_host_to_allow_the_device() {
+    let (host, viewer, mut hrx, mut vrx, _, _) = input_session(false).await;
+    assert!(!started_input(&wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await));
+    assert!(!started_input(&wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await));
+    viewer.send_input(InputEvent::Key { usage: 0x04, down: true });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(e) = hrx.try_recv() {
+        assert!(!matches!(e, Event::Input { .. }), "input without permission: {e:?}");
+    }
+    viewer.disconnect().await;
+    host.stop().await;
 }

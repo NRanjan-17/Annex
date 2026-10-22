@@ -20,6 +20,29 @@ pub fn fit_rect(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Rect {
     Rect { x: ((dw - w) / 2) as i32, y: ((dh - h) / 2) as i32, w: w as i32, h: h as i32 }
 }
 
+/// Maps a point in the window (client pixels) to normalized stream coordinates
+/// (0..=`u16::MAX`) through the letterbox `fit_rect` draws. Points over the black bars clamp to
+/// the nearest edge, so dragging off the picture still reaches the host's screen edge.
+pub fn normalize_point(px: i32, py: i32, video_w: u32, video_h: u32, client_w: u32, client_h: u32) -> (u16, u16) {
+    let r = fit_rect(video_w, video_h, client_w, client_h);
+    let axis = |p: i32, start: i32, len: i32| -> u16 {
+        if len <= 1 {
+            return 0;
+        }
+        let t = f64::from((p - start).clamp(0, len - 1)) / f64::from(len - 1);
+        (t * f64::from(u16::MAX)).round() as u16
+    };
+    (axis(px, r.x, r.w), axis(py, r.y, r.h))
+}
+
+/// Maps normalized stream coordinates onto a monitor rectangle (desktop pixels).
+pub fn denormalize_point(x: u16, y: u16, monitor: Rect) -> (i32, i32) {
+    let axis = |v: u16, start: i32, len: i32| {
+        start + (f64::from(v) / f64::from(u16::MAX) * f64::from((len - 1).max(0))).round() as i32
+    };
+    (axis(x, monitor.x, monitor.w), axis(y, monitor.y, monitor.h))
+}
+
 /// Copies an NV12 image (`height` luma rows plus `height / 2` interleaved chroma rows) between
 /// buffers with different row pitches. `src_uv_offset`/`dst_uv_offset` locate the chroma plane.
 #[allow(clippy::too_many_arguments)]
@@ -55,6 +78,21 @@ pub fn copy_nv12(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_mapping_follows_the_letterbox() {
+        // 16:9 video in a 4:3 window: bars top and bottom (480 rows of 1080 tall picture at y 60..420).
+        let (vw, vh, cw, ch) = (1920, 1080, 640, 480);
+        assert_eq!(normalize_point(0, 60, vw, vh, cw, ch), (0, 0));
+        assert_eq!(normalize_point(639, 419, vw, vh, cw, ch), (u16::MAX, u16::MAX));
+        assert_eq!(normalize_point(320, 0, vw, vh, cw, ch).1, 0, "bars clamp to the edge");
+        assert_eq!(normalize_point(-50, 900, vw, vh, cw, ch), (0, u16::MAX));
+        let mid = normalize_point(320, 240, vw, vh, cw, ch);
+        assert!(mid.0.abs_diff(u16::MAX / 2) < 200 && mid.1.abs_diff(u16::MAX / 2) < 200);
+        let m = Rect { x: -1920, y: 0, w: 1920, h: 1080 };
+        assert_eq!(denormalize_point(0, 0, m), (-1920, 0));
+        assert_eq!(denormalize_point(u16::MAX, u16::MAX, m), (-1, 1079));
+    }
 
     #[test]
     fn letterbox_and_pillarbox() {

@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex};
 
 use annex_discovery::{Advertisement, Browser, Discovery};
 use annex_session::{
-    Codec, Core, DisplayInfo, Event, EventSink, FrameOut, FrameSink, HostConfig, HostHandle, Mode, StreamConfig,
-    SubmitResult, TrustPolicy, ViewerConfig, ViewerHandle,
+    Codec, Core, DisplayInfo, Event, EventSink, FrameOut, FrameSink, HostConfig, HostHandle, InputEvent, Mode,
+    MouseButton, StreamConfig, SubmitResult, TrustPolicy, ViewerConfig, ViewerHandle, keys,
 };
 
 pub const ANNEX_OK: i32 = 0;
@@ -330,6 +330,36 @@ pub unsafe extern "C" fn annex_core_untrust(core: *const AnnexCore, fingerprint:
     })
 }
 
+/// Host: lets a trusted device control this computer's mouse and keyboard (off by default).
+/// Returns 1 if changed, 0 if the device isn't trusted, negative on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_set_allow_input(
+    core: *const AnnexCore,
+    fingerprint: *const c_char,
+    allow: bool,
+) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        let fp = unsafe { str_arg(fingerprint, "fingerprint") }?;
+        Ok(c.core.set_allow_input(fp, allow).map_err(failed)? as i32)
+    })
+}
+
+/// This platform's key code (macOS virtual key code, Windows scancode with 0xE0xx for extended
+/// keys) for a HID usage from an `input` event, or -1 if it has no such key.
+#[unsafe(no_mangle)]
+pub extern "C" fn annex_key_native_from_hid(usage: u16) -> i32 {
+    native_from_hid(usage).map_or(-1, i32::from)
+}
+
+fn native_from_hid(usage: u16) -> Option<u16> {
+    if cfg!(windows) { keys::windows_from_hid(usage) } else { keys::mac_from_hid(usage) }
+}
+
+fn hid_from_native(code: u16) -> Option<u16> {
+    if cfg!(windows) { keys::hid_from_windows(code) } else { keys::hid_from_mac(code) }
+}
+
 /// Answers a `pairing_pin_required` event with the PIN the user typed.
 /// Returns 1 if the request was pending, 0 if unknown/expired.
 #[unsafe(no_mangle)]
@@ -584,7 +614,8 @@ mod win_host {
     use std::time::Duration;
 
     use annex_media_win::{
-        EncodedFrame, HostPipeline, HostPipelineConfig, Monitor, VirtualDisplayDriver, idd, monitor_size, stream_size,
+        EncodedFrame, HostPipeline, HostPipelineConfig, Injector, Monitor, VirtualDisplayDriver, idd, monitor_size,
+        stream_size,
     };
     use annex_session::{Codec, DisplayInfo, Event, EventSink, HostConfig, HostHandle, Mode, StreamConfig};
 
@@ -599,6 +630,8 @@ mod win_host {
     /// One Extend session: a virtual monitor from the AnnexIdd driver, captured for one viewer.
     struct ExtendSession {
         connector: u32,
+        /// Where this viewer's pointer lands.
+        monitor: Monitor,
         stop: Arc<AtomicBool>,
         pipeline: Arc<Mutex<Option<HostPipeline>>>,
     }
@@ -615,6 +648,7 @@ mod win_host {
         mirror_scales: Mutex<HashMap<u64, u32>>,
         driver: Option<Arc<VirtualDisplayDriver>>,
         extends: Mutex<HashMap<u64, ExtendSession>>,
+        injector: Mutex<Injector>,
     }
 
     fn bitrate(w: u32, h: u32, fps: u32) -> u32 {
@@ -683,10 +717,10 @@ mod win_host {
             };
             let stop = Arc::new(AtomicBool::new(false));
             let pipeline: Arc<Mutex<Option<HostPipeline>>> = Arc::default();
-            self.extends
-                .lock()
-                .unwrap()
-                .insert(id, ExtendSession { connector, stop: stop.clone(), pipeline: pipeline.clone() });
+            self.extends.lock().unwrap().insert(
+                id,
+                ExtendSession { connector, monitor: monitor.clone(), stop: stop.clone(), pipeline: pipeline.clone() },
+            );
             let weak_host = Arc::downgrade(&host);
             let prefer_hardware = self.prefer_hardware;
             let start = move |m: &Monitor| -> Option<(u32, u32)> {
@@ -801,6 +835,13 @@ mod win_host {
                         }
                     }
                 }
+                Event::Input { session_id, event } => {
+                    let monitor = self.extends.lock().unwrap().get(session_id).map(|e| e.monitor.clone());
+                    let monitor = monitor.unwrap_or_else(|| self.mirror_cfg.monitor.clone());
+                    if let Err(e) = self.injector.lock().unwrap().inject(&monitor, *event) {
+                        tracing::debug!("input not injected: {e}");
+                    }
+                }
                 Event::KeyframeRequested { session_id } => {
                     let pipeline = self.extends.lock().unwrap().get(session_id).map(|e| e.pipeline.clone());
                     match pipeline {
@@ -856,6 +897,7 @@ mod win_host {
             mirror_scales: Mutex::new(HashMap::new()),
             extends: Mutex::new(HashMap::new()),
             driver,
+            injector: Mutex::new(Injector::default()),
         });
         let events: EventSink = {
             let state = state.clone();
@@ -881,6 +923,7 @@ unsafe fn viewer_config(
     expected_fingerprint: *const c_char,
     display_json: *const c_char,
     extend: bool,
+    input: bool,
 ) -> Result<ViewerConfig, (i32, String)> {
     let address = unsafe { str_arg(address, "address") }?.to_string();
     let expected = unsafe { opt_str_arg(expected_fingerprint, "expected_fingerprint") }?
@@ -903,13 +946,15 @@ unsafe fn viewer_config(
         codecs: vec![Codec::H264],
         expected_fingerprint: expected,
         mode: if extend { Mode::Extend } else { Mode::Mirror },
+        input,
         latency_csv: std::env::var_os("ANNEX_LATENCY_CSV").map(PathBuf::from),
     })
 }
 
 /// Connects to a host in the background and delivers frames to `on_frame`.
 /// `expected_fingerprint` (nullable) pins the host certificate; `display_json` (nullable) is a
-/// DisplayInfo object describing the screen the stream will be shown on.
+/// DisplayInfo object describing the screen the stream will be shown on. `input`: ask to control
+/// the host (see `annex_viewer_send_*`); `session_started.input` says whether the host agreed.
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn annex_viewer_connect(
@@ -918,6 +963,7 @@ pub unsafe extern "C" fn annex_viewer_connect(
     expected_fingerprint: *const c_char,
     display_json: *const c_char,
     extend: bool,
+    input: bool,
     on_event: AnnexEventCallback,
     on_frame: AnnexFrameCallback,
     ctx: *mut c_void,
@@ -928,7 +974,7 @@ pub unsafe extern "C" fn annex_viewer_connect(
         if out.is_null() {
             return Err(invalid("out is null"));
         }
-        let cfg = unsafe { viewer_config(address, expected_fingerprint, display_json, extend) }?;
+        let cfg = unsafe { viewer_config(address, expected_fingerprint, display_json, extend, input) }?;
         let callbacks = Callbacks::new(on_event, on_frame, ctx);
         let _enter = c.rt.enter();
         let handle = Arc::new(annex_session::connect_viewer(
@@ -950,14 +996,17 @@ pub unsafe extern "C" fn annex_viewer_connect(
 }
 
 /// Windows only: connects and shows the stream in a full-screen window rendered by the core
-/// (Media Foundation decode + Direct3D 11). Closing the window (Esc) ends the session.
+/// (Media Foundation decode + Direct3D 11). Closing the window (Esc, or Ctrl+Alt+Shift+Q while
+/// controlling the host) ends the session. With `input`, the window forwards mouse and keyboard.
 #[cfg(windows)]
 #[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn annex_viewer_connect_windowed(
     core: *const AnnexCore,
     address: *const c_char,
     expected_fingerprint: *const c_char,
     extend: bool,
+    input: bool,
     on_event: AnnexEventCallback,
     ctx: *mut c_void,
     out: *mut *mut AnnexViewer,
@@ -967,7 +1016,7 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
         if out.is_null() {
             return Err(invalid("out is null"));
         }
-        let mut cfg = unsafe { viewer_config(address, expected_fingerprint, std::ptr::null(), extend) }?;
+        let mut cfg = unsafe { viewer_config(address, expected_fingerprint, std::ptr::null(), extend, input) }?;
         cfg.display = annex_media_win::primary_display_info();
         let callbacks = Callbacks::new(on_event, None, ctx);
         let events = callbacks.event_sink();
@@ -983,6 +1032,12 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
             on_need_keyframe: {
                 let slot = slot.clone();
                 Box::new(move || with_viewer(&slot, |v| v.request_keyframe()))
+            },
+            on_input: if input {
+                let slot = slot.clone();
+                Some(Box::new(move |e| with_viewer(&slot, |v| v.send_input(e))))
+            } else {
+                None
             },
             on_closed: {
                 let slot = slot.clone();
@@ -1002,8 +1057,12 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
         let events: EventSink = {
             let window = window.clone();
             Arc::new(move |e: Event| {
-                if matches!(e, Event::SessionEnded { .. }) {
-                    window.close();
+                match &e {
+                    Event::SessionEnded { .. } => window.close(),
+                    Event::SessionStarted { input, .. } | Event::InputAllowed { allowed: input, .. } => {
+                        window.set_input_active(*input)
+                    }
+                    _ => {}
                 }
                 events(e)
             })
@@ -1036,6 +1095,52 @@ pub unsafe extern "C" fn annex_viewer_request_keyframe(viewer: *const AnnexViewe
 pub unsafe extern "C" fn annex_viewer_frame_presented(viewer: *const AnnexViewer, frame_id: u32) {
     if let Some(v) = unsafe { viewer.as_ref() } {
         v.handle.frame_presented(frame_id);
+    }
+}
+
+/// Pointer position over the video, normalized: (0, 0) top-left, (1, 1) bottom-right of the
+/// stream. Ignored unless the host allows input.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_send_mouse_move(viewer: *const AnnexViewer, x: f64, y: f64) {
+    if let Some(v) = unsafe { viewer.as_ref() } {
+        let n = |f: f64| (f.clamp(0.0, 1.0) * f64::from(u16::MAX)).round() as u16;
+        v.handle.send_input(InputEvent::MouseMove { x: n(x), y: n(y) });
+    }
+}
+
+/// `button`: 0 left, 1 right, 2 middle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_send_mouse_button(viewer: *const AnnexViewer, button: u32, down: bool) {
+    let button = match button {
+        0 => MouseButton::Left,
+        1 => MouseButton::Right,
+        2 => MouseButton::Middle,
+        _ => return,
+    };
+    if let Some(v) = unsafe { viewer.as_ref() } {
+        v.handle.send_input(InputEvent::MouseButton { button, down });
+    }
+}
+
+/// Scroll in pixels; positive `dy` scrolls up (content moves down), positive `dx` scrolls left.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_send_scroll(viewer: *const AnnexViewer, dx: i32, dy: i32) {
+    if let Some(v) = unsafe { viewer.as_ref() } {
+        v.handle.send_input(InputEvent::Scroll { dx: dx.clamp(-100_000, 100_000), dy: dy.clamp(-100_000, 100_000) });
+    }
+}
+
+/// A key press or release, as this platform's key code (see `annex_key_native_from_hid`).
+/// Returns 1 if sent, 0 if the key has no cross-platform code.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_send_key(viewer: *const AnnexViewer, native_code: u32, down: bool) -> i32 {
+    let Some(v) = (unsafe { viewer.as_ref() }) else { return ANNEX_ERR_INVALID_ARGUMENT };
+    match u16::try_from(native_code).ok().and_then(hid_from_native) {
+        Some(usage) => {
+            v.handle.send_input(InputEvent::Key { usage, down });
+            1
+        }
+        None => 0,
     }
 }
 

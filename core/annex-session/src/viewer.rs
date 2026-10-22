@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use annex_proto::{Codec, Control, DisplayInfo, Mode, Role, SessionRequest};
+use annex_proto::{Codec, Control, DisplayInfo, InputEvent, Mode, Role, SessionRequest};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -37,6 +37,8 @@ pub struct ViewerConfig {
     pub expected_fingerprint: Option<String>,
     /// Mirror the host's screen, or extend it with a new virtual display.
     pub mode: Mode,
+    /// Ask to control the host with this computer's mouse and keyboard. The host decides.
+    pub input: bool,
     /// Optional per-frame latency log: `frame_id,capture_local_us,present_us,latency_us`.
     pub latency_csv: Option<PathBuf>,
 }
@@ -44,6 +46,7 @@ pub struct ViewerConfig {
 enum Cmd {
     RequestKeyframe,
     Presented { frame_id: u32, at_us: i64 },
+    Input(InputEvent),
     Disconnect,
 }
 
@@ -60,6 +63,11 @@ impl ViewerHandle {
     /// Reports that `frame_id` reached the screen now; feeds the latency statistics.
     pub fn frame_presented(&self, frame_id: u32) {
         let _ = self.cmd.send(Cmd::Presented { frame_id, at_us: now_us() });
+    }
+
+    /// Forwards one input event to the host. Dropped unless the host currently allows input.
+    pub fn send_input(&self, event: InputEvent) {
+        let _ = self.cmd.send(Cmd::Input(event));
     }
 
     /// Sends `Bye`, closes the connection and waits for the session task to finish.
@@ -154,11 +162,11 @@ async fn run(
             mode: cfg.mode,
             display: cfg.display.clone(),
             codecs: cfg.codecs.clone(),
-            input: false,
+            input: cfg.input,
         }))
         .await?;
-    let stream = match timeout(ACCEPT_TIMEOUT, reader.next_control()).await?? {
-        Control::SessionAccept { stream } => stream,
+    let (stream, input) = match timeout(ACCEPT_TIMEOUT, reader.next_control()).await?? {
+        Control::SessionAccept { stream, input } => (stream, input),
         Control::SessionReject { reason } | Control::Bye { reason } => return Err(SessionError::Rejected(reason)),
         _ => return Err(SessionError::Violation("expected session_accept".into())),
     };
@@ -171,7 +179,10 @@ async fn run(
         stream: stream.clone(),
         transport: kind,
         link,
+        input,
     });
+    // Flipped by the host's `input_allowed` messages.
+    let input_allowed = Arc::new(std::sync::atomic::AtomicBool::new(input));
     events(Event::StreamConfig { stream });
 
     let latency = Arc::new(Mutex::new(Latency::default()));
@@ -252,6 +263,7 @@ async fn run(
     let reader_fut = {
         let latency = latency.clone();
         let events = events.clone();
+        let input_allowed = input_allowed.clone();
         let deliver = deliver.clone();
         async move {
             loop {
@@ -263,6 +275,10 @@ async fn run(
                         latency.lock().unwrap().clock.add_sample(t_viewer_us, t_host_us, now_us());
                     }
                     Incoming::Control(Control::StreamConfig(stream)) => events(Event::StreamConfig { stream }),
+                    Incoming::Control(Control::InputAllowed { allowed }) => {
+                        input_allowed.store(allowed, std::sync::atomic::Ordering::Release);
+                        events(Event::InputAllowed { session_id: 0, allowed });
+                    }
                     Incoming::Control(Control::Bye { reason }) => return Ok::<String, SessionError>(reason),
                     Incoming::Control(other) => tracing::debug!(?other, "ignoring control message"),
                 }
@@ -321,6 +337,12 @@ async fn run(
                 }
                 c = cmd_rx.recv() => match c {
                     Some(Cmd::RequestKeyframe) => writer.send_control(&Control::KeyframeRequest).await?,
+                    Some(Cmd::Input(e)) => {
+                        // Never send keystrokes to a host that hasn't asked for them.
+                        if input_allowed.load(std::sync::atomic::Ordering::Acquire) {
+                            writer.send_control(&Control::Input(e)).await?;
+                        }
+                    }
                     Some(Cmd::Presented { frame_id, at_us }) => {
                         let mut l = latency.lock().unwrap();
                         if let Some(pos) = l.pending.iter().position(|(id, _)| *id == frame_id) {

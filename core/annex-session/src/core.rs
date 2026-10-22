@@ -112,6 +112,18 @@ impl Core {
         let _ = self.trust.lock().unwrap().touch(fingerprint);
     }
 
+    /// Host side: lets a trusted device control this computer's mouse and keyboard (or stops it).
+    /// Running sessions pick the change up within about a second. Returns false if not trusted.
+    pub fn set_allow_input(&self, fingerprint: &str, allow: bool) -> Result<bool, SessionError> {
+        Ok(self.trust.lock().unwrap().set_allow_input(fingerprint, allow)?)
+    }
+
+    /// Whether a device may control this computer. Never true for untrusted devices, including
+    /// under `AcceptAllInsecure`.
+    pub fn allows_input(&self, fingerprint: &str) -> bool {
+        self.trust.lock().unwrap().get(fingerprint).is_some_and(|p| p.allow_input)
+    }
+
     /// Revokes a peer. Returns true if it was trusted.
     pub fn untrust(&self, fingerprint: &str) -> Result<bool, SessionError> {
         Ok(self.trust.lock().unwrap().remove(fingerprint)?)

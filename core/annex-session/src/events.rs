@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use annex_proto::{DisplayInfo, Mode, StreamConfig};
+use annex_proto::{DisplayInfo, InputEvent, Mode, StreamConfig};
 use serde::Serialize;
 
 pub use crate::transport::TransportKind;
@@ -58,6 +58,18 @@ pub enum Event {
         stream: StreamConfig,
         transport: TransportKind,
         link: LinkKind,
+        /// The viewer's mouse and keyboard control the host in this session.
+        input: bool,
+    },
+    /// Input was allowed or revoked during a session (both sides).
+    InputAllowed {
+        session_id: u64,
+        allowed: bool,
+    },
+    /// Host: inject this input into the session's display. Only delivered while allowed.
+    Input {
+        session_id: u64,
+        event: InputEvent,
     },
     StreamConfig {
         stream: StreamConfig,
