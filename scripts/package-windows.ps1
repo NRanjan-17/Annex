@@ -30,7 +30,7 @@ function Invoke-Sign([string] $File) {
 
 Write-Host "==> Rust core ($Triple)"
 rustup target add $Triple | Out-Null
-cargo build --manifest-path "$Root\core\Cargo.toml" -p annex-ffi --release --locked --target $Triple
+cargo build --manifest-path "$Root\core\Cargo.toml" -p annex-ffi -p annex-driver --release --locked --target $Triple
 if ($LASTEXITCODE) { throw "cargo build failed" }
 
 Write-Host "==> WinUI app ($Platform)"
@@ -39,7 +39,19 @@ dotnet publish "$Root\apps\windows\src\Annex.App\Annex.App.csproj" -c Release -p
   -p:Version=$NumericVersion -p:InformationalVersion=$Version -p:SelfContained=true -o $Out
 if ($LASTEXITCODE) { throw "dotnet publish failed" }
 if (-not (Test-Path "$Out\annex_ffi.dll")) { throw "annex_ffi.dll missing from $Out" }
-Get-ChildItem $Out -Include Annex.exe, Annex.dll, annex_ffi.dll -Recurse | ForEach-Object { Invoke-Sign $_.FullName }
+Copy-Item "$Root\core\target\$Triple\release\annex-driver.exe" $Out -Force
+
+# Extend-mode driver (built by drivers\windows\scripts\build.ps1). Optional: without it the installer has no
+# driver option and Windows hosts offer Mirror only.
+$DriverPkg = "$Root\drivers\windows\out\" + $(if ($Arch -eq "arm64") { "ARM64" } else { "x64" })
+if (Test-Path "$DriverPkg\AnnexIdd.inf") {
+  New-Item -ItemType Directory -Force "$Out\driver" | Out-Null
+  Copy-Item "$DriverPkg\*" "$Out\driver" -Force
+  Write-Host "==> Including the Extend-mode driver package from $DriverPkg"
+} else {
+  Write-Host "==> No driver package at $DriverPkg (Extend mode driver not included)"
+}
+Get-ChildItem $Out -Include Annex.exe, Annex.dll, annex_ffi.dll, annex-driver.exe -Recurse | ForEach-Object { Invoke-Sign $_.FullName }
 
 Write-Host "==> Installer"
 $Iscc = (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source

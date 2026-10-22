@@ -8,7 +8,7 @@ members = [
     "annex-media-win",
     "annex-ffi",
     "annex-cli",
-    "annex-bench",
+    "annex-bench", "annex-driver",
 ]
 
 [workspace.package]

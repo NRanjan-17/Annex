@@ -78,6 +78,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+#ifexist SourceDir + "\driver\AnnexIdd.inf"
+; The virtual display driver for Extend mode. Off by default: until the driver is attestation-signed it only loads
+; with test signing enabled (bcdedit /set testsigning on). Needs an all-users (administrator) install.
+Name: "extenddriver"; Description: "Install the Extend-mode display driver (lets other computers use this PC as an extra display; requires test signing until the driver is signed)"; GroupDescription: "Extend mode:"; Flags: unchecked; Check: IsAdminInstallMode
+#endif
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -88,6 +93,9 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
+#ifexist SourceDir + "\driver\AnnexIdd.inf"
+Filename: "{app}\annex-driver.exe"; Parameters: "install ""{app}\driver\AnnexIdd.inf"""; Flags: runhidden waituntilterminated; Tasks: extenddriver; StatusMsg: "Installing the Extend-mode display driver..."
+#endif
 ; Firewall: allow Annex on private networks (discovery + incoming sessions). All-users installs only;
 ; per-user installs get the standard Windows prompt on first use instead.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Annex"" dir=in action=allow program=""{app}\{#AppExe}"" profile=private,domain enable=yes"; Flags: runhidden; Check: IsAdminInstallMode; StatusMsg: "Adding firewall rule..."
@@ -95,6 +103,8 @@ Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#AppExe}"; Flags: runhidden; RunOnceId: "KillAnnex"
+; Removes the Extend-mode display device and driver package if they were installed (no-op otherwise).
+Filename: "{app}\annex-driver.exe"; Parameters: "uninstall"; Flags: runhidden waituntilterminated; Check: IsAdminInstallMode; RunOnceId: "RemoveDriver"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""Annex"""; Flags: runhidden; Check: IsAdminInstallMode; RunOnceId: "DelFirewall"
 
 [UninstallDelete]

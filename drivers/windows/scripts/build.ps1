@@ -10,6 +10,8 @@ param(
   [string] $Version = "0.1.0"
 )
 $ErrorActionPreference = "Stop"
+# Driver versions are numeric (a.b.c.d); drop any pre-release suffix.
+$Version = ($Version -split '[-+]')[0]
 $Root = Resolve-Path "$PSScriptRoot\.."
 $Packages = Join-Path $Root "packages"
 nuget restore (Join-Path $Root "packages.config") -PackagesDirectory $Packages -NonInteractive

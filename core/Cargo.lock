@@ -57,6 +57,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "annex-driver"
+version = "0.1.0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "annex-ffi"
 version = "0.1.0"
 dependencies = [

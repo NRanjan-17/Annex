@@ -141,6 +141,12 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: scripts/stamp-version.sh "$VERSION"
+      - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3.0.0
+        with:
+          msbuild-architecture: x64
+      - name: Build the Extend-mode driver (unsigned)
+        shell: pwsh
+        run: drivers/windows/scripts/build.ps1 -Platform $(if ("${{ matrix.arch }}" -eq "arm64") { "ARM64" } else { "x64" }) -Version "${{ needs.version.outputs.version }}"
       - name: Prepare code signing
         id: sign
         shell: pwsh
@@ -214,6 +220,9 @@ jobs:
         run: |
           cat > notes.md <<'NOTES'
           > Draft created by CI. Check the artifacts, then publish manually.
+
+          **Windows Extend-mode driver:** included **unsigned** (the installer option is off by default). It loads only
+          with test signing enabled until it is attestation-signed through Microsoft Partner Center (docs/CICD.md).
 
           **Signing status** is shown in each job's log. Builds made without signing secrets are
           ad-hoc (macOS) or unsigned (Windows) and will trigger Gatekeeper / SmartScreen warnings.
