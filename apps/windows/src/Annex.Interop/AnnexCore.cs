@@ -1,0 +1,254 @@
+using System.Runtime.InteropServices;
+
+namespace Annex.Interop;
+
+/// <summary>Delegate for received video frames. <paramref name="data"/> is only valid during the call.</summary>
+public delegate void FrameHandler(ReadOnlySpan<byte> data, uint frameId, long? captureTsLocalUs, bool keyframe);
+
+/// <summary>
+/// Pins the managed callbacks for one native object. Native code receives a GCHandle as its
+/// context pointer; callbacks arrive on Rust threads and must not block on the UI thread.
+/// </summary>
+internal sealed unsafe class CallbackTarget : IDisposable
+{
+    private GCHandle _handle;
+    public Action<CoreEvent> OnEvent { get; }
+    public FrameHandler? OnFrame { get; }
+
+    public CallbackTarget(Action<CoreEvent> onEvent, FrameHandler? onFrame = null)
+    {
+        OnEvent = onEvent;
+        OnFrame = onFrame;
+        _handle = GCHandle.Alloc(this);
+    }
+
+    public nint Context => GCHandle.ToIntPtr(_handle);
+
+    public void Dispose()
+    {
+        if (_handle.IsAllocated) _handle.Free();
+    }
+
+    public static delegate* unmanaged<nint, nint, void> EventCallback => &OnEventNative;
+    public static delegate* unmanaged<nint, byte*, nuint, uint, long, byte, void> FrameCallback => &OnFrameNative;
+
+    [UnmanagedCallersOnly]
+    private static void OnEventNative(nint ctx, nint json)
+    {
+        try
+        {
+            if (GCHandle.FromIntPtr(ctx).Target is CallbackTarget t)
+                t.OnEvent(CoreEvent.Parse(Marshal.PtrToStringUTF8(json) ?? "{}"));
+        }
+        catch (Exception e)
+        {
+            // Exceptions must never unwind into Rust.
+            System.Diagnostics.Debug.WriteLine($"Annex event handler failed: {e}");
+        }
+    }
+
+    [UnmanagedCallersOnly]
+    private static void OnFrameNative(nint ctx, byte* data, nuint len, uint frameId, long ts, byte keyframe)
+    {
+        try
+        {
+            if (GCHandle.FromIntPtr(ctx).Target is CallbackTarget { OnFrame: { } f })
+                f(new ReadOnlySpan<byte>(data, checked((int)len)), frameId, ts == long.MinValue ? null : ts, keyframe != 0);
+        }
+        catch (Exception e)
+        {
+            System.Diagnostics.Debug.WriteLine($"Annex frame handler failed: {e}");
+        }
+    }
+}
+
+public static class AnnexNative
+{
+    public static string Version => Marshal.PtrToStringUTF8(NativeMethods.annex_version()) ?? "";
+    public static long NowMicros() => NativeMethods.annex_now_us();
+    public static string DisplayFingerprint(string fp) => NativeMethods.TakeString(NativeMethods.annex_display_fingerprint(fp));
+}
+
+/// <summary>Identity and trust store. Create one per process.</summary>
+public sealed class CoreClient : IDisposable
+{
+    internal nint Raw { get; private set; }
+
+    private CoreClient(nint raw) => Raw = raw;
+
+    public static CoreClient Open(string dataDirectory, string deviceName)
+    {
+        Directory.CreateDirectory(dataDirectory);
+        NativeMethods.Check(NativeMethods.annex_core_new(dataDirectory, deviceName, out var raw));
+        return new CoreClient(raw);
+    }
+
+    /// <summary>In-memory identity (tests).</summary>
+    public static CoreClient Ephemeral(string deviceName)
+    {
+        NativeMethods.Check(NativeMethods.annex_core_new_ephemeral(deviceName, out var raw));
+        return new CoreClient(raw);
+    }
+
+    public string Fingerprint => NativeMethods.TakeString(NativeMethods.annex_core_fingerprint(Raw));
+    public string DeviceName => NativeMethods.TakeString(NativeMethods.annex_core_device_name(Raw));
+
+    public IReadOnlyList<TrustedPeer> TrustedPeers =>
+        AnnexJson.Deserialize<TrustedPeer[]>(NativeMethods.TakeString(NativeMethods.annex_core_trusted_peers_json(Raw)));
+
+    public bool Untrust(string fingerprint) => NativeMethods.Check(NativeMethods.annex_core_untrust(Raw, fingerprint)) == 1;
+
+    public bool RespondTrust(ulong requestId, bool accept) => NativeMethods.annex_core_respond_trust(Raw, requestId, accept) == 1;
+
+    public void Dispose()
+    {
+        if (Raw != 0)
+        {
+            NativeMethods.annex_core_free(Raw);
+            Raw = 0;
+        }
+    }
+}
+
+public enum SubmitResult { Sent, NoSession, Dropped }
+
+public sealed unsafe class HostHandle : IDisposable
+{
+    private readonly CoreClient _core;
+    private readonly CallbackTarget _target;
+    private nint _raw;
+
+    public HostHandle(CoreClient core, ushort port, int width, int height, int fps, bool advertise, Action<CoreEvent> onEvent, string codec = "h264")
+    {
+        _core = core;
+        _target = new CallbackTarget(onEvent);
+        var rc = NativeMethods.annex_host_start(core.Raw, port, codec, (uint)width, (uint)height, (uint)fps, advertise,
+            CallbackTarget.EventCallback, _target.Context, out _raw);
+        if (rc < 0)
+        {
+            _target.Dispose();
+            throw NativeMethods.LastError();
+        }
+    }
+
+    public ushort Port => _raw == 0 ? (ushort)0 : NativeMethods.annex_host_port(_raw);
+
+    public SubmitResult Submit(ReadOnlySpan<byte> accessUnit, long captureMicros, bool keyframe)
+    {
+        if (_raw == 0 || accessUnit.IsEmpty) return SubmitResult.NoSession;
+        fixed (byte* p = accessUnit)
+        {
+            return NativeMethods.annex_host_submit_frame(_raw, p, (nuint)accessUnit.Length, captureMicros, keyframe) switch
+            {
+                NativeMethods.SubmitSent => SubmitResult.Sent,
+                NativeMethods.SubmitDropped => SubmitResult.Dropped,
+                _ => SubmitResult.NoSession,
+            };
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_raw != 0)
+        {
+            NativeMethods.annex_host_free(_raw);
+            _raw = 0;
+        }
+        _target.Dispose();
+        GC.KeepAlive(_core);
+    }
+}
+
+public sealed unsafe class ViewerHandle : IDisposable
+{
+    private readonly CoreClient _core;
+    private readonly CallbackTarget _target;
+    private nint _raw;
+
+    private ViewerHandle(CoreClient core, CallbackTarget target)
+    {
+        _core = core;
+        _target = target;
+    }
+
+    /// <summary>Connects and delivers encoded frames to <paramref name="onFrame"/>.</summary>
+    public static ViewerHandle Connect(CoreClient core, string address, string? expectedFingerprint, DisplayInfo display,
+        Action<CoreEvent> onEvent, FrameHandler onFrame)
+    {
+        var v = new ViewerHandle(core, new CallbackTarget(onEvent, onFrame));
+        var json = AnnexJson.Serialize(display);
+        var rc = NativeMethods.annex_viewer_connect(core.Raw, address, expectedFingerprint, json,
+            CallbackTarget.EventCallback, CallbackTarget.FrameCallback, v._target.Context, out v._raw);
+        if (rc < 0)
+        {
+            v._target.Dispose();
+            throw NativeMethods.LastError();
+        }
+        return v;
+    }
+
+    /// <summary>Windows: connects and shows the stream in a full-screen window owned by the core (Esc closes).</summary>
+    public static ViewerHandle ConnectWindowed(CoreClient core, string address, string? expectedFingerprint, Action<CoreEvent> onEvent)
+    {
+        var v = new ViewerHandle(core, new CallbackTarget(onEvent));
+        var rc = NativeMethods.annex_viewer_connect_windowed(core.Raw, address, expectedFingerprint,
+            CallbackTarget.EventCallback, v._target.Context, out v._raw);
+        if (rc < 0)
+        {
+            v._target.Dispose();
+            throw NativeMethods.LastError();
+        }
+        return v;
+    }
+
+    public void RequestKeyframe()
+    {
+        if (_raw != 0) NativeMethods.annex_viewer_request_keyframe(_raw);
+    }
+
+    public void FramePresented(uint frameId)
+    {
+        if (_raw != 0) NativeMethods.annex_viewer_frame_presented(_raw, frameId);
+    }
+
+    /// <summary>Disconnects (blocks briefly while the session closes). Not from inside a callback.</summary>
+    public void Dispose()
+    {
+        if (_raw != 0)
+        {
+            NativeMethods.annex_viewer_free(_raw);
+            _raw = 0;
+        }
+        _target.Dispose();
+        GC.KeepAlive(_core);
+    }
+}
+
+public sealed unsafe class DiscoveryHandle : IDisposable
+{
+    private readonly CoreClient _core;
+    private readonly CallbackTarget _target;
+    private nint _raw;
+
+    public DiscoveryHandle(CoreClient core, Action<CoreEvent> onEvent)
+    {
+        _core = core;
+        _target = new CallbackTarget(onEvent);
+        if (NativeMethods.annex_discovery_start(core.Raw, CallbackTarget.EventCallback, _target.Context, out _raw) < 0)
+        {
+            _target.Dispose();
+            throw NativeMethods.LastError();
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_raw != 0)
+        {
+            NativeMethods.annex_discovery_free(_raw);
+            _raw = 0;
+        }
+        _target.Dispose();
+        GC.KeepAlive(_core);
+    }
+}

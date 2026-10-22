@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>Annex.App</RootNamespace>
+    <AssemblyName>Annex</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64;ARM64</Platforms>
+    <Platform Condition="'$(Platform)' == '' Or '$(Platform)' == 'AnyCPU'">x64</Platform>
+    <RuntimeIdentifier Condition="'$(Platform)' == 'ARM64'">win-arm64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(Platform)' != 'ARM64'">win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <!-- Unpackaged, self-contained: installed by the Inno Setup installer, no Store/MSIX needed. -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2705" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Annex.Interop\Annex.Interop.csproj" />
+  </ItemGroup>
+
+  <!-- The Rust core (annex_ffi.dll) is built by cargo; copy it next to Annex.exe. -->
+  <PropertyGroup>
+    <RustTarget Condition="'$(Platform)' == 'ARM64'">aarch64-pc-windows-msvc</RustTarget>
+    <RustTarget Condition="'$(Platform)' != 'ARM64'">x86_64-pc-windows-msvc</RustTarget>
+    <RustProfile Condition="'$(Configuration)' == 'Release'">release</RustProfile>
+    <RustProfile Condition="'$(Configuration)' != 'Release'">debug</RustProfile>
+    <AnnexNativeDll>$(MSBuildThisFileDirectory)..\..\..\..\core\target\$(RustTarget)\$(RustProfile)\annex_ffi.dll</AnnexNativeDll>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(AnnexNativeDll)" Condition="Exists('$(AnnexNativeDll)')" Link="annex_ffi.dll"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="AnnexNativeHint" BeforeTargets="Build" Condition="!Exists('$(AnnexNativeDll)')">
+    <Message Importance="high"
+             Text="annex_ffi.dll not found at $(AnnexNativeDll). Build it first: cargo build -p annex-ffi --target $(RustTarget) (add --release for Release)." />
+  </Target>
+</Project>
