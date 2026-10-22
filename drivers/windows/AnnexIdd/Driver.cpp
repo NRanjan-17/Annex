@@ -7,7 +7,7 @@
 // Define (not just declare) our interface GUID in this one translation unit. initguid.h comes after every other
 // header so the SDK's own DEFINE_GUIDs (e.g. winioctl.h) stay declarations.
 #include <initguid.h>
-DEFINE_GUID(GUID_DEVINTERFACE_ANNEX_IDD, ANNEX_IDD_INTERFACE_GUID);
+DEFINE_GUID(GUID_DEVINTERFACE_ANNEX_IDD, 0x6f2b8e14, 0x3c51, 0x4c0e, 0x9d, 0x3a, 0x7a, 0x1e, 0x5b, 0x0c, 0x4d, 0x21);
 
 using Microsoft::WRL::ComPtr;
 

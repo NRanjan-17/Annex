@@ -62,3 +62,20 @@ proptest! {
         prop_assert_eq!(VideoFrame::decode(&f.encode()).unwrap(), f);
     }
 }
+
+proptest! {
+    #[test]
+    fn shard_parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
+        let _ = annex_proto::fragment::ShardHeader::parse(&bytes);
+        let _ = annex_proto::fragment::Reassembler::default().push(&bytes);
+    }
+
+    #[test]
+    fn any_frame_survives_fragmentation(data in proptest::collection::vec(any::<u8>(), 0..20_000), mtu in 64usize..1500, fec in 0u32..50) {
+        let grams = annex_proto::fragment::fragment(3, 1, VideoFlags(0), &data, mtu, fec).unwrap();
+        prop_assert!(grams.iter().all(|g| g.len() <= mtu));
+        let mut r = annex_proto::fragment::Reassembler::default();
+        let frames: Vec<_> = grams.iter().flat_map(|g| r.push(g).unwrap().frames).collect();
+        prop_assert_eq!(&frames[0].data, &data);
+    }
+}

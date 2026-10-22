@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod fragment;
 mod record;
 mod video;
 
