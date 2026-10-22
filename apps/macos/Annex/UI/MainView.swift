@@ -249,6 +249,17 @@ private struct SharePage: View {
     @ObservedObject var settings: AppSettings
 
     var body: some View {
+        sharePage
+            // Permission changes in System Settings don't notify apps; look again while this page is open.
+            .task {
+                while !Task.isCancelled {
+                    model.refreshPermissions()
+                    try? await Task.sleep(for: .seconds(2))
+                }
+            }
+    }
+
+    private var sharePage: some View {
         Page(title: "Share This Mac") {
             Hero(title: "Share This Mac",
                  text: "Start sharing to let another computer show this Mac's screen, or become an extra display for this Mac.",
@@ -286,6 +297,18 @@ private struct SharePage: View {
                         .labelsHidden()
                         .fixedSize()
                         .disabled(model.isHosting)
+                    }
+                }
+            }
+            if model.isHosting && !model.screenRecordingAllowed {
+                Section {
+                    Row(symbol: "record.circle", tint: .orange, title: "Allow Screen Recording for Annex",
+                        subtitle: "macOS needs this to share the screen. Turn on Annex in Privacy & Security → Screen & System Audio Recording, then quit and reopen Annex.") {
+                        Button("Open Settings") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
                     }
                 }
             }

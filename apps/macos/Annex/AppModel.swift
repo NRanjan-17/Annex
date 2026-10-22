@@ -25,6 +25,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var viewerStatus: String?
     @Published private(set) var latency: LatencyStats?
     @Published private(set) var trusted: [TrustedPeer] = []
+    /// Screen Recording permission (needed to share this screen).
+    @Published private(set) var screenRecordingAllowed = CGPreflightScreenCaptureAccess()
+    private var askedForScreenRecording = false
     /// Accessibility permission (needed to let viewers control this Mac).
     @Published private(set) var accessibilityTrusted = InputInjector.isTrusted
     /// Viewer: the host currently accepts this Mac's mouse and keyboard.
@@ -68,6 +71,8 @@ final class AppModel: ObservableObject {
     }
 
     func refreshPermissions() {
+        let recording = CGPreflightScreenCaptureAccess()
+        if recording != screenRecordingAllowed { screenRecordingAllowed = recording }
         let trusted = InputInjector.isTrusted
         if trusted != accessibilityTrusted { accessibilityTrusted = trusted }
         settings.refreshLaunchAtLogin()
@@ -133,7 +138,11 @@ final class AppModel: ObservableObject {
     private func startHosting() {
         guard let core, host == nil,
               let display = displays.first(where: { $0.id == selectedDisplayID }) ?? displays.first else { return }
-        if !CGPreflightScreenCaptureAccess() {
+        // Ask macOS once per launch; after that the Share page explains what to do instead of
+        // showing the system dialog every time sharing starts.
+        screenRecordingAllowed = CGPreflightScreenCaptureAccess()
+        if !screenRecordingAllowed && !askedForScreenRecording {
+            askedForScreenRecording = true
             CGRequestScreenCaptureAccess()
         }
         let h = HostController(core: core, display: display, preferHardware: settings.preferHardwareEncoder)
