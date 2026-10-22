@@ -84,8 +84,9 @@ public sealed partial class MainWindow : Window
             args.Cancel = true;
             AppWindow.Hide();
         };
-        _tray = new TrayIcon("Annex", Ui.AssetPath("Annex.ico")) { MenuProvider = BuildTrayMenu };
+        _tray = new TrayIcon("Annex", Ui.AssetPath("Annex.ico"));
         _tray.LeftClick += ShowFromTray;
+        _tray.RightClick += ShowTrayMenu;
 
         _addressBox.KeyDown += (_, e) =>
         {
@@ -121,6 +122,8 @@ public sealed partial class MainWindow : Window
     {
         foreach (var pane in new[] { "share", "connect", "devices", "general", "viewing", "about", "connect", "general", "share" })
             Go(pane);
+        ShowTrayMenu();
+        _trayMenu?.Hide();
         File.WriteAllText(Path.Combine(DataDirectory, "selftest-ok"), DateTimeOffset.Now.ToString("O"));
     }
 
@@ -139,6 +142,12 @@ public sealed partial class MainWindow : Window
         RootGrid.Children.Add(titleBar);
         SetTitleBar(titleBar);
 
+        // One continuous Mica surface, like Settings: no lighter rounded "box" behind the pages.
+        var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        _nav.Resources["NavigationViewContentBackground"] = clear;
+        _nav.Resources["NavigationViewContentGridBorderBrush"] = clear;
+        _nav.Resources["NavigationViewDefaultPaneBackground"] = clear;
+        _nav.Resources["NavigationViewExpandedPaneBackground"] = clear;
         _nav.PaneDisplayMode = NavigationViewPaneDisplayMode.Left;
         _nav.IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed;
         _nav.IsPaneToggleButtonVisible = false;
@@ -530,30 +539,25 @@ public sealed partial class MainWindow : Window
         UpdateDeviceCard();
     }
 
-    private IReadOnlyList<TrayIcon.MenuItem?> BuildTrayMenu()
+    private TrayMenu? _trayMenu;
+
+    private void ShowTrayMenu()
     {
-        var items = new List<TrayIcon.MenuItem?> { new("Open Annex", ShowFromTray), null };
-        items.Add(_host is null
-            ? new("Share this screen", () => SetHosting(true))
-            : new("Stop sharing", () => SetHosting(false)));
-        items.Add(null);
-        if (_viewer is not null)
-        {
-            items.Add(new($"Viewing {_viewingName}", () => { }, Enabled: false));
-            items.Add(new("Disconnect", Disconnect));
-        }
-        else if (_hosts.Count == 0)
-        {
-            items.Add(new("No computers found", () => { }, Enabled: false));
-        }
-        else
-        {
-            foreach (var host in _hosts.Take(10))
-                items.Add(new($"View {host.Name}", () => ConnectToPeer(host)));
-        }
-        items.Add(null);
-        items.Add(new("Quit Annex", Quit));
-        return items;
+        _trayMenu ??= new TrayMenu();
+        var status = _viewer is not null ? $"Connected to {_viewingName}"
+            : _host is null ? "Not sharing"
+            : _sessions.Count > 0 ? $"Sharing with {string.Join(", ", _sessions.Values.Select(s => s.Name).Distinct())}"
+            : "Sharing · waiting for a connection";
+        _trayMenu.ShowAtCursor(
+            new TrayMenu.Model(_core?.DeviceName ?? "Annex", status, _host is not null,
+                _viewer is not null ? $"Viewing {_viewingName}" : null, _hosts),
+            new TrayMenu.Actions(
+                SetSharing: on => SetHosting(on),
+                Connect: (peer, extend) => { _extend = extend; ConnectToPeer(peer); },
+                Disconnect: Disconnect,
+                Open: ShowFromTray,
+                OpenSettings: () => { ShowFromTray(); Go("general"); },
+                Quit: Quit));
     }
 
     private void ShowFromTray()
@@ -838,6 +842,8 @@ public sealed partial class MainWindow : Window
     {
         _tray?.Dispose();
         _tray = null;
+        _trayMenu?.Close();
+        _trayMenu = null;
         StopHosting();
         Disconnect();
         _discovery?.Dispose();

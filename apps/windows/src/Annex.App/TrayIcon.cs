@@ -5,21 +5,16 @@ namespace Annex.App;
 /// <summary>
 /// Notification-area (system tray) icon built on Shell_NotifyIcon. WinUI 3 has no tray API, so
 /// this owns a hidden Win32 window on the UI thread (the WinUI dispatcher pumps its messages).
-/// Left click opens the main window; right click shows the menu.
+/// Left click opens the main window; right click raises <see cref="RightClick"/> (the app shows TrayMenu).
 /// </summary>
 internal sealed unsafe partial class TrayIcon : IDisposable
 {
-    public sealed record MenuItem(string Text, Action OnClick, bool Enabled = true);
-
     private const uint WM_APP_TRAY = 0x8000 + 1;
     private const uint WM_LBUTTONUP = 0x0202;
     private const uint WM_RBUTTONUP = 0x0205;
     private const uint WM_CONTEXTMENU = 0x007B;
-    private const uint WM_NULL = 0x0000;
     private const uint NIM_ADD = 0, NIM_MODIFY = 1, NIM_DELETE = 2;
     private const uint NIF_MESSAGE = 0x1, NIF_ICON = 0x2, NIF_TIP = 0x4, NIF_SHOWTIP = 0x80;
-    private const uint MF_STRING = 0x0, MF_GRAYED = 0x1, MF_SEPARATOR = 0x800;
-    private const uint TPM_RETURNCMD = 0x100, TPM_RIGHTBUTTON = 0x2;
     private const uint IMAGE_ICON = 1, LR_LOADFROMFILE = 0x10, LR_DEFAULTSIZE = 0x40;
 
     private static TrayIcon? s_instance;
@@ -29,9 +24,9 @@ internal sealed unsafe partial class TrayIcon : IDisposable
     private readonly nint _icon;
     private string _tooltip;
 
-    /// <summary>Builds the right-click menu each time it opens (null entries are separators).</summary>
-    public Func<IReadOnlyList<MenuItem?>> MenuProvider { get; set; } = () => [];
     public event Action? LeftClick;
+    /// <summary>Right click (or the keyboard menu key): the app shows its menu.</summary>
+    public event Action? RightClick;
 
     public TrayIcon(string tooltip, string iconPath)
     {
@@ -84,31 +79,6 @@ internal sealed unsafe partial class TrayIcon : IDisposable
         Shell_NotifyIconW(NIM_ADD, &data);
     }
 
-    private void ShowMenu()
-    {
-        var items = MenuProvider();
-        var menu = CreatePopupMenu();
-        try
-        {
-            for (var i = 0; i < items.Count; i++)
-            {
-                if (items[i] is { } item)
-                    AppendMenuW(menu, MF_STRING | (item.Enabled ? 0 : MF_GRAYED), (nuint)(i + 1), item.Text);
-                else
-                    AppendMenuW(menu, MF_SEPARATOR, 0, null);
-            }
-            GetCursorPos(out var pt);
-            SetForegroundWindow(_hwnd);
-            var cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.X, pt.Y, _hwnd, 0);
-            PostMessageW(_hwnd, WM_NULL, 0, 0);
-            if (cmd > 0 && cmd <= items.Count && items[cmd - 1] is { Enabled: true } chosen) chosen.OnClick();
-        }
-        finally
-        {
-            DestroyMenu(menu);
-        }
-    }
-
     [UnmanagedCallersOnly]
     private static nint WndProc(nint hwnd, uint msg, nint wParam, nint lParam)
     {
@@ -120,7 +90,7 @@ internal sealed unsafe partial class TrayIcon : IDisposable
                 switch ((uint)(lParam & 0xFFFF))
                 {
                     case WM_LBUTTONUP: self.LeftClick?.Invoke(); break;
-                    case WM_RBUTTONUP or WM_CONTEXTMENU: self.ShowMenu(); break;
+                    case WM_RBUTTONUP or WM_CONTEXTMENU: self.RightClick?.Invoke(); break;
                 }
                 return 0;
             }
@@ -146,8 +116,6 @@ internal sealed unsafe partial class TrayIcon : IDisposable
         s_instance = null;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X, Y; }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct WNDCLASSEXW
@@ -189,13 +157,5 @@ internal sealed unsafe partial class TrayIcon : IDisposable
     [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial nint LoadImageW(nint inst, string name, uint type, int cx, int cy, uint flags);
     [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static partial bool DestroyIcon(nint icon);
-    [LibraryImport("user32.dll")] private static partial nint CreatePopupMenu();
-    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)] [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool AppendMenuW(nint menu, uint flags, nuint id, string? text);
-    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static partial bool DestroyMenu(nint menu);
-    [LibraryImport("user32.dll")] private static partial int TrackPopupMenuEx(nint menu, uint flags, int x, int y, nint hwnd, nint tpm);
-    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static partial bool GetCursorPos(out POINT pt);
-    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static partial bool SetForegroundWindow(nint hwnd);
-    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static partial bool PostMessageW(nint hwnd, uint msg, nint w, nint l);
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)] private static partial nint GetModuleHandleW(string? name);
 }
