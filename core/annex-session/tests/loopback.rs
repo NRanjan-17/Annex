@@ -778,6 +778,13 @@ async fn input_needs_the_host_to_allow_the_device() {
     let (host, viewer, mut hrx, mut vrx, _, _) = input_session(false).await;
     assert!(!started_input(&wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await));
     assert!(!started_input(&wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await));
+    // The host is asked whether to allow it.
+    let Event::InputRequested { fingerprint, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::InputRequested { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(fingerprint.len(), 64);
     viewer.send_input(InputEvent::Key { usage: 0x04, down: true });
     tokio::time::sleep(Duration::from_millis(300)).await;
     while let Ok(e) = hrx.try_recv() {

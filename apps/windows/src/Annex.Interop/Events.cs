@@ -63,6 +63,8 @@ public abstract record CoreEvent
     public sealed record Latency(LatencyStats Stats) : CoreEvent;
     /// <summary>Input was allowed or revoked during a session (the core injects it itself on Windows).</summary>
     public sealed record InputAllowed(ulong SessionId, bool Allowed) : CoreEvent;
+    /// <summary>Host: the viewer wants to control this PC but isn't allowed yet; ask the user.</summary>
+    public sealed record InputRequested(ulong SessionId, string PeerName, string Fingerprint) : CoreEvent;
     /// <summary>Host: the viewer asks for a direct Wi-Fi link.</summary>
     public sealed record DirectLinkRequested(ulong SessionId) : CoreEvent;
     /// <summary>Join this hotspot for a direct link (credentials arrive only inside the session).</summary>
@@ -102,6 +104,7 @@ public abstract record CoreEvent
                 "latency_stats" => new Latency(Get<LatencyStats>(json)),
                 "input_allowed" => Get<InputAllowed>(json),
                 "direct_link_requested" => Get<DirectLinkRequested>(json),
+                "input_requested" => Get<InputRequested>(json),
                 "direct_link_offer" => Get<DirectLinkOffer>(json),
                 "direct_link_unavailable" => Get<DirectLinkUnavailable>(json),
                 // Windows injects input inside the core; the app doesn't need each event.
@@ -140,6 +143,7 @@ internal sealed record InstanceDto(string Instance);
 [JsonSerializable(typeof(CoreEvent.SessionStarted))]
 [JsonSerializable(typeof(CoreEvent.InputAllowed))]
 [JsonSerializable(typeof(CoreEvent.DirectLinkRequested))]
+[JsonSerializable(typeof(CoreEvent.InputRequested))]
 [JsonSerializable(typeof(CoreEvent.DirectLinkOffer))]
 [JsonSerializable(typeof(CoreEvent.DirectLinkUnavailable))]
 [JsonSerializable(typeof(ExtendStatus))]

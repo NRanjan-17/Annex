@@ -894,6 +894,32 @@ public sealed partial class MainWindow : Window
                 _sessions.Remove(ended.SessionId);
                 RenderIf("share");
                 break;
+            case CoreEvent.InputRequested ask when _core is not null:
+            {
+                ShowFromTray();
+                var dialog = new ContentDialog
+                {
+                    XamlRoot = Content.XamlRoot,
+                    Title = $"Let {ask.PeerName} control this PC?",
+                    Content = $"{ask.PeerName} wants to use this PC's mouse and keyboard. You can change this any time in Paired devices.",
+                    PrimaryButtonText = "Allow",
+                    CloseButtonText = "Not now",
+                    DefaultButton = ContentDialogButton.Primary,
+                };
+                try
+                {
+                    if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+                    {
+                        _core.SetAllowInput(ask.Fingerprint, true);
+                        RefreshTrusted();
+                    }
+                }
+                catch (Exception)
+                {
+                    // Another dialog is open; the switch in Paired devices still works.
+                }
+                break;
+            }
             case CoreEvent.DirectLinkRequested req when _host is not null:
             {
                 // The viewer (a Mac) asks for a direct link: run the hotspot here and hand it over.

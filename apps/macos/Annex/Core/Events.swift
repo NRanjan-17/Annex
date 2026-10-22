@@ -164,6 +164,8 @@ enum CoreEvent: Equatable {
     case input(sessionId: UInt64, event: InputEvent)
     /// Input was allowed or revoked during a session.
     case inputAllowed(sessionId: UInt64, allowed: Bool)
+    /// Host: the viewer wants to control this Mac but isn't allowed yet; ask the user.
+    case inputRequested(sessionId: UInt64, peerName: String, fingerprint: String)
     /// Host: the viewer asks for a direct Wi-Fi link.
     case directLinkRequested(sessionId: UInt64)
     /// Join this hotspot for a direct link (credentials arrive only inside the session).
@@ -194,6 +196,7 @@ enum CoreEvent: Equatable {
     private struct Allowed: Decodable { let sessionId: UInt64; let allowed: Bool }
     private struct Offer: Decodable { let sessionId: UInt64; let ssid: String; let passphrase: String }
     private struct Unavailable: Decodable { let sessionId: UInt64; let reason: String }
+    private struct InputAsk: Decodable { let sessionId: UInt64; let peerName: String; let fingerprint: String }
 
     static func decode(_ data: Data) -> CoreEvent {
         let d = decoder
@@ -217,6 +220,9 @@ enum CoreEvent: Equatable {
             case "input_allowed":
                 let a = try d.decode(Allowed.self, from: data)
                 return .inputAllowed(sessionId: a.sessionId, allowed: a.allowed)
+            case "input_requested":
+                let a = try d.decode(InputAsk.self, from: data)
+                return .inputRequested(sessionId: a.sessionId, peerName: a.peerName, fingerprint: a.fingerprint)
             case "direct_link_requested":
                 return .directLinkRequested(sessionId: try d.decode(SessionRef.self, from: data).sessionId)
             case "direct_link_offer":

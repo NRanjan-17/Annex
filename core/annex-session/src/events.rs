@@ -66,6 +66,13 @@ pub enum Event {
         session_id: u64,
         allowed: bool,
     },
+    /// Host: the viewer wants to control this computer but its device isn't allowed yet. Ask the
+    /// user; allowing it (`Core::set_allow_input`) takes effect within about a second.
+    InputRequested {
+        session_id: u64,
+        peer_name: String,
+        fingerprint: String,
+    },
     /// Host: the viewer asks for a direct Wi-Fi link. Answer with an offer (start a hotspot) or
     /// "unavailable".
     DirectLinkRequested {

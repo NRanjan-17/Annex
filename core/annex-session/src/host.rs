@@ -490,6 +490,14 @@ async fn run_session(
         input,
     });
     shared.request_keyframe(&slot);
+    if req.input && !input {
+        // Let the user allow it from here instead of finding the per-device switch.
+        (shared.events)(Event::InputRequested {
+            session_id: id,
+            peer_name: peer.device_name.clone(),
+            fingerprint: fp.to_string(),
+        });
+    }
 
     // The reader runs independently so control messages are handled while we write video.
     let (ctl_tx, mut ctl_rx) = mpsc::channel::<Result<Control, SessionError>>(32);

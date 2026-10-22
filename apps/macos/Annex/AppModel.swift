@@ -325,6 +325,18 @@ final class AppModel: ObservableObject {
         switch e {
         case .directLinkRequested(let session):
             host?.refuseDirectLink(session: session)
+        case .inputRequested(_, let name, let fingerprint):
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "Let \(name) control this Mac?"
+            alert.informativeText = "\(name) wants to use this Mac's mouse and keyboard. You can change this any time in Paired Devices."
+            alert.addButton(withTitle: "Allow")
+            alert.addButton(withTitle: "Not Now")
+            refreshTrusted()
+            if alert.runModal() == .alertFirstButtonReturn,
+               let peer = trusted.first(where: { $0.fingerprint == fingerprint }) {
+                setAllowInput(peer, true)
+            }
         case .directLinkOffer(_, let ssid, let passphrase):
             // A Windows viewer runs the hotspot; this Mac (the host) joins it.
             joinDirectLink(ssid: ssid, passphrase: passphrase, asViewer: false)
