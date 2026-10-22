@@ -136,9 +136,9 @@ jobs:
       - name: Interop tests (against annex_ffi.dll)
         env:
           ANNEX_NATIVE_DIR: ${{ github.workspace }}\core\target\x86_64-pc-windows-msvc\debug
-        run: dotnet test apps/windows/tests/Annex.Interop.Tests --locked-mode
+        run: dotnet test apps/windows/tests/Annex.Interop.Tests -p:RestoreLockedMode=true
       - name: Build WinUI app (x64)
-        run: dotnet build apps/windows/src/Annex.App -p:Platform=x64 --locked-mode
+        run: dotnet build apps/windows/src/Annex.App -p:Platform=x64 -p:RestoreLockedMode=true
       - name: Package installer (x64)
         shell: pwsh
         run: scripts/package-windows.ps1 -Arch x64 -Version "0.0.0-ci.${{ github.run_number }}"
