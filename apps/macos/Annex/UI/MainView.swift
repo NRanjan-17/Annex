@@ -114,7 +114,7 @@ private struct ThisMacCard: View {
                     .lineLimit(1)
                 Text(model.isHosting ? "Sharing" : "This Mac")
                     .font(.system(size: 11))
-                    .foregroundStyle(model.isHosting ? AnyShapeStyle(Color.green) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -251,7 +251,7 @@ private struct SharePage: View {
                  text: "Let another computer on your network mirror this screen, or use itself as an extra display for this Mac. New devices need the PIN this Mac shows.",
                  symbol: "display.2", tint: .blue)
             Section {
-                Row(symbol: "dot.radiowaves.left.and.right", tint: model.isHosting ? .green : .gray,
+                Row(symbol: "dot.radiowaves.left.and.right", tint: model.isHosting ? .blue : .gray,
                     title: "Sharing", subtitle: shareStatus) {
                     Toggle("", isOn: Binding(get: { model.isHosting }, set: { model.setHosting($0) }))
                         .toggleStyle(.switch).labelsHidden()
@@ -266,6 +266,9 @@ private struct SharePage: View {
                         .disabled(model.isHosting)
                     }
                 }
+            }
+            if model.isHosting, let port = model.hostStatus.listeningPort {
+                HowToConnect(model: model, port: port)
             }
             if model.isHosting && model.hostStatus.viewerName != nil {
                 let s = model.hostStatus
@@ -309,6 +312,55 @@ private struct SharePage: View {
         return "Starting…"
     }
 }
+
+/// Shown while sharing: exactly what to do on the other computer.
+private struct HowToConnect: View {
+    @ObservedObject var model: AppModel
+    let port: Int
+    @State private var addresses = LocalAddresses.current()
+    @State private var copied: String?
+
+    var body: some View {
+        Section {
+            Row(symbol: "1.circle.fill", tint: .blue, title: "Open Annex on the other computer",
+                subtitle: "Choose “\(model.deviceName)” under Nearby, then Mirror or Extend.") { EmptyView() }
+            if addresses.isEmpty {
+                Row(symbol: "2.circle.fill", tint: .blue, title: "Not listed? Connect by address",
+                    subtitle: "This Mac isn't on a network right now. Connect it to Wi-Fi, Ethernet or a cable.") { EmptyView() }
+            } else {
+                Row(symbol: "2.circle.fill", tint: .blue, title: "Not listed? Connect by address",
+                    subtitle: "In Connect → Connect by address, type one of these:") { EmptyView() }
+                ForEach(addresses, id: \.self) { a in
+                    let text = port == Int(annexDefaultPort) ? a.ip : "\(a.ip):\(port)"
+                    HStack(spacing: 10) {
+                        Text(text)
+                            .font(.system(size: 15, weight: .medium, design: .monospaced))
+                            .textSelection(.enabled)
+                        Text(a.isDirectLink ? "Direct cable" : "Network · \(a.interface)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(copied == text ? "Copied" : "Copy") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(text, forType: .string)
+                            copied = text
+                        }
+                        .controlSize(.small)
+                    }
+                    .padding(.leading, 36)
+                }
+            }
+            Row(symbol: "3.circle.fill", tint: .blue, title: "First time? Enter the PIN",
+                subtitle: "This Mac shows a 6-digit PIN. Check that the identity code matches: \(model.fingerprintDisplay)") { EmptyView() }
+        } header: {
+            Text("Connect from another computer")
+        }
+        .onAppear { addresses = LocalAddresses.current() }
+    }
+}
+
+/// The port hosts use unless it's taken.
+private let annexDefaultPort: UInt16 = 47800
 
 // MARK: Connect
 

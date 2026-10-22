@@ -47,7 +47,7 @@ struct MenuContent: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Settings")
+            .help("Open Annex")
             .keyboardShortcut(",")
         }
     }
@@ -58,14 +58,6 @@ struct MenuContent: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Spacer()
-            Button("Open Annex") {
-                openWindow(id: "main")
-                NSApp.activate(ignoringOtherApps: true)
-            }
-            .buttonStyle(.plain)
-            .font(.caption)
-            .foregroundStyle(Color.accentColor)
-            Text("·").font(.caption).foregroundStyle(.tertiary)
             Button("Quit") { model.quit() }
                 .buttonStyle(.plain)
                 .font(.caption)
