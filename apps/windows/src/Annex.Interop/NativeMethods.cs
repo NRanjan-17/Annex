@@ -59,6 +59,9 @@ internal static unsafe partial class NativeMethods
     public static partial int annex_core_untrust(nint core, string fingerprint);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_core_set_allow_input(nint core, string fingerprint, [MarshalAs(UnmanagedType.U1)] bool allow);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_core_submit_pin(nint core, ulong requestId, string pin);
 
     [LibraryImport(Lib)]
@@ -90,13 +93,15 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_viewer_connect(nint core, string address, string? expectedFingerprint, string? displayJson,
-        [MarshalAs(UnmanagedType.U1)] bool extend, delegate* unmanaged<nint, nint, void> onEvent, delegate* unmanaged<nint, byte*, nuint, uint, long, byte, void> onFrame,
+        [MarshalAs(UnmanagedType.U1)] bool extend, [MarshalAs(UnmanagedType.U1)] bool input,
+        delegate* unmanaged<nint, nint, void> onEvent, delegate* unmanaged<nint, byte*, nuint, uint, long, byte, void> onFrame,
         nint ctx, out nint viewer);
 
     /// <summary>Windows only: the core decodes and renders into its own full-screen window.</summary>
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_viewer_connect_windowed(nint core, string address, string? expectedFingerprint,
-        [MarshalAs(UnmanagedType.U1)] bool extend, delegate* unmanaged<nint, nint, void> onEvent, nint ctx, out nint viewer);
+        [MarshalAs(UnmanagedType.U1)] bool extend, [MarshalAs(UnmanagedType.U1)] bool input,
+        delegate* unmanaged<nint, nint, void> onEvent, nint ctx, out nint viewer);
 
     [LibraryImport(Lib)] public static partial void annex_viewer_request_keyframe(nint viewer);
     [LibraryImport(Lib)] public static partial void annex_viewer_frame_presented(nint viewer, uint frameId);

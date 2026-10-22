@@ -1,4 +1,5 @@
 import AnnexFFI
+import CoreGraphics
 import Foundation
 
 /// Thin Swift wrappers over the C API in core/annex-ffi/include/annex.h.
@@ -30,6 +31,11 @@ enum Annex {
     static var version: String { String(cString: annex_version()) }
     static func nowMicros() -> Int64 { annex_now_us() }
     static func displayFingerprint(_ fp: String) -> String { takeString(annex_display_fingerprint(fp)) }
+    /// macOS virtual key code for a HID usage from an `input` event.
+    static func macKeyCode(hid: UInt16) -> CGKeyCode? {
+        let c = annex_key_native_from_hid(hid)
+        return c < 0 ? nil : CGKeyCode(c)
+    }
 }
 
 /// Holds the Swift closures a C callback dispatches to. Its lifetime is tied to the handle.
@@ -88,6 +94,12 @@ final class CoreClient {
     @discardableResult
     func untrust(_ fingerprint: String) throws -> Bool {
         try check(annex_core_untrust(raw, fingerprint)) == 1
+    }
+
+    /// Lets a trusted device control this Mac (or stops it). Returns false if it isn't trusted.
+    @discardableResult
+    func setAllowInput(_ fingerprint: String, _ allow: Bool) throws -> Bool {
+        try check(annex_core_set_allow_input(raw, fingerprint, allow)) == 1
     }
 
     /// Answers a `pairingPinRequired` event with what the user typed.
@@ -188,14 +200,15 @@ final class ViewerHandle {
         return e
     }()
 
+    /// `input`: ask to control the host; `sessionStarted.input` says whether it agreed.
     init(core: CoreClient, address: String, expectedFingerprint: String?, display: DisplayInfo, extend: Bool = false,
-         onEvent: @escaping (CoreEvent) -> Void,
+         input: Bool = false, onEvent: @escaping (CoreEvent) -> Void,
          onFrame: @escaping (UnsafeRawBufferPointer, UInt32, Int64?, Bool) -> Void) throws {
         self.core = core
         box = CallbackBox(onEvent: onEvent, onFrame: onFrame)
         let displayJSON = String(decoding: try Self.encoder.encode(display), as: UTF8.self)
         var out: OpaquePointer?
-        try check(annex_viewer_connect(core.raw, address, expectedFingerprint, displayJSON, extend,
+        try check(annex_viewer_connect(core.raw, address, expectedFingerprint, displayJSON, extend, input,
                                        eventTrampoline, frameTrampoline, box.context, &out))
         raw = out
     }
@@ -208,6 +221,26 @@ final class ViewerHandle {
 
     func framePresented(_ frameID: UInt32) {
         if let raw { annex_viewer_frame_presented(raw, frameID) }
+    }
+
+    // Input. Thread-safe and non-blocking; dropped by the core unless the host allows input.
+
+    /// Normalized pointer position over the video: (0, 0) top-left, (1, 1) bottom-right.
+    func sendMouseMove(x: Double, y: Double) {
+        if let raw { annex_viewer_send_mouse_move(raw, x, y) }
+    }
+
+    /// button: 0 left, 1 right, 2 middle.
+    func sendMouseButton(_ button: UInt32, down: Bool) {
+        if let raw { annex_viewer_send_mouse_button(raw, button, down) }
+    }
+
+    func sendScroll(dx: Int32, dy: Int32) {
+        if let raw { annex_viewer_send_scroll(raw, dx, dy) }
+    }
+
+    func sendKey(macKeyCode: UInt16, down: Bool) {
+        if let raw { annex_viewer_send_key(raw, UInt32(macKeyCode), down) }
     }
 
     /// Sends Bye and waits for the session to end. Call from the main thread.

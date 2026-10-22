@@ -25,6 +25,9 @@ final class ExtendSession {
 
     var onError: ((String) -> Void)?
 
+    /// The virtual display this viewer extends to (where its pointer lands).
+    var displayID: CGDirectDisplayID { display.displayID }
+
     /// Tests turn capture off so they don't need the Screen Recording permission.
     static var captureEnabled = true
 

@@ -1,130 +1,297 @@
 import SwiftUI
 
+/// The menu bar window: share this Mac, or connect to another computer.
 struct MenuContent: View {
     @ObservedObject var model: AppModel
-
+    @Environment(\.openWindow) private var openWindow
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             if let err = model.startupError {
-                Text(err).foregroundStyle(.red).font(.callout)
+                Notice(text: err, systemImage: "exclamationmark.triangle.fill", tint: .red)
             }
-            Divider()
-            hostSection
-            Divider()
-            viewSection
-            if !model.trusted.isEmpty {
-                Divider()
-                trustedSection
-            }
-            Divider()
-            HStack {
-                Text("Annex \(Annex.version)").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("Quit") { model.quit() }.keyboardShortcut("q")
-            }
+            ShareCard(model: model)
+            ConnectCard(model: model)
+            footer
         }
         .padding(14)
-        .frame(width: 340)
+        .frame(width: 360)
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(model.deviceName).font(.headline)
-            Text(model.fingerprintDisplay)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .help("This device's identity code. Compare it with what the other device shows when pairing.")
+        HStack(spacing: 10) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 38, height: 38)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.deviceName.isEmpty ? "Annex" : model.deviceName)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(model.fingerprintDisplay)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .help("This Mac's identity code. Compare it with what the other device shows when pairing.")
+            }
+            Spacer()
+            Button {
+                openWindow(id: "settings")
+                // A menu bar app isn't frontmost; bring the settings window forward.
+                NSApp.activate(ignoringOtherApps: true)
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Settings")
+            .keyboardShortcut(",")
         }
     }
 
-    private var hostSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Toggle("Share this screen (Mirror)", isOn: Binding(get: { model.isHosting }, set: { model.setHosting($0) }))
-                .toggleStyle(.switch)
+    private var footer: some View {
+        HStack {
+            Text("Annex \(Annex.version)")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            Spacer()
+            Button("Quit Annex") { model.quit() }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .keyboardShortcut("q")
+        }
+        .padding(.horizontal, 2)
+    }
+}
+
+// MARK: Share
+
+private struct ShareCard: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        Card {
+            HStack(spacing: 10) {
+                IconBadge(systemImage: "display.2", tint: model.isHosting ? .accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Share this Mac").font(.system(size: 13, weight: .semibold))
+                    Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                Spacer()
+                Toggle("", isOn: Binding(get: { model.isHosting }, set: { model.setHosting($0) }))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .controlSize(.small)
+            }
             if model.displays.count > 1 {
                 Picker("Display", selection: $model.selectedDisplayID) {
                     ForEach(model.displays) { d in Text(d.name).tag(Optional(d.id)) }
                 }
+                .controlSize(.small)
                 .disabled(model.isHosting)
             }
-            Toggle("Hardware encoder", isOn: $model.preferHardwareEncoder)
-                .disabled(model.isHosting)
-                .font(.callout)
-                .help("Off forces Apple's software encoder, which adds about 280 ms of latency.")
             if model.isHosting {
                 let s = model.hostStatus
                 if !s.mirrorViewers.isEmpty, let st = s.stream {
-                    Label("Mirroring to \(s.mirrorViewers.joined(separator: ", ")) — \(st.width)×\(st.height) @ \(st.fps)\(s.hardwareEncoder ? " (HW)" : " (SW)")",
-                          systemImage: "dot.radiowaves.left.and.right")
-                        .font(.callout)
+                    StatusRow(systemImage: "rectangle.on.rectangle", tint: .green,
+                              text: "Mirroring to \(s.mirrorViewers.joined(separator: ", "))",
+                              detail: "\(st.width)×\(st.height) · \(st.fps) fps · \(s.hardwareEncoder ? "hardware" : "software") encoder")
                 }
                 if !s.extendViewers.isEmpty {
-                    Label("Extended to \(s.extendViewers.joined(separator: ", ")) (see System Settings → Displays)",
-                          systemImage: "rectangle.on.rectangle")
-                        .font(.callout)
+                    StatusRow(systemImage: "rectangle.split.2x1", tint: .green,
+                              text: "Extended to \(s.extendViewers.joined(separator: ", "))",
+                              detail: "Arrange it in System Settings → Displays")
                 }
-                if s.viewerName == nil, let port = s.listeningPort {
-                    Label("Waiting for a viewer on port \(port)…", systemImage: "hourglass").font(.callout)
+                if !s.controllingViewers.isEmpty {
+                    StatusRow(systemImage: "keyboard", tint: .orange,
+                              text: "\(s.controllingViewers.joined(separator: ", ")) can use your mouse and keyboard",
+                              detail: nil)
                 }
             }
             if let err = model.hostStatus.error {
-                Text(err).foregroundStyle(.red).font(.caption)
+                Notice(text: err, systemImage: "exclamationmark.triangle.fill", tint: .orange)
             }
         }
     }
 
-    private var viewSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("View another computer").font(.subheadline.bold())
+    private var summary: String {
+        guard model.isHosting else { return "Let another computer mirror or extend this screen" }
+        let s = model.hostStatus
+        if s.viewerName != nil { return "Connected" }
+        if s.listeningPort != nil { return "Waiting for a viewer…" }
+        return "Starting…"
+    }
+}
+
+// MARK: Connect
+
+private struct ConnectCard: View {
+    @ObservedObject var model: AppModel
+    @State private var hovered: String?
+
+    var body: some View {
+        Card {
+            HStack(spacing: 10) {
+                IconBadge(systemImage: "macbook.and.iphone", tint: model.isViewing ? .accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Connect to a computer").font(.system(size: 13, weight: .semibold))
+                    Text("Show its screen here, or use this Mac as its extra display")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+            }
             Picker("", selection: $model.extendMode) {
-                Text("Mirror its screen").tag(false)
-                Text("Use as extra display").tag(true)
+                Label("Mirror", systemImage: "rectangle.on.rectangle").tag(false)
+                Label("Extra display", systemImage: "rectangle.split.2x1").tag(true)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .help("Extra display: the other computer gets a new virtual display and this Mac shows it.")
-            if model.discovered.isEmpty {
-                Text("Looking for hosts on this network…").font(.callout).foregroundStyle(.secondary)
-            }
-            ForEach(model.discovered) { peer in
-                Button {
-                    model.connect(to: peer)
-                } label: {
-                    Label(peer.name, systemImage: "display")
+            .controlSize(.small)
+
+            VStack(spacing: 2) {
+                if model.discovered.isEmpty {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.mini)
+                        Text("Looking for computers on this network…")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 6)
                 }
-                .buttonStyle(.link)
+                ForEach(model.discovered) { peer in
+                    Button {
+                        model.connect(to: peer)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "desktopcomputer")
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 18)
+                            Text(peer.name).lineLimit(1)
+                            Spacer()
+                            if model.trusted.contains(where: { $0.fingerprint == peer.fingerprint }) {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .foregroundStyle(.secondary)
+                                    .help("Paired")
+                            }
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .font(.system(size: 13))
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 8)
+                        .background(RoundedRectangle(cornerRadius: 7)
+                            .fill(hovered == peer.id ? Color.primary.opacity(0.08) : .clear))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovered = $0 ? peer.id : nil }
+                }
             }
-            HStack {
+
+            HStack(spacing: 6) {
                 TextField("IP address or host:port", text: $model.manualAddress)
                     .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
                     .onSubmit { model.connectManual() }
-                Button("Connect") { model.connectManual() }
+                Button {
+                    model.connectManual()
+                } label: {
+                    Image(systemName: "arrow.right")
+                }
+                .controlSize(.small)
+                .disabled(model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+                .help("Connect")
             }
+
             if let s = model.viewerStatus {
-                Text(s).font(.callout)
-            }
-            if let l = model.latency {
-                Text(String(format: "Latency p50 %.0f ms · p95 %.0f ms · %.0f fps", l.p50Ms, l.p95Ms, l.fps))
-                    .font(.caption).foregroundStyle(.secondary)
+                StatusRow(systemImage: model.isViewing ? "play.rectangle.fill" : "info.circle",
+                          tint: model.isViewing ? .green : .secondary, text: s,
+                          detail: model.latency.map {
+                              String(format: "Latency %.0f ms (p95 %.0f) · %.0f fps", $0.p50Ms, $0.p95Ms, $0.fps)
+                          })
+                if model.isViewing {
+                    HStack {
+                        if model.controllingHost {
+                            Label("Your mouse and keyboard control it · ⌃⌥⇧Q to leave", systemImage: "keyboard")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Disconnect") { model.disconnectViewer() }
+                            .controlSize(.small)
+                    }
+                }
             }
         }
     }
+}
 
-    private var trustedSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Trusted devices").font(.subheadline.bold())
-            ForEach(model.trusted) { peer in
-                HStack {
-                    Text(peer.name).lineLimit(1)
-                    Spacer()
-                    Button("Remove") { model.revoke(peer) }
-                        .buttonStyle(.borderless)
-                        .help("Revoke trust. The device will need approval to connect again.")
+// MARK: Building blocks
+
+struct Card<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) { content }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.045)))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
+    }
+}
+
+struct IconBadge: View {
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(tint == .secondary ? Color.secondary : Color.white)
+            .frame(width: 30, height: 30)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(tint == .secondary ? AnyShapeStyle(Color.primary.opacity(0.08)) : AnyShapeStyle(tint.gradient)))
+            .animation(.easeInOut(duration: 0.2), value: systemImage + "\(tint)")
+    }
+}
+
+struct StatusRow: View {
+    let systemImage: String
+    let tint: Color
+    let text: String
+    let detail: String?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: systemImage)
+                .foregroundStyle(tint)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
+                if let detail {
+                    Text(detail).font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
-                .font(.callout)
             }
         }
+    }
+}
+
+struct Notice: View {
+    let text: String
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        Label {
+            Text(text).font(.caption).fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: systemImage).foregroundStyle(tint)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(tint.opacity(0.12)))
     }
 }

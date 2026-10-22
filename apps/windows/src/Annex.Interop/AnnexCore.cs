@@ -102,6 +102,10 @@ public sealed class CoreClient : IDisposable
 
     public bool Untrust(string fingerprint) => NativeMethods.Check(NativeMethods.annex_core_untrust(Raw, fingerprint)) == 1;
 
+    /// <summary>Lets a trusted device control this PC's mouse and keyboard (off by default). False if it isn't trusted.</summary>
+    public bool SetAllowInput(string fingerprint, bool allow) =>
+        NativeMethods.Check(NativeMethods.annex_core_set_allow_input(Raw, fingerprint, allow)) == 1;
+
     /// <summary>Answers a <see cref="CoreEvent.PairingPinRequired"/> with the PIN the user typed.</summary>
     public bool SubmitPin(ulong requestId, string pin) => NativeMethods.annex_core_submit_pin(Raw, requestId, pin) == 1;
 
@@ -203,11 +207,11 @@ public sealed unsafe class ViewerHandle : IDisposable
 
     /// <summary>Connects and delivers encoded frames to <paramref name="onFrame"/>.</summary>
     public static ViewerHandle Connect(CoreClient core, string address, string? expectedFingerprint, DisplayInfo display,
-        Action<CoreEvent> onEvent, FrameHandler onFrame, bool extend = false)
+        Action<CoreEvent> onEvent, FrameHandler onFrame, bool extend = false, bool input = false)
     {
         var v = new ViewerHandle(core, new CallbackTarget(onEvent, onFrame));
         var json = AnnexJson.Serialize(display);
-        var rc = NativeMethods.annex_viewer_connect(core.Raw, address, expectedFingerprint, json, extend,
+        var rc = NativeMethods.annex_viewer_connect(core.Raw, address, expectedFingerprint, json, extend, input,
             CallbackTarget.EventCallback, CallbackTarget.FrameCallback, v._target.Context, out v._raw);
         if (rc < 0)
         {
@@ -217,12 +221,14 @@ public sealed unsafe class ViewerHandle : IDisposable
         return v;
     }
 
-    /// <summary>Windows: connects and shows the stream in a full-screen window owned by the core (Esc closes).</summary>
+    /// <summary>Windows: connects and shows the stream in a full-screen window owned by the core (Esc closes).
+    /// With <paramref name="input"/>, the window forwards mouse and keyboard once the host allows it
+    /// (Ctrl+Alt+Shift+Q then leaves).</summary>
     public static ViewerHandle ConnectWindowed(CoreClient core, string address, string? expectedFingerprint, Action<CoreEvent> onEvent,
-        bool extend = false)
+        bool extend = false, bool input = false)
     {
         var v = new ViewerHandle(core, new CallbackTarget(onEvent));
-        var rc = NativeMethods.annex_viewer_connect_windowed(core.Raw, address, expectedFingerprint, extend,
+        var rc = NativeMethods.annex_viewer_connect_windowed(core.Raw, address, expectedFingerprint, extend, input,
             CallbackTarget.EventCallback, v._target.Context, out v._raw);
         if (rc < 0)
         {

@@ -51,6 +51,8 @@ struct SessionStarted: Decodable, Equatable {
     let transport: String?
     /// "direct" (a cable between the computers) or "network".
     let link: String?
+    /// The viewer's mouse and keyboard control the host in this session.
+    let input: Bool?
 
     var connectionDescription: String {
         let t = transport == "quic" ? "QUIC" : transport == "tcp" ? "TCP" : nil
@@ -92,8 +94,52 @@ struct TrustedPeer: Decodable, Identifiable, Hashable {
     let name: String
     let addedAt: UInt64
     let lastSeen: UInt64
+    /// Host side: this device may control this Mac's mouse and keyboard.
+    var allowInput: Bool = false
 
     var id: String { fingerprint }
+
+    private enum CodingKeys: String, CodingKey { case fingerprint, name, addedAt, lastSeen, allowInput }
+
+    init(fingerprint: String, name: String, addedAt: UInt64, lastSeen: UInt64, allowInput: Bool = false) {
+        (self.fingerprint, self.name, self.addedAt, self.lastSeen, self.allowInput) = (fingerprint, name, addedAt, lastSeen, allowInput)
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fingerprint = try c.decode(String.self, forKey: .fingerprint)
+        name = try c.decode(String.self, forKey: .name)
+        addedAt = try c.decode(UInt64.self, forKey: .addedAt)
+        lastSeen = try c.decodeIfPresent(UInt64.self, forKey: .lastSeen) ?? 0
+        allowInput = try c.decodeIfPresent(Bool.self, forKey: .allowInput) ?? false
+    }
+}
+
+/// One viewer input event, as the core delivers it to the host (`input` event).
+enum InputEvent: Equatable {
+    /// Normalized to the stream: 0 = left/top edge, 65535 = right/bottom edge.
+    case mouseMove(x: UInt16, y: UInt16)
+    /// button: "left", "right" or "middle".
+    case mouseButton(button: String, down: Bool)
+    /// Pixels; positive dy scrolls up (content moves down), positive dx scrolls left.
+    case scroll(dx: Int32, dy: Int32)
+    /// USB HID usage (keyboard page).
+    case key(usage: UInt16, down: Bool)
+}
+
+extension InputEvent: Decodable {
+    private enum CodingKeys: String, CodingKey { case k, x, y, button, down, dx, dy, usage }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        switch try c.decode(String.self, forKey: .k) {
+        case "mouse_move": self = .mouseMove(x: try c.decode(UInt16.self, forKey: .x), y: try c.decode(UInt16.self, forKey: .y))
+        case "mouse_button": self = .mouseButton(button: try c.decode(String.self, forKey: .button), down: try c.decode(Bool.self, forKey: .down))
+        case "scroll": self = .scroll(dx: try c.decode(Int32.self, forKey: .dx), dy: try c.decode(Int32.self, forKey: .dy))
+        case "key": self = .key(usage: try c.decode(UInt16.self, forKey: .usage), down: try c.decode(Bool.self, forKey: .down))
+        case let other: throw DecodingError.dataCorruptedError(forKey: .k, in: c, debugDescription: "unknown input kind \(other)")
+        }
+    }
 }
 
 enum CoreEvent: Equatable {
@@ -108,6 +154,10 @@ enum CoreEvent: Equatable {
     /// Adaptive bitrate: run this session's encoder at `scalePercent` % of its normal bitrate.
     case bitrateHint(sessionId: UInt64, scalePercent: Int)
     case latencyStats(LatencyStats)
+    /// Host: inject this into the session's display.
+    case input(sessionId: UInt64, event: InputEvent)
+    /// Input was allowed or revoked during a session.
+    case inputAllowed(sessionId: UInt64, allowed: Bool)
     case sessionEnded(sessionId: UInt64, reason: String)
     case error(message: String)
     case peerFound(PeerInfo)
@@ -129,6 +179,8 @@ enum CoreEvent: Equatable {
     private struct Message: Decodable { let message: String }
     private struct Instance: Decodable { let instance: String }
     private struct Stream: Decodable { let stream: StreamConfig }
+    private struct Input: Decodable { let sessionId: UInt64; let event: InputEvent }
+    private struct Allowed: Decodable { let sessionId: UInt64; let allowed: Bool }
 
     static func decode(_ data: Data) -> CoreEvent {
         let d = decoder
@@ -146,6 +198,12 @@ enum CoreEvent: Equatable {
             case "bitrate_hint":
                 let h = try d.decode(Hint.self, from: data)
                 return .bitrateHint(sessionId: h.sessionId, scalePercent: h.scalePercent)
+            case "input":
+                let i = try d.decode(Input.self, from: data)
+                return .input(sessionId: i.sessionId, event: i.event)
+            case "input_allowed":
+                let a = try d.decode(Allowed.self, from: data)
+                return .inputAllowed(sessionId: a.sessionId, allowed: a.allowed)
             case "latency_stats": return .latencyStats(try d.decode(LatencyStats.self, from: data))
             case "session_ended":
                 let e = try d.decode(Ended.self, from: data)

@@ -21,7 +21,8 @@ public sealed record PeerInfo(string Instance, string Name, string[] Addresses, 
         : string.Join(",", Addresses.Select(a => a.Contains(':') ? $"[{a}]:{Port}" : $"{a}:{Port}"));
 }
 
-public sealed record TrustedPeer(string Fingerprint, string Name, ulong AddedAt, ulong LastSeen);
+/// <summary><c>AllowInput</c>: host side, the device may control this PC's mouse and keyboard.</summary>
+public sealed record TrustedPeer(string Fingerprint, string Name, ulong AddedAt, ulong LastSeen, bool AllowInput = false);
 
 public sealed record MonitorInfo(int Index, string Name, int Width, int Height, int RefreshHz, bool Primary)
 {
@@ -39,7 +40,7 @@ public abstract record CoreEvent
     public sealed record PairingFinished(ulong RequestId, bool Success, string PeerName) : CoreEvent;
     /// <summary><c>SessionId</c> is 0 on the viewer side; <c>Mode</c> is "mirror" or "extend".</summary>
     public sealed record SessionStarted(ulong SessionId, string Mode, string PeerName, string Fingerprint, StreamConfig Stream,
-        DisplayInfo? ViewerDisplay = null, string? Transport = null, string? Link = null) : CoreEvent
+        DisplayInfo? ViewerDisplay = null, string? Transport = null, string? Link = null, bool Input = false) : CoreEvent
     {
         /// <summary>e.g. "QUIC · direct cable".</summary>
         public string ConnectionDescription => string.Join(" · ", new[]
@@ -53,6 +54,8 @@ public abstract record CoreEvent
     /// <summary>Adaptive bitrate: run the session's encoder at ScalePercent % of its normal bitrate.</summary>
     public sealed record BitrateHint(ulong SessionId, uint ScalePercent) : CoreEvent;
     public sealed record Latency(LatencyStats Stats) : CoreEvent;
+    /// <summary>Input was allowed or revoked during a session (the core injects it itself on Windows).</summary>
+    public sealed record InputAllowed(ulong SessionId, bool Allowed) : CoreEvent;
     public sealed record SessionEnded(ulong SessionId, string Reason) : CoreEvent;
     public sealed record Error(string Message) : CoreEvent;
     public sealed record PeerFound(PeerInfo Peer) : CoreEvent;
@@ -85,6 +88,9 @@ public abstract record CoreEvent
                 "keyframe_requested" => Get<KeyframeRequested>(json),
                 "bitrate_hint" => Get<BitrateHint>(json),
                 "latency_stats" => new Latency(Get<LatencyStats>(json)),
+                "input_allowed" => Get<InputAllowed>(json),
+                // Windows injects input inside the core; the app doesn't need each event.
+                "input" => new Unknown(type),
                 "session_ended" => Get<SessionEnded>(json),
                 "error" => new Error(Get<MessageDto>(json).Message),
                 "peer_found" => new PeerFound(Get<PeerInfo>(json)),
@@ -117,6 +123,7 @@ internal sealed record InstanceDto(string Instance);
 [JsonSerializable(typeof(CoreEvent.PairingPinRequired))]
 [JsonSerializable(typeof(CoreEvent.PairingFinished))]
 [JsonSerializable(typeof(CoreEvent.SessionStarted))]
+[JsonSerializable(typeof(CoreEvent.InputAllowed))]
 [JsonSerializable(typeof(LatencyStats))]
 [JsonSerializable(typeof(PeerInfo))]
 [JsonSerializable(typeof(DisplayInfo))]

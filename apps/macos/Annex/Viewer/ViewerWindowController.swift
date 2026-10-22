@@ -2,7 +2,8 @@ import AVFoundation
 import AppKit
 
 /// Shows a received H.264 stream in a window (full screen by default). Decoding and display
-/// are done by AVSampleBufferDisplayLayer (VideoToolbox underneath).
+/// are done by AVSampleBufferDisplayLayer (VideoToolbox underneath). While the host allows
+/// input, the mouse and keyboard over the video control the host.
 final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private let videoView = VideoView()
     private let queue = DispatchQueue(label: "annex.viewer.render", qos: .userInteractive)
@@ -14,22 +15,26 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     init(title: String) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
-                              styleMask: [.titled, .closable, .resizable, .miniaturizable],
+                              styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.title = title
+        window.titlebarAppearsTransparent = true
         window.contentView = videoView
         window.collectionBehavior = [.fullScreenPrimary]
         window.backgroundColor = .black
         window.isReleasedWhenClosed = false
+        window.acceptsMouseMovedEvents = true
         window.center()
         super.init(window: window)
         window.delegate = self
+        videoView.onLeave = { [weak window] in window?.performClose(nil) }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
     func attach(_ viewer: ViewerHandle) {
+        videoView.viewer = viewer
         queue.async { self.viewer = viewer }
     }
 
@@ -37,7 +42,23 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(videoView)
+        NSApp.activate(ignoringOtherApps: true)
         if fullScreen { window?.toggleFullScreen(nil) }
+    }
+
+    /// The stream's size, for mapping the pointer through the letterbox.
+    func setStreamSize(width: Int, height: Int) {
+        videoView.streamSize = CGSize(width: width, height: height)
+    }
+
+    /// The host allowed (or revoked) control by this Mac's mouse and keyboard.
+    func setControlling(_ on: Bool, hostName: String) {
+        videoView.controlling = on
+        if on {
+            videoView.showHUD("Controlling \(hostName)", detail: "Press ⌃⌥⇧Q to leave")
+        } else {
+            videoView.showHUD("View only", detail: "\(hostName) isn't sharing its keyboard and mouse")
+        }
     }
 
     /// Called from the core's thread with a copy of the access unit.
@@ -63,12 +84,30 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        videoView.releaseHeldInput()
         onClose?()
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        // Keys released while another window has focus would otherwise stay down on the host.
+        videoView.releaseHeldInput()
     }
 }
 
 final class VideoView: NSView {
     let displayLayer = AVSampleBufferDisplayLayer()
+    weak var viewer: ViewerHandle?
+    var streamSize = CGSize(width: 16, height: 9)
+    var controlling = false {
+        didSet { if !controlling { releaseHeldInput() } }
+    }
+    var onLeave: (() -> Void)?
+
+    private var heldKeys: Set<UInt16> = []
+    private var heldButtons: Set<UInt32> = []
+    private let hud = HUDView()
+    private var hudTimer: Timer?
+    private var scrollRest = CGPoint.zero
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -76,18 +115,195 @@ final class VideoView: NSView {
         displayLayer.backgroundColor = NSColor.black.cgColor
         layer = displayLayer
         wantsLayer = true
+        hud.alphaValue = 0
+        hud.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hud)
+        NSLayoutConstraint.activate([
+            hud.centerXAnchor.constraint(equalTo: centerXAnchor),
+            hud.topAnchor.constraint(equalTo: topAnchor, constant: 48),
+        ])
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
     override var acceptsFirstResponder: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
+    }
+
+    func showHUD(_ title: String, detail: String) {
+        hud.set(title: title, detail: detail)
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.25; hud.animator().alphaValue = 1 }
+        hudTimer?.invalidate()
+        hudTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
+            NSAnimationContext.runAnimationGroup { $0.duration = 0.6; self?.hud.animator().alphaValue = 0 }
+        }
+    }
+
+    // MARK: Pointer
+
+    /// The picture's rectangle inside the view (aspect fit).
+    private var videoRect: CGRect {
+        AVMakeRect(aspectRatio: streamSize, insideRect: bounds)
+    }
+
+    private func sendPosition(_ event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let r = videoRect
+        guard r.width > 1, r.height > 1 else { return }
+        let x = min(max((p.x - r.minX) / (r.width - 1), 0), 1)
+        // View coordinates grow upwards; the stream's grow downwards.
+        let y = min(max(1 - (p.y - r.minY) / (r.height - 1), 0), 1)
+        viewer?.sendMouseMove(x: x, y: y)
+    }
+
+    private func button(_ b: UInt32, _ event: NSEvent, down: Bool) {
+        guard controlling else { return }
+        sendPosition(event)
+        if down { heldButtons.insert(b) } else { heldButtons.remove(b) }
+        viewer?.sendMouseButton(b, down: down)
+    }
+
+    override func mouseMoved(with event: NSEvent) { if controlling { sendPosition(event) } }
+    override func mouseDragged(with event: NSEvent) { if controlling { sendPosition(event) } }
+    override func rightMouseDragged(with event: NSEvent) { if controlling { sendPosition(event) } }
+    override func otherMouseDragged(with event: NSEvent) { if controlling { sendPosition(event) } }
+    override func mouseDown(with event: NSEvent) { button(0, event, down: true) }
+    override func mouseUp(with event: NSEvent) { button(0, event, down: false) }
+    override func rightMouseDown(with event: NSEvent) { button(1, event, down: true) }
+    override func rightMouseUp(with event: NSEvent) { button(1, event, down: false) }
+    override func otherMouseDown(with event: NSEvent) { button(2, event, down: true) }
+    override func otherMouseUp(with event: NSEvent) { button(2, event, down: false) }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard controlling else { return super.scrollWheel(with: event) }
+        // Precise (trackpad) deltas are pixels; wheel deltas are lines of roughly 10 pixels.
+        let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
+        scrollRest.x += event.scrollingDeltaX * scale
+        scrollRest.y += event.scrollingDeltaY * scale
+        let dx = scrollRest.x.rounded(.towardZero), dy = scrollRest.y.rounded(.towardZero)
+        scrollRest.x -= dx
+        scrollRest.y -= dy
+        if dx != 0 || dy != 0 { viewer?.sendScroll(dx: Int32(dx), dy: Int32(dy)) }
+    }
+
+    // MARK: Keyboard
+
+    private static let leaveKey: UInt16 = 0x0C  // Q
+
+    private func isLeaveShortcut(_ event: NSEvent) -> Bool {
+        event.keyCode == Self.leaveKey && event.modifierFlags.isSuperset(of: [.control, .option, .shift])
+    }
+
+    private func key(_ code: UInt16, down: Bool) {
+        if down { heldKeys.insert(code) } else { heldKeys.remove(code) }
+        viewer?.sendKey(macKeyCode: code, down: down)
+    }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { // Esc
+        if controlling {
+            if isLeaveShortcut(event) { return leave() }
+            // Repeats are forwarded too: injected keys don't auto-repeat on the host.
+            key(event.keyCode, down: true)
+        } else if event.keyCode == 53 { // Esc
             window?.performClose(nil)
         } else {
             super.keyDown(with: event)
         }
+    }
+
+    override func keyUp(with event: NSEvent) {
+        if controlling { key(event.keyCode, down: false) } else { super.keyUp(with: event) }
+    }
+
+    /// ⌘-shortcuts reach the menu before keyDown; send them to the host instead.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard controlling, window?.isKeyWindow == true, event.type == .keyDown else { return super.performKeyEquivalent(with: event) }
+        if isLeaveShortcut(event) {
+            leave()
+        } else {
+            key(event.keyCode, down: true)
+            // The matching keyUp isn't delivered for ⌘-combinations; release right away.
+            key(event.keyCode, down: false)
+        }
+        return true
+    }
+
+    /// Modifier keys arrive as flag changes; work out which one moved.
+    override func flagsChanged(with event: NSEvent) {
+        guard controlling else { return super.flagsChanged(with: event) }
+        let code = event.keyCode
+        let mask: NSEvent.ModifierFlags? = switch code {
+        case 0x38, 0x3C: .shift
+        case 0x3B, 0x3E: .control
+        case 0x3A, 0x3D: .option
+        case 0x37, 0x36: .command
+        case 0x39: .capsLock
+        default: nil
+        }
+        guard let mask else { return }
+        if mask == .capsLock {
+            // Caps Lock toggles on each press; send a full press.
+            key(code, down: true)
+            key(code, down: false)
+        } else {
+            key(code, down: event.modifierFlags.contains(mask) && !heldKeys.contains(code))
+        }
+    }
+
+    private func leave() {
+        releaseHeldInput()
+        onLeave?()
+    }
+
+    func releaseHeldInput() {
+        for k in heldKeys { viewer?.sendKey(macKeyCode: k, down: false) }
+        for b in heldButtons { viewer?.sendMouseButton(b, down: false) }
+        heldKeys.removeAll()
+        heldButtons.removeAll()
+    }
+}
+
+/// A rounded, blurred banner shown over the video for a few seconds.
+private final class HUDView: NSVisualEffectView {
+    private let title = NSTextField(labelWithString: "")
+    private let detail = NSTextField(labelWithString: "")
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 14
+        layer?.masksToBounds = true
+        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        title.textColor = .white
+        detail.font = .systemFont(ofSize: 12)
+        detail.textColor = .white.withAlphaComponent(0.75)
+        let stack = NSStackView(views: [title, detail])
+        stack.orientation = .vertical
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -10),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func set(title t: String, detail d: String) {
+        title.stringValue = t
+        detail.stringValue = d
     }
 }

@@ -9,9 +9,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var fingerprintDisplay = ""
     @Published private(set) var startupError: String?
 
+    let settings = AppSettings()
+
     @Published var displays: [Displays.Info] = []
     @Published var selectedDisplayID: CGDirectDisplayID?
-    @Published var preferHardwareEncoder = true
     @Published private(set) var isHosting = false
     @Published private(set) var hostStatus = HostController.Status()
 
@@ -22,6 +23,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var viewerStatus: String?
     @Published private(set) var latency: LatencyStats?
     @Published private(set) var trusted: [TrustedPeer] = []
+    /// Accessibility permission (needed to let viewers control this Mac).
+    @Published private(set) var accessibilityTrusted = InputInjector.isTrusted
+    /// Viewer: the host currently accepts this Mac's mouse and keyboard.
+    @Published private(set) var controllingHost = false
+    private var viewerPeerName = ""
+    private var cancellables: Set<AnyCancellable> = []
 
     private var core: CoreClient?
     private var discovery: DiscoveryHandle?
@@ -34,8 +41,22 @@ final class AppModel: ObservableObject {
     }
 
     init() {
+        extendMode = settings.extendByDefault
+        // Re-publish settings changes so views observing the model refresh.
+        settings.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &cancellables)
         guard !Self.isRunningTests else { return }
         start()
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in self?.refreshPermissions() }
+            .store(in: &cancellables)
+        if settings.startSharingAtLaunch { startHosting() }
+    }
+
+    var isViewing: Bool { viewer != nil }
+
+    func refreshPermissions() {
+        accessibilityTrusted = InputInjector.isTrusted
+        settings.refreshLaunchAtLogin()
     }
 
     static var dataDirectory: URL {
@@ -82,7 +103,7 @@ final class AppModel: ObservableObject {
         if !CGPreflightScreenCaptureAccess() {
             CGRequestScreenCaptureAccess()
         }
-        let h = HostController(core: core, display: display, preferHardware: preferHardwareEncoder)
+        let h = HostController(core: core, display: display, preferHardware: settings.preferHardwareEncoder)
         h.onStatus = { [weak self] s in self?.hostStatus = s }
         h.onEvent = { [weak self] e in self?.handleSessionEvent(e) }
         do {
@@ -125,7 +146,7 @@ final class AppModel: ObservableObject {
         do {
             let v = try ViewerHandle(
                 core: core, address: address, expectedFingerprint: expectedFingerprint, display: Displays.mainDisplayInfo(),
-                extend: extendMode,
+                extend: extendMode, input: settings.controlWhenViewing,
                 onEvent: { [weak self] e in DispatchQueue.main.async { self?.handleViewerEvent(e) } },
                 onFrame: { [weak window] buf, id, _, key in
                     window?.enqueue(Data(buf), frameID: id, keyframe: key)
@@ -133,6 +154,7 @@ final class AppModel: ObservableObject {
             window.attach(v)
             viewer = v
             viewerWindow = window
+            viewerPeerName = title
             viewerStatus = "Connecting to \(title)…"
         } catch {
             viewerStatus = "Connect failed: \(error.localizedDescription)"
@@ -147,6 +169,7 @@ final class AppModel: ObservableObject {
         w?.onClose = nil
         w?.close()
         latency = nil
+        controllingHost = false
     }
 
     private func handleViewerEvent(_ e: CoreEvent) {
@@ -154,9 +177,19 @@ final class AppModel: ObservableObject {
         case .sessionStarted(let s):
             let via = s.connectionDescription.isEmpty ? "" : " (\(s.connectionDescription))"
             viewerStatus = (s.mode == "extend" ? "Extending \(s.peerName)" : "Viewing \(s.peerName)") + via
-            viewerWindow?.show(fullScreen: true)
+            viewerPeerName = s.peerName
+            viewerWindow?.setStreamSize(width: s.stream.width, height: s.stream.height)
+            viewerWindow?.show(fullScreen: settings.openFullScreen)
+            controllingHost = s.input ?? false
+            if settings.controlWhenViewing {
+                viewerWindow?.setControlling(controllingHost, hostName: s.peerName)
+            }
         case .streamConfig(let s):
-            viewerStatus = "Viewing — \(s.width)×\(s.height) @ \(s.fps) fps"
+            viewerWindow?.setStreamSize(width: s.width, height: s.height)
+            viewerStatus = "Viewing \(viewerPeerName) — \(s.width)×\(s.height) @ \(s.fps) fps"
+        case .inputAllowed(_, let allowed):
+            controllingHost = allowed
+            viewerWindow?.setControlling(allowed, hostName: viewerPeerName)
         case .latencyStats(let l):
             latency = l
         case .sessionEnded(_, let reason):
@@ -167,6 +200,7 @@ final class AppModel: ObservableObject {
             w?.onClose = nil
             w?.close()
             latency = nil
+            controllingHost = false
         default:
             handleSessionEvent(e)
         }
@@ -228,6 +262,16 @@ final class AppModel: ObservableObject {
         alert.alertStyle = .informational
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
+    }
+
+    /// Host: let a trusted device control this Mac's mouse and keyboard (or stop it).
+    func setAllowInput(_ peer: TrustedPeer, _ allow: Bool) {
+        if allow && !InputInjector.isTrusted {
+            InputInjector.requestTrust()
+        }
+        _ = try? core?.setAllowInput(peer.fingerprint, allow)
+        refreshTrusted()
+        refreshPermissions()
     }
 
     func revoke(_ peer: TrustedPeer) {

@@ -11,6 +11,8 @@ final class HostController {
         var extendViewers: [String] = []
         var stream: StreamConfig?
         var hardwareEncoder = false
+        /// Viewers currently controlling this Mac.
+        var controllingViewers: [String] = []
         var error: String?
 
         var viewerName: String? { (mirrorViewers + extendViewers).first }
@@ -29,6 +31,10 @@ final class HostController {
     private var mirrorScales: [UInt64: Int] = [:]
     private var mirrorBaseBitrate = 0
     private var extendSessions: [UInt64: ExtendSession] = [:]
+    private var inputSessions: [UInt64: String] = [:]
+    private let injector = InputInjector()
+    /// Extend sessions' virtual displays, read on the core's thread for input injection.
+    private let extendDisplays = LockedBox<[UInt64: CGDirectDisplayID]>()
     private(set) var status = Status() { didSet { onStatus?(status) } }
 
     var onStatus: ((Status) -> Void)?
@@ -50,7 +56,15 @@ final class HostController {
 
     func start() throws {
         let (w, h) = streamSize
+        let injector = self.injector
+        let extendDisplays = self.extendDisplays
+        let mirrorDisplay = display.id
         let handler: (CoreEvent) -> Void = { [weak self] event in
+            // Input skips the main queue: it's frequent and latency-sensitive.
+            if case .input(let id, let e) = event {
+                injector.inject(e, display: extendDisplays.value?[id] ?? mirrorDisplay)
+                return
+            }
             DispatchQueue.main.async { self?.handle(event) }
         }
         let extend = Self.extendSupported
@@ -68,6 +82,9 @@ final class HostController {
     func stop() {
         for s in extendSessions.values { s.stop() }
         extendSessions.removeAll()
+        extendDisplays.value = [:]
+        inputSessions.removeAll()
+        injector.releaseAll()
         mirrorSessions.removeAll()
         stopMirrorCapture()
         host?.stop()
@@ -76,14 +93,24 @@ final class HostController {
     }
 
     private func handle(_ event: CoreEvent) {
+        if case .sessionStarted(let s) = event, s.input == true {
+            inputSessions[s.sessionId] = s.peerName
+        }
         switch event {
         case .sessionStarted(let s) where s.mode == "extend":
             startExtend(s)
+        case .inputAllowed(let id, let allowed):
+            if !allowed {
+                inputSessions.removeValue(forKey: id)
+                injector.releaseAll()
+            }
         case .sessionStarted(let s):
             mirrorSessions[s.sessionId] = s.peerName
             status.stream = s.stream
             if encoder == nil, ExtendSession.captureEnabled { startMirrorCapture(stream: s.stream) } else { requestMirrorKeyframe() }
         case .sessionEnded(let id, _):
+            if inputSessions.removeValue(forKey: id) != nil { injector.releaseAll() }
+            extendDisplays.update { $0?.removeValue(forKey: id) }
             if let ext = extendSessions.removeValue(forKey: id) {
                 ext.stop()
             } else if mirrorSessions.removeValue(forKey: id) != nil {
@@ -109,6 +136,7 @@ final class HostController {
         }
         status.mirrorViewers = mirrorSessions.values.sorted()
         status.extendViewers = extendSessions.values.map(\.viewerName).sorted()
+        status.controllingViewers = inputSessions.values.sorted()
         onEvent?(event)
     }
 
@@ -120,6 +148,11 @@ final class HostController {
                 viewerFingerprint: s.fingerprint, viewerName: s.peerName, preferHardware: preferHardware)
             session.onError = { [weak self] message in self?.status.error = message }
             extendSessions[s.sessionId] = session
+            let displayID = session.displayID
+            extendDisplays.update { d in
+                if d == nil { d = [:] }
+                d?[s.sessionId] = displayID
+            }
         } catch {
             status.error = error.localizedDescription
             host.endSession(s.sessionId)
