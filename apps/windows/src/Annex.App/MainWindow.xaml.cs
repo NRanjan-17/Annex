@@ -5,14 +5,13 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Windows.Graphics;
-using Windows.System;
 
 namespace Annex.App;
 
 /// <summary>
-/// M1 Windows app: discovers hosts and views them full screen. The stream is decoded and
-/// rendered by the core in its own window (annex_viewer_connect_windowed). Hosting from
-/// Windows arrives in M3; the tray icon and settings UI in M6.
+/// Windows app: discovers hosts and views them full screen. The stream is decoded and rendered
+/// by the core in its own window (annex_viewer_connect_windowed). The app lives in the system
+/// tray: closing the window hides it; "Quit" in the tray menu exits.
 /// </summary>
 public sealed partial class MainWindow : Window
 {
@@ -22,6 +21,9 @@ public sealed partial class MainWindow : Window
     private CoreClient? _core;
     private DiscoveryHandle? _discovery;
     private ViewerHandle? _viewer;
+    private TrayIcon? _tray;
+    private bool _quitting;
+    private string _viewingName = "";
 
     public static string DataDirectory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Annex");
@@ -34,6 +36,19 @@ public sealed partial class MainWindow : Window
         HostsList.ItemsSource = _hosts;
         TrustedList.ItemsSource = _trusted;
         Closed += (_, _) => Shutdown();
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "Annex.ico"));
+        // Closing the window keeps Annex running in the tray.
+        AppWindow.Closing += (_, args) =>
+        {
+            if (_quitting) return;
+            args.Cancel = true;
+            AppWindow.Hide();
+        };
+        _tray = new TrayIcon("Annex", Path.Combine(AppContext.BaseDirectory, "Assets", "Annex.ico"))
+        {
+            MenuProvider = BuildTrayMenu,
+        };
+        _tray.LeftClick += ShowFromTray;
 
         try
         {
@@ -48,6 +63,41 @@ public sealed partial class MainWindow : Window
         {
             StatusText.Text = $"Could not start: {ex.Message}";
         }
+    }
+
+    private IReadOnlyList<TrayIcon.MenuItem?> BuildTrayMenu()
+    {
+        var items = new List<TrayIcon.MenuItem?> { new("Open Annex", ShowFromTray), null };
+        if (_viewer is not null)
+        {
+            items.Add(new($"Viewing {_viewingName}", () => { }, Enabled: false));
+            items.Add(new("Disconnect", Disconnect));
+        }
+        else if (_hosts.Count == 0)
+        {
+            items.Add(new("No hosts found", () => { }, Enabled: false));
+        }
+        else
+        {
+            foreach (var host in _hosts.Take(10))
+                items.Add(new($"View {host.Name}", () => ConnectToPeer(host)));
+        }
+        items.Add(null);
+        items.Add(new("Quit Annex", Quit));
+        return items;
+    }
+
+    private void ShowFromTray()
+    {
+        AppWindow.Show();
+        Activate();
+    }
+
+    private void Quit()
+    {
+        _quitting = true;
+        Close();
+        Application.Current.Exit();
     }
 
     private void OnDiscovery(CoreEvent e)
@@ -69,7 +119,12 @@ public sealed partial class MainWindow : Window
 
     private void HostsList_ItemClick(object sender, ItemClickEventArgs e)
     {
-        if (e.ClickedItem is not PeerInfo peer || peer.ConnectAddress is not { } address) return;
+        if (e.ClickedItem is PeerInfo peer) ConnectToPeer(peer);
+    }
+
+    private void ConnectToPeer(PeerInfo peer)
+    {
+        if (peer.ConnectAddress is not { } address) return;
         // Pin the certificate only for hosts we already trust; unknown hosts get a prompt.
         var pinned = peer.Fingerprint is { } fp && _trusted.Any(t => t.Fingerprint == fp) ? fp : null;
         Connect(address, peer.Name, pinned);
@@ -79,7 +134,7 @@ public sealed partial class MainWindow : Window
 
     private void AddressBox_KeyDown(object sender, KeyRoutedEventArgs e)
     {
-        if (e.Key == VirtualKey.Enter) ConnectManual();
+        if (e.Key == Windows.System.VirtualKey.Enter) ConnectManual();
     }
 
     private void ConnectManual()
@@ -95,7 +150,9 @@ public sealed partial class MainWindow : Window
         try
         {
             _viewer = ViewerHandle.ConnectWindowed(_core, address, pinnedFingerprint, e => _ui.TryEnqueue(() => OnViewerEvent(e)));
+            _viewingName = title;
             StatusText.Text = $"Connecting to {title}…";
+            if (_tray is not null) _tray.Tooltip = $"Annex — connecting to {title}";
         }
         catch (AnnexException ex)
         {
@@ -112,6 +169,8 @@ public sealed partial class MainWindow : Window
                 break;
             case CoreEvent.SessionStarted s:
                 StatusText.Text = $"Viewing {s.PeerName}";
+                _viewingName = s.PeerName;
+                if (_tray is not null) _tray.Tooltip = $"Annex — viewing {s.PeerName}";
                 RefreshTrusted();
                 break;
             case CoreEvent.StreamChanged(var st):
@@ -123,6 +182,7 @@ public sealed partial class MainWindow : Window
             case CoreEvent.SessionEnded(var reason):
                 StatusText.Text = reason == "user" ? "Disconnected." : $"Disconnected: {reason}";
                 LatencyText.Text = "";
+                if (_tray is not null) _tray.Tooltip = "Annex";
                 Disconnect();
                 break;
         }
@@ -131,6 +191,7 @@ public sealed partial class MainWindow : Window
     private async Task PromptTrust(CoreEvent.TrustRequest req)
     {
         if (_core is null) return;
+        ShowFromTray(); // the dialog needs a visible window
         var dialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
@@ -169,6 +230,8 @@ public sealed partial class MainWindow : Window
 
     private void Shutdown()
     {
+        _tray?.Dispose();
+        _tray = null;
         Disconnect();
         _discovery?.Dispose();
         _discovery = null;
