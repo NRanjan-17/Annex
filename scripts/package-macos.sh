@@ -6,7 +6,8 @@
 # Signing and notarization are optional and driven by environment variables:
 #   DEVELOPER_ID_APPLICATION  e.g. "Developer ID Application: Jane Doe (TEAMID1234)"
 #   DEVELOPMENT_TEAM          Apple team ID (TEAMID1234)
-#   NOTARY_KEY_PATH, NOTARY_KEY_ID, NOTARY_ISSUER   App Store Connect API key for notarytool
+#   NOTARY_KEY_PATH, NOTARY_KEY_ID, NOTARY_ISSUER   App Store Connect API key for notarytool (CI)
+#   NOTARY_KEYCHAIN_PROFILE   or: a profile saved with `xcrun notarytool store-credentials` (local)
 # Without them the app is ad-hoc signed: fine on the machine that built it, but Gatekeeper
 # blocks it on other Macs (see docs/CICD.md).
 set -euo pipefail
@@ -50,9 +51,16 @@ hdiutil create -volname "Annex $VERSION" -srcfolder "$STAGE" -fs HFS+ -format UD
 
 if [ -n "${DEVELOPER_ID_APPLICATION:-}" ]; then
   codesign --sign "$DEVELOPER_ID_APPLICATION" --timestamp "$DMG"
+  NOTARY_AUTH=()
   if [ -n "${NOTARY_KEY_PATH:-}" ]; then
-    echo "==> Notarizing"
-    xcrun notarytool submit "$DMG" --key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
+    NOTARY_AUTH=(--key "$NOTARY_KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER")
+  elif [ -n "${NOTARY_KEYCHAIN_PROFILE:-}" ]; then
+    # Local builds: credentials saved with `xcrun notarytool store-credentials <profile>`.
+    NOTARY_AUTH=(--keychain-profile "$NOTARY_KEYCHAIN_PROFILE")
+  fi
+  if [ ${#NOTARY_AUTH[@]} -gt 0 ]; then
+    echo "==> Notarizing (takes a few minutes)"
+    xcrun notarytool submit "$DMG" "${NOTARY_AUTH[@]}" --wait
     xcrun stapler staple "$DMG"
     xcrun stapler validate "$DMG"
   fi

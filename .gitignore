@@ -44,6 +44,12 @@ BundleArtifacts/
 *.mobileprovision
 *.keychain
 *.keychain-db
+*.pem
+*.key
+*.certSigningRequest
+AuthKey_*.p8
+.env
+.env.*
 
 # --- Local outputs ---
 /dist/
