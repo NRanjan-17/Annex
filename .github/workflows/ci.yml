@@ -49,6 +49,9 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: test
+        # Stream test output live so a native crash still shows how far a test got.
+        env:
+          RUST_TEST_NOCAPTURE: ${{ runner.os == 'Windows' && '1' || '' }}
         run: cargo test --workspace --locked
 
   bench:

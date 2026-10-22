@@ -33,13 +33,16 @@ fn software_encode_then_decode() {
             return;
         }
     };
+    eprintln!("checkpoint: encoder created");
     for i in 0..30u8 {
         if i == 15 {
             enc.request_keyframe();
         }
         enc.encode(&frame(w, h, 16 + i * 4), i as i64 * 16_667).unwrap();
+        eprintln!("checkpoint: encoded frame {i}, outputs so far {}", out.lock().unwrap().len());
     }
     drop(enc);
+    eprintln!("checkpoint: encoder dropped");
     let frames = out.lock().unwrap().clone();
     assert!(frames.len() >= 20, "encoder produced only {} frames", frames.len());
     assert!(frames[0].keyframe, "first frame must be a keyframe");
@@ -48,9 +51,12 @@ fn software_encode_then_decode() {
     assert!(frames.iter().all(|f| nal_types(&f.data).iter().all(|t| *t != 0)), "every unit is Annex B");
 
     let mut dec = H264Decoder::new(None).expect("decoder");
+    eprintln!("checkpoint: decoder created");
     let mut pictures = 0;
-    for f in &frames {
-        for p in dec.decode(&f.data).expect("decode") {
+    for (i, f) in frames.iter().enumerate() {
+        let decoded = dec.decode(&f.data).expect("decode");
+        eprintln!("checkpoint: decoded unit {i} -> {} pictures", decoded.len());
+        for p in decoded {
             assert_eq!((p.width, p.visible_width, p.visible_height), (p.width, w, h));
             assert!(matches!(p.picture, Picture::Cpu { .. }));
             pictures += 1;
