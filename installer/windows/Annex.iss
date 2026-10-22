@@ -50,7 +50,6 @@ PrivilegesRequiredOverridesAllowed=dialog commandline
 LicenseFile=..\..\LICENSE
 OutputDir={#OutputDir}
 OutputBaseFilename=Annex-Setup-{#AppVersion}-{#Arch}
-SetupIconFile=
 UninstallDisplayIcon={app}\{#AppExe}
 UninstallDisplayName={#AppName}
 Compression=lzma2/max
