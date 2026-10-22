@@ -325,12 +325,17 @@ private struct ConnectPage: View {
             }
             Section {
                 Row(symbol: "network", tint: .gray, title: "Connect by address") {
-                    TextField("", text: $model.manualAddress, prompt: Text("192.168.1.20 or host:port"))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 200)
-                        .onSubmit { model.connectManual() }
-                    Button("Connect") { model.connectManual() }
-                        .disabled(model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+                    HStack(spacing: 8) {
+                        TextField("", text: $model.manualAddress, prompt: Text("192.168.1.20 or host:port"))
+                            .textFieldStyle(.roundedBorder)
+                            // Forms right-align fields by default; addresses read left to right.
+                            .multilineTextAlignment(.leading)
+                            .frame(width: 220)
+                            .onSubmit { model.connectManual() }
+                        Button("Connect") { model.connectManual() }
+                            .disabled(model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    .controlSize(.regular)
                 }
             } footer: {
                 Text("For computers on another subnet, or when discovery is blocked.")
