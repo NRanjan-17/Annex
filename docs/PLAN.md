@@ -1,4 +1,4 @@
-# Annex: Implementation Plan (draft for review)
+# Annex: Implementation Plan
 
 Status: **decisions locked (section 9); nothing built yet.** Items marked **[VERIFY]** are facts I am fairly but not fully sure of; each one gets checked before we depend on it.
 
@@ -375,6 +375,18 @@ Everything Windows: the viewer, host, driver, service, installer, and WGC/MF. Al
 | 15 | Scope: this is a very large project for one dev loop | High / Med | Strict milestone gates. M1 kept deliberately thin |
 
 ---
+
+## 8b. Changes made during implementation
+
+- **Crate layout:** M1 merged `annex-transport` into `annex-session`. FEC/ABR (`annex-media`)
+  arrive with QUIC in M5.
+- **Mac host encoder:** hardware VideoToolbox from M1 on. Apple's software H.264 encoder adds
+  ~280 ms of buffering (measured), which defeats the purpose. Software stays as a fallback only.
+  The Windows viewer uses Microsoft's software H.264 decoder in M1.
+- **Minimal Mac viewer in M1** (AVSampleBufferDisplayLayer) so the pipeline can be verified
+  end to end on a single Mac. The full Mac viewer work stays in M3.
+- **Windows tray app and installers** (Inno Setup, any install drive, full uninstall cleanup;
+  macOS .dmg with uninstaller) were pulled forward from M6 at the user's request.
 
 ## 9. Decisions (made on the recommended defaults)
 

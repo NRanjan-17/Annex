@@ -1,0 +1,148 @@
+# Annex wire protocol
+
+Version **1.0** (ALPN `annex/1`). Implemented in `core/annex-proto` (format) and
+`core/annex-session` (state machines). This document and the code must change together.
+
+## Versioning
+
+- **Major** version is in the TLS ALPN string (`annex/1`). Peers with different majors fail the
+  TLS handshake (no common ALPN) and never exchange application data.
+- **Minor** version and capabilities travel in `Hello`. Receivers **ignore unknown CBOR map
+  keys** and **skip control messages with unknown `t`** values, so minor versions can add
+  fields and message types without breaking older peers.
+- Record types are closed in 1.x: an unknown record type is a protocol error.
+
+## Transport (M1)
+
+TCP, default port **47800**, TLS 1.3 only, mutual authentication (both sides present a
+certificate). Session resumption, tickets and 0-RTT are disabled. Every connection runs a
+full handshake with fresh ephemeral keys, so captured traffic can't be replayed into a new
+session and each session has its own keys (forward secrecy). Within a session TLS's
+per-record sequence numbers and AEAD (AES-GCM / ChaCha20-Poly1305) reject replayed, reordered
+or modified records. `annex-session/tests/loopback.rs` checks this with an on-path attacker
+that flips a byte or replays a TLS record.
+
+M5 adds QUIC (same identities, ALPN and control messages; video moves to unreliable datagrams).
+
+## Identity and trust
+
+- Each device has a long-lived **Ed25519** key and a self-signed X.509 certificate
+  (subject `CN=Annex Device`, SAN `annex.local`).
+- **Device ID** = lowercase hex SHA-256 of the DER certificate (64 chars).
+- Display form for humans: first 20 hex digits, upper case, in groups of 4
+  (`AB12 CD34 EF56 7890 1234`).
+- TLS verifiers check the handshake signature (proof of key possession) but not trust. After
+  the handshake each side looks the peer's device ID up in its trust store. Unknown peers
+  trigger a `trust_request` event; the user compares display fingerprints and accepts or
+  rejects. Accepted IDs are pinned. A viewer connecting to an already-trusted host passes the
+  expected ID so the TLS handshake itself fails on any other certificate.
+- `Hello.device_id` must equal the TLS peer's device ID or the session is aborted.
+- M2 replaces the visual comparison with PIN/QR pairing (SPAKE2 bound to the TLS exporter).
+
+## Record framing
+
+```
++--------+----------------+------------------------+
+| type:1 | length:4 (BE)  | payload (length bytes) |
++--------+----------------+------------------------+
+```
+
+| Type | Meaning | Max payload |
+|---|---|---|
+| `0x01` | Control message (CBOR) | 64 KiB |
+| `0x02` | Video access unit | 16 MiB |
+
+## Control messages
+
+A CBOR map with a text key `t` holding the message type. Field names are snake_case.
+
+| `t` | Direction | Fields |
+|---|---|---|
+| `hello` | both, first message | `proto_major` u16, `proto_minor` u16, `device_name` text (≤ 64 bytes), `device_id` text (64 hex), `app_version` text, `roles` [`host`\|`viewer`], `caps` [text] |
+| `session_request` | viewer → host | `mode` (`mirror`\|`extend`), `display` DisplayInfo, `codecs` [`h264`\|`hevc`\|`raw`], `input` bool |
+| `session_accept` | host → viewer | `stream` StreamConfig |
+| `session_reject` | host → viewer | `reason` text (`busy`, `extend_not_supported`, `no_common_codec`, ...) |
+| `stream_config` | host → viewer | StreamConfig (sent when resolution/fps change mid-session) |
+| `keyframe_request` | viewer → host | — |
+| `clock_ping` | viewer → host | `seq` u32, `t_viewer_us` i64 |
+| `clock_pong` | host → viewer | `seq` u32, `t_viewer_us` i64 (echoed), `t_host_us` i64 |
+| `bye` | both | `reason` text (`user`, `host_stopped`, `not_trusted`, ...) |
+
+**DisplayInfo**: `width_px`, `height_px` (required); `width_mm`, `height_mm`, `refresh_hz`,
+`scale_percent` (100 = 1x, 200 = Retina), optional with defaults 0/0/0/100.
+
+**StreamConfig**: `codec`, `width`, `height`, `fps`, all required and non-zero.
+
+## Video records
+
+```
++-------------+-----------------+---------+-------------+------------------+
+| frame_id:4  | capture_ts_us:8 | flags:1 | reserved:3  | access unit ...  |
++-------------+-----------------+---------+-------------+------------------+
+```
+
+- Big-endian. `flags` bit 0 = keyframe (IDR). Reserved bytes are zero and ignored.
+- `frame_id` increases by one per frame the host accepted from its encoder. Gaps mean frames
+  were dropped on congestion.
+- `capture_ts_us` is on the host's monotonic clock.
+- H.264/HEVC payloads are **Annex B** byte streams (start codes). Keyframes carry SPS/PPS
+  (and VPS for HEVC) so decoding can start at any keyframe.
+
+## Session flow
+
+```
+viewer                                   host
+  | TCP connect + TLS 1.3 (mutual auth)    |
+  |--------------- hello ----------------->|
+  |<-------------- hello ------------------|
+  |  (each side: trusted? else prompt user)|
+  |---------- session_request ------------>|
+  |<--------- session_accept --------------|   or session_reject / bye{not_trusted}
+  |<===== video (keyframe first) ==========|
+  |----- clock_ping / keyframe_request --->|
+  |<----- clock_pong / stream_config ------|
+  |------------------ bye ---------------->|   either side may send bye, then close
+```
+
+The host serves one viewer at a time in M1; others get `session_reject{busy}`. After dropping
+frames under congestion, the host withholds delta frames until the encoder produces a keyframe.
+
+## Clock synchronisation and latency
+
+The viewer sends `clock_ping` every 250 ms for 5 s, then every second. For each pong:
+`rtt = t1 - t0`, `offset = t_host - (t0 + rtt/2)`. The estimate uses the sample with the
+lowest RTT among the last 16. A frame's capture time on the viewer clock is
+`capture_ts_us - offset`; capture→display latency is measured when the app reports the frame
+presented.
+
+## Discovery (mDNS / DNS-SD)
+
+Service type `_annex._tcp.local.`. Instance name `<device name> (<first 4 hex of id>)`.
+TXT records:
+
+| Key | Value |
+|---|---|
+| `v` | protocol major (`1`) |
+| `id` | device ID (64 hex). Public; identifies, never authenticates |
+| `name` | device name |
+| `role` | `host` |
+
+No secrets are ever placed in TXT records.
+
+## FFI events (core ↔ native apps)
+
+JSON objects with a `type` field, delivered through the C ABI (`annex.h`):
+
+| `type` | Fields |
+|---|---|
+| `listening` | `port` |
+| `connecting` | `address` |
+| `trust_request` | `request_id`, `peer_name`, `peer_role` (`host`\|`viewer`), `fingerprint`, `fingerprint_display` |
+| `session_started` | `peer_name`, `fingerprint`, `stream`, `viewer_display` (host side only) |
+| `stream_config` | `stream` |
+| `keyframe_requested` | — |
+| `latency_stats` | `frames`, `fps`, `p50_ms`, `p95_ms`, `p99_ms`, `max_ms`, `clock_rtt_ms`? |
+| `session_ended` | `reason` (always the last event of a session) |
+| `error` | `message` |
+| `peer_found` | `instance`, `name`, `addresses`, `port`, `fingerprint`?, `proto_major`? |
+| `peer_lost` | `instance` |
