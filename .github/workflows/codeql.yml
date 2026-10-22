@@ -7,9 +7,10 @@ on:
   schedule:
     - cron: "17 4 * * 1"
 
+# Superseded runs on PRs/branches are cancelled; every push to main gets a complete run.
 concurrency:
   group: codeql-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
