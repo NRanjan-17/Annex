@@ -720,6 +720,15 @@ pub extern "C" fn annex_win_extend_status_json() -> *mut c_char {
     out_string(&serde_json::json!({ "state": state, "problem": problem, "test_signing": test_signing }).to_string())
 }
 
+/// Windows: graphics cards to choose from for sharing, `[{name, luid}]` (the first is the default).
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+pub extern "C" fn annex_win_gpus_json() -> *mut c_char {
+    let list: Vec<serde_json::Value> =
+        annex_media_win::gpus().into_iter().map(|g| serde_json::json!({ "name": g.name, "luid": g.luid })).collect();
+    out_string(&serde_json::Value::Array(list).to_string())
+}
+
 /// Windows: host a monitor. The core captures (Windows.Graphics.Capture), encodes (hardware
 /// H.264 when available) and streams while a viewer is connected. Events are the same as
 /// annex_host_start's.
@@ -732,6 +741,7 @@ pub unsafe extern "C" fn annex_host_start_screen(
     port: u16,
     advertise: bool,
     prefer_hardware: bool,
+    gpu_luid: u64,
     on_event: AnnexEventCallback,
     ctx: *mut c_void,
     out: *mut *mut AnnexHost,
@@ -741,13 +751,14 @@ pub unsafe extern "C" fn annex_host_start_screen(
         if out.is_null() {
             return Err(invalid("out is null"));
         }
+        let gpu = (gpu_luid != 0).then_some(gpu_luid);
         let monitor = annex_media_win::monitors()
             .into_iter()
             .nth(monitor_index as usize)
             .ok_or_else(|| invalid("no such monitor"))?;
         let callbacks = Callbacks::new(on_event, None, ctx);
         let (host, screen) =
-            win_host::start(c, monitor, port, prefer_hardware, callbacks.event_sink()).map_err(failed)?;
+            win_host::start(c, monitor, port, prefer_hardware, gpu, callbacks.event_sink()).map_err(failed)?;
         let advert = if advertise {
             c.begin_hosting();
             let d = c.discovery()?;
@@ -888,6 +899,7 @@ mod win_host {
             );
             let weak_host = Arc::downgrade(&host);
             let prefer_hardware = self.prefer_hardware;
+            let gpu = self.mirror_cfg.gpu;
             let start = move |m: &Monitor| -> Option<(u32, u32)> {
                 let host = weak_host.upgrade()?;
                 let (w, h) = (m.width & !1, m.height & !1);
@@ -905,6 +917,7 @@ mod win_host {
                     fps: hz,
                     bitrate: bitrate(w, h, hz),
                     prefer_hardware,
+                    gpu,
                 };
                 match HostPipeline::start(cfg, clock(), output) {
                     Ok(p) => {
@@ -1033,6 +1046,7 @@ mod win_host {
         monitor: Monitor,
         port: u16,
         prefer_hardware: bool,
+        gpu: Option<u64>,
         app_events: EventSink,
     ) -> Result<(Arc<HostHandle>, Arc<ScreenState>), annex_session::SessionError> {
         // Hardware encoders handle 1440p60 comfortably; the software fallback is sized for 1080p.
@@ -1055,6 +1069,7 @@ mod win_host {
                 fps,
                 bitrate: bitrate(width, height, fps),
                 prefer_hardware,
+                gpu,
             },
             prefer_hardware,
             host: OnceLock::new(),

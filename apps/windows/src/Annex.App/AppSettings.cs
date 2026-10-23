@@ -10,6 +10,8 @@ public sealed class AppSettings
     /// <summary>The name other devices see; null = the PC's name.</summary>
     public string? DeviceName { get; set; }
     public bool PreferHardwareEncoder { get; set; } = true;
+    /// <summary>Graphics card for sharing (adapter LUID); 0 = automatic.</summary>
+    public ulong GpuLuid { get; set; }
     public bool StartSharingAtLaunch { get; set; }
     /// <summary>Viewer: ask hosts to let this PC's mouse and keyboard control them. On by default: the
     /// sharing computer still decides per device (Paired devices), so asking is harmless.</summary>

@@ -454,8 +454,16 @@ fn hardware_encoders(adapter: Option<u64>) -> Result<Vec<IMFActivate>, MediaErro
         let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
         let mut count = 0u32;
         let flags = MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER;
-        if MFTEnum2(MFT_CATEGORY_VIDEO_ENCODER, flags, Some(&input), Some(&output), attrs.as_ref(), &mut activates, &mut count)
-            .is_err()
+        if MFTEnum2(
+            MFT_CATEGORY_VIDEO_ENCODER,
+            flags,
+            Some(&input),
+            Some(&output),
+            attrs.as_ref(),
+            &mut activates,
+            &mut count,
+        )
+        .is_err()
         {
             return Ok(Vec::new());
         }

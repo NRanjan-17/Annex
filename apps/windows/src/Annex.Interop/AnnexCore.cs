@@ -69,6 +69,10 @@ public static class AnnexNative
     public static string DisplayFingerprint(string fp) => NativeMethods.TakeString(NativeMethods.annex_display_fingerprint(fp));
 
     /// <summary>Windows only: connected monitors, main display first.</summary>
+    /// <summary>Windows only: graphics cards to choose from for sharing (the first is the default).</summary>
+    public static IReadOnlyList<GpuInfo> Gpus() =>
+        AnnexJson.Deserialize<GpuInfo[]>(NativeMethods.TakeString(NativeMethods.annex_win_gpus_json()));
+
     /// <summary>Writes the core's log to annex.log in the data folder while on. Off by default.</summary>
     public static void SetLogEnabled(bool enabled) => NativeMethods.annex_set_log_enabled(enabled);
 
@@ -153,10 +157,10 @@ public sealed unsafe class HostHandle : IDisposable
 
     /// <summary>Windows only: share a monitor. Capture and encoding run in the core.</summary>
     public static HostHandle StartScreen(CoreClient core, int monitorIndex, ushort port, bool advertise, bool preferHardware,
-        Action<CoreEvent> onEvent)
+        Action<CoreEvent> onEvent, ulong gpuLuid = 0)
     {
         var target = new CallbackTarget(onEvent);
-        if (NativeMethods.annex_host_start_screen(core.Raw, (uint)monitorIndex, port, advertise, preferHardware,
+        if (NativeMethods.annex_host_start_screen(core.Raw, (uint)monitorIndex, port, advertise, preferHardware, gpuLuid,
                 CallbackTarget.EventCallback, target.Context, out var raw) < 0)
         {
             target.Dispose();

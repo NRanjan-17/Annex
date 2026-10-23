@@ -28,6 +28,9 @@ public sealed record PeerInfo(string Instance, string Name, string[] Addresses, 
 /// Device Manager code) or "not_installed".</summary>
 public sealed record ExtendStatus(string State, uint Problem, bool TestSigning);
 
+/// <summary>A graphics card: <c>Luid</c> identifies it for sharing (0 = Windows' default).</summary>
+public sealed record GpuInfo(string Name, ulong Luid);
+
 /// <summary><c>AllowInput</c>: host side, the device may control this PC's mouse and keyboard.</summary>
 public sealed record TrustedPeer(string Fingerprint, string Name, ulong AddedAt, ulong LastSeen, bool AllowInput = false);
 
@@ -147,6 +150,7 @@ internal sealed record InstanceDto(string Instance);
 [JsonSerializable(typeof(CoreEvent.DirectLinkOffer))]
 [JsonSerializable(typeof(CoreEvent.DirectLinkUnavailable))]
 [JsonSerializable(typeof(ExtendStatus))]
+[JsonSerializable(typeof(GpuInfo[]))]
 [JsonSerializable(typeof(LatencyStats))]
 [JsonSerializable(typeof(PeerInfo))]
 [JsonSerializable(typeof(DisplayInfo))]

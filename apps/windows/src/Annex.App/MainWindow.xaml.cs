@@ -363,9 +363,30 @@ public sealed partial class MainWindow : Window
         }
 
         p.Children.Add(Ui.Section("Video"));
+        var gpus = TryGpus();
+        if (gpus.Count > 1)
+        {
+            var names = new List<string> { "Automatic" };
+            names.AddRange(gpus.Select(g => g.Name));
+            var selected = gpus.FindIndex(g => g.Luid == _settings.GpuLuid) + 1;
+            var gpuBox = new ComboBox { ItemsSource = names, SelectedIndex = selected, MinWidth = 220, IsEnabled = _host is null };
+            gpuBox.SelectionChanged += (_, _) =>
+            {
+                _settings.GpuLuid = gpuBox.SelectedIndex <= 0 ? 0 : gpus[gpuBox.SelectedIndex - 1].Luid;
+                _settings.Save();
+            };
+            p.Children.Add(Ui.Card("", "Graphics card",
+                _host is null ? "Automatic uses the one driving this screen." : "Stop sharing to change this.", gpuBox));
+        }
         p.Children.Add(Ui.Card("", "Hardware video encoder",
             _host is null ? "Recommended. Lowest delay." : "Stop sharing to change this.",
             Ui.Switch(_settings.PreferHardwareEncoder, on => { _settings.PreferHardwareEncoder = on; _settings.Save(); }, enabled: _host is null)));
+    }
+
+    private static List<GpuInfo> TryGpus()
+    {
+        try { return [.. AnnexNative.Gpus()]; }
+        catch (Exception e) when (e is AnnexException or EntryPointNotFoundException) { return []; }
     }
 
     private static ExtendStatus? TryExtendStatus()
@@ -837,12 +858,12 @@ public sealed partial class MainWindow : Window
         {
             try
             {
-                _host = HostHandle.StartScreen(_core, _monitorIndex, DefaultPort, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)));
+                _host = HostHandle.StartScreen(_core, _monitorIndex, DefaultPort, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)), _settings.GpuLuid);
             }
             catch (AnnexException)
             {
                 // Default port busy: take any free port (discovery advertises it).
-                _host = HostHandle.StartScreen(_core, _monitorIndex, 0, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)));
+                _host = HostHandle.StartScreen(_core, _monitorIndex, 0, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)), _settings.GpuLuid);
             }
             if (_tray is not null) _tray.Tooltip = "Annex — sharing this screen";
         }

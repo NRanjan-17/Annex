@@ -88,6 +88,9 @@ internal static unsafe partial class NativeMethods
     /// <summary>Windows only.</summary>
     [LibraryImport(Lib)] public static partial nint annex_win_monitors_json();
 
+    /// <summary>Windows only.</summary>
+    [LibraryImport(Lib)] public static partial nint annex_win_gpus_json();
+
     [LibraryImport(Lib)] public static partial void annex_set_log_enabled([MarshalAs(UnmanagedType.U1)] bool enabled);
 
     /// <summary>Windows only.</summary>
@@ -99,7 +102,7 @@ internal static unsafe partial class NativeMethods
     /// <summary>Windows only: the core captures and encodes the monitor while a viewer is connected.</summary>
     [LibraryImport(Lib)]
     public static partial int annex_host_start_screen(nint core, uint monitorIndex, ushort port,
-        [MarshalAs(UnmanagedType.U1)] bool advertise, [MarshalAs(UnmanagedType.U1)] bool preferHardware,
+        [MarshalAs(UnmanagedType.U1)] bool advertise, [MarshalAs(UnmanagedType.U1)] bool preferHardware, ulong gpuLuid,
         delegate* unmanaged<nint, nint, void> onEvent, nint ctx, out nint host);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]

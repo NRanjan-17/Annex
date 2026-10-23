@@ -3,8 +3,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Foundation::LUID;
+use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN};
 use windows::Win32::Graphics::Direct3D11::*;
+use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIAdapter, IDXGIFactory4};
 
 use super::MediaError;
 use super::capture::ScreenCapture;
@@ -22,6 +24,38 @@ pub struct HostPipelineConfig {
     pub fps: u32,
     pub bitrate: u32,
     pub prefer_hardware: bool,
+    /// Graphics card to capture and encode on (adapter LUID); None = Windows' default.
+    pub gpu: Option<u64>,
+}
+
+/// A graphics card the user can pick for sharing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Gpu {
+    pub name: String,
+    /// Adapter LUID, packed as (HighPart << 32) | LowPart.
+    pub luid: u64,
+}
+
+/// Hardware graphics cards, in Windows' order (the first is the default).
+pub fn gpus() -> Vec<Gpu> {
+    let mut out: Vec<Gpu> = Vec::new();
+    // SAFETY: plain DXGI enumeration.
+    unsafe {
+        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory4>() else { return out };
+        for i in 0.. {
+            let Ok(adapter) = factory.EnumAdapters1(i) else { break };
+            let Ok(desc) = adapter.GetDesc1() else { continue };
+            if desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 {
+                continue;
+            }
+            let len = desc.Description.iter().position(|c| *c == 0).unwrap_or(desc.Description.len());
+            let luid = ((desc.AdapterLuid.HighPart as u32 as u64) << 32) | desc.AdapterLuid.LowPart as u64;
+            if !out.iter().any(|g| g.luid == luid) {
+                out.push(Gpu { name: String::from_utf16_lossy(&desc.Description[..len]), luid });
+            }
+        }
+    }
+    out
 }
 
 enum Encoder {
@@ -51,12 +85,18 @@ struct SendCapture(#[allow(dead_code)] ScreenCapture);
 unsafe impl Send for SendCapture {}
 unsafe impl Sync for SendCapture {}
 
-fn create_device() -> Result<ID3D11Device, MediaError> {
+fn create_device(gpu: Option<u64>) -> Result<ID3D11Device, MediaError> {
     unsafe {
+        // The chosen graphics card, if it's still there; otherwise Windows' default.
+        let adapter: Option<IDXGIAdapter> = gpu.and_then(|luid| {
+            let factory = CreateDXGIFactory1::<IDXGIFactory4>().ok()?;
+            let luid = LUID { LowPart: luid as u32, HighPart: (luid >> 32) as i32 };
+            factory.EnumAdapterByLuid::<IDXGIAdapter>(luid).ok()
+        });
         let mut device = None;
         D3D11CreateDevice(
-            None,
-            D3D_DRIVER_TYPE_HARDWARE,
+            adapter.as_ref(),
+            if adapter.is_some() { D3D_DRIVER_TYPE_UNKNOWN } else { D3D_DRIVER_TYPE_HARDWARE },
             Default::default(),
             D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
             None,
@@ -92,7 +132,7 @@ impl HostPipeline {
         clock: Arc<dyn Fn() -> i64 + Send + Sync>,
         output: OutputFn,
     ) -> Result<Self, MediaError> {
-        let device = create_device()?;
+        let device = create_device(cfg.gpu)?;
         let ecfg = EncoderConfig { width: cfg.width, height: cfg.height, fps: cfg.fps, bitrate: cfg.bitrate };
         let encoder = if cfg.prefer_hardware {
             match HardwareEncoder::new(&device, ecfg, output.clone()) {
