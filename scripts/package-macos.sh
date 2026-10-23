@@ -23,8 +23,11 @@ NUMERIC_VERSION="${VERSION%%[-+]*}"
 
 SIGN_ARGS=(CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual)
 if [ -n "${DEVELOPER_ID_APPLICATION:-}" ]; then
+  # No injected base entitlements: a plain `xcodebuild build` adds get-task-allow (debugging),
+  # which Apple's notary service rejects.
   SIGN_ARGS=(CODE_SIGN_IDENTITY="$DEVELOPER_ID_APPLICATION" CODE_SIGN_STYLE=Manual
-             DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-}" OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime")
+             DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-}" OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime"
+             CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO)
 fi
 
 echo "==> Building Annex $VERSION (universal, Release)"
@@ -39,6 +42,10 @@ APP="$BUILD/DerivedData/Build/Products/Release/Annex.app"
 [ -d "$APP" ] || { echo "error: build failed, $APP missing"; exit 1; }
 lipo -info "$APP/Contents/MacOS/Annex"
 codesign --verify --strict --verbose=1 "$APP"
+if [ -n "${DEVELOPER_ID_APPLICATION:-}" ] && codesign -d --entitlements - "$APP" 2>/dev/null | grep -q get-task-allow; then
+  echo "error: the signed app still has the get-task-allow entitlement; notarization would fail"
+  exit 1
+fi
 
 echo "==> Creating $DMG"
 rm -rf "$STAGE"
@@ -72,7 +79,14 @@ if [ -n "${DEVELOPER_ID_APPLICATION:-}" ]; then
   fi
   if [ ${#NOTARY_AUTH[@]} -gt 0 ]; then
     echo "==> Notarizing (takes a few minutes)"
-    xcrun notarytool submit "$DMG" "${NOTARY_AUTH[@]}" --wait
+    OUT="$(xcrun notarytool submit "$DMG" "${NOTARY_AUTH[@]}" --wait 2>&1)"; echo "$OUT"
+    if ! grep -q "status: Accepted" <<<"$OUT"; then
+      # Apple's log lists each problem (no secrets in it).
+      ID="$(sed -n 's/^ *id: //p' <<<"$OUT" | head -1)"
+      [ -n "$ID" ] && xcrun notarytool log "$ID" "${NOTARY_AUTH[@]}" || true
+      echo "error: notarization was not accepted"
+      exit 1
+    fi
     xcrun stapler staple "$DMG"
     xcrun stapler validate "$DMG"
   fi
