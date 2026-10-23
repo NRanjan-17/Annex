@@ -109,6 +109,7 @@ pub fn connect_viewer(core: Arc<Core>, cfg: ViewerConfig, events: EventSink, fra
             Ok(r) | Err(SessionError::Rejected(r)) => r,
             Err(e) => e.to_string(),
         };
+        tracing::info!(%reason, "viewer session ended");
         events(Event::SessionEnded { session_id: 0, reason });
     });
     ViewerHandle { cmd, task: Mutex::new(Some(task)) }

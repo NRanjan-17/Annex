@@ -313,6 +313,13 @@ fn init_logging(data_dir: &std::path::Path) {
             .with_max_level(tracing::Level::INFO)
             .with_target(false)
             .try_init();
+        // Panics on background threads don't end the process, but they explain what stopped working.
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let thread = std::thread::current();
+            tracing::error!(thread = thread.name().unwrap_or("?"), "panic: {info}");
+            previous(info);
+        }));
         tracing::info!(version = env!("CARGO_PKG_VERSION"), os = std::env::consts::OS, "annex core started");
     });
 }
