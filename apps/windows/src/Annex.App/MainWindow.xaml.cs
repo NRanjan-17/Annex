@@ -329,7 +329,7 @@ public sealed partial class MainWindow : Window
     private void SharePage(StackPanel p)
     {
         p.Children.Add(Ui.Hero("", "Share this PC",
-            "Let another computer show this screen or use it as an extra display."));
+            "Let another computer show this screen, or extend this display onto it."));
         UpdateBanner(p);
         var action = _host is null
             ? Ui.Button("Start sharing", () => SetHosting(true), accent: true)
@@ -355,7 +355,7 @@ public sealed partial class MainWindow : Window
         {
             p.Children.Add(Ui.Section("Connect from another computer"));
             p.Children.Add(Ui.Card("", $"1. Open Annex on the other computer and choose “{_core?.DeviceName}”."));
-            p.Children.Add(Ui.Card("", "2. Pick Show its screen or Be its extra display."));
+            p.Children.Add(Ui.Card("", "2. Pick Show its screen or Extend display."));
             p.Children.Add(Ui.Card("", "3. Enter the PIN shown here (first time only).", ShowTech ? $"Identity code: {Fingerprint}" : null));
             var addresses = LocalAddresses();
             p.Children.Add(Ui.Card("", addresses.Count == 0 ? "This PC isn't on a network." : "Not listed there? Connect by address:",
@@ -386,7 +386,7 @@ public sealed partial class MainWindow : Window
             p.Children.Add(Ui.Section("Connected now"));
             foreach (var (id, s) in _sessions)
             {
-                var title = s.Mode == "extend" ? $"{s.Name} is an extra display for this PC" : $"{s.Name} is showing this screen";
+                var title = s.Mode == "extend" ? $"{s.Name} is extending this display" : $"{s.Name} is showing this screen";
                 var detail = s.Mode == "extend" ? "Arrange it in Settings → System → Display" :
                     ShowTech && _hostStream is { } st ? $"{st.Width}×{st.Height} at {st.Fps} fps" : null;
                 if (s.Input) detail = (detail is null ? "" : detail + " · ") + "using your mouse and keyboard";
@@ -415,11 +415,11 @@ public sealed partial class MainWindow : Window
         switch (x.State)
         {
             case "ready":
-                p.Children.Add(Ui.Card("", "Extra displays are ready",
+                p.Children.Add(Ui.Card("", "Extend display is ready",
                     "Other computers can be a second screen for this PC."));
                 break;
             case "not_installed":
-                p.Children.Add(Ui.Card("", "Extra displays aren't set up",
+                p.Children.Add(Ui.Card("", "Extend display isn't set up",
                     "Run the installer again and tick the Extend-mode display driver."));
                 break;
             default:
@@ -434,7 +434,7 @@ public sealed partial class MainWindow : Window
                     Clipboard.SetContent(data);
                     copy.Content = "Copied";
                 };
-                p.Children.Add(Ui.Card("", "Extra displays aren't working", why));
+                p.Children.Add(Ui.Card("", "Extend display isn't working", why));
                 break;
         }
     }
@@ -478,7 +478,7 @@ public sealed partial class MainWindow : Window
     private StackPanel ConnectButtons(Action<bool> connect, PeerInfo? peer = null)
     {
         var show = Ui.Button("Show its screen here", () => connect(false), accent: true);
-        var extend = Ui.Button("Be its extra display", () => connect(true));
+        var extend = Ui.Button("Extend display", () => connect(true));
         ToolTipService.SetToolTip(show, "Use the other computer's screen on this PC.");
         ToolTipService.SetToolTip(extend, peer?.Extend == false
             ? "Extend isn't set up on that computer."
@@ -553,7 +553,7 @@ public sealed partial class MainWindow : Window
     /// <summary>Session-end codes from the core, in words.</summary>
     private static string FriendlyReason(string reason, string peer) => reason switch
     {
-        "extend_not_supported" => $"{peer} can't add an extra display. Set up Extend on that computer, or use Show its screen.",
+        "extend_not_supported" => $"{peer} can't extend its display. Set up Extend on that computer, or use Show its screen.",
         "busy" => $"{peer} is already sharing with 4 computers.",
         "pairing_failed" => "Wrong PIN. Try again.",
         "pairing_cancelled" => "Pairing was cancelled on the other computer.",
@@ -569,7 +569,7 @@ public sealed partial class MainWindow : Window
     private void ConnectPage(StackPanel p)
     {
         p.Children.Add(Ui.Hero("", "Connect",
-            "Show another computer's screen here, or be its extra display."));
+            "Show another computer's screen here, or extend its display onto this one."));
         UpdateBanner(p);
         ViewerStatus(p);
 
@@ -700,11 +700,11 @@ public sealed partial class MainWindow : Window
         if (!peer.Sharing)
             p.Children.Add(Ui.Info("Not sharing", $"Start sharing on {peer.Name} first.", InfoBarSeverity.Informational));
         var show = Ui.Button("Show its screen", () => { _extend = false; ConnectToPeer(peer); }, accent: true);
-        var extend = Ui.Button("Be its extra display", () => { _extend = true; ConnectToPeer(peer); });
+        var extend = Ui.Button("Extend display", () => { _extend = true; ConnectToPeer(peer); });
         show.IsEnabled = _viewer is null && peer.Sharing;
         extend.IsEnabled = _viewer is null && peer.Sharing && peer.Extend != false;
         p.Children.Add(Ui.Card("", "Show its screen here", $"Use {peer.Name}'s screen on this PC.", show));
-        p.Children.Add(Ui.Card("", "Be its extra display", $"This PC becomes a second screen for {peer.Name}.", extend));
+        p.Children.Add(Ui.Card("", "Extend display", $"This PC becomes a second screen for {peer.Name}.", extend));
         if (!ShowTech) return;
         p.Children.Add(Ui.Section("Details"));
         p.Children.Add(Ui.Card("", "Addresses", $"{string.Join(", ", peer.Addresses)} · port {peer.Port}"));
@@ -781,7 +781,7 @@ public sealed partial class MainWindow : Window
         };
         p.Children.Add(Ui.Card("", "Quality",
             "Use Fast on Wi-Fi.", quality));
-        p.Children.Add(Ui.Card("", "Use as an extra display by default", null,
+        p.Children.Add(Ui.Card("", "Extend display by default", null,
             Ui.Switch(_settings.ExtendByDefault, on => { _settings.ExtendByDefault = on; _extend = on; _settings.Save(); })));
         p.Children.Add(Ui.Card("", "Control the other computer",
             "When it allows it. Press Ctrl+Alt+Shift+Q to leave.",
@@ -1288,7 +1288,7 @@ public sealed partial class MainWindow : Window
                 _viewerStatus = $"Pairing with {f.PeerName} didn't finish. Check the PIN and try again.";
                 break;
             case CoreEvent.SessionStarted s:
-                _viewerStatus = (s.Mode == "extend" ? $"Extra display for {s.PeerName}" : $"Viewing {s.PeerName}")
+                _viewerStatus = (s.Mode == "extend" ? $"Extending {s.PeerName}'s display" : $"Viewing {s.PeerName}")
                     + (s.Link == "direct" ? " · cable" : "");
                 _viewingName = s.PeerName;
                 _viewerFingerprint = s.Fingerprint;

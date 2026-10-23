@@ -82,7 +82,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; The virtual display driver for Extend mode. Off by default; needs an all-users (administrator) install.
 ; driver-trust.ps1 signs it on this PC with a one-off certificate whose private key is deleted straight
 ; away, so Windows loads it without test signing.
-Name: "extenddriver"; Description: "Install the Extend-mode display driver (lets another computer be an extra display for this PC)"; GroupDescription: "Extend mode:"; Flags: unchecked; Check: IsAdminInstallMode
+Name: "extenddriver"; Description: "Install the Extend-mode display driver (lets this PC extend its display onto another computer)"; GroupDescription: "Extend mode:"; Flags: unchecked; Check: IsAdminInstallMode
 #endif
 
 [Files]

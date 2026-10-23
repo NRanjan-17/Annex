@@ -269,7 +269,7 @@ private struct SharePage: View {
     private var sharePage: some View {
         Page(title: "Share This Mac") {
             Hero(title: "Share This Mac",
-                 text: "Let another computer show this screen or use it as an extra display.",
+                 text: "Let another computer show this screen, or extend this display onto it.",
                  symbol: "display.2", tint: .blue)
             UpdateBanner(updater: model.updater)
             Section {
@@ -330,7 +330,7 @@ private struct SharePage: View {
                 Section("Connected now") {
                     ForEach(s.viewers) { v in
                         Row(symbol: v.extend ? "rectangle.split.2x1" : "rectangle.on.rectangle", tint: .green,
-                            title: v.extend ? "\(v.name) is an extra display" : "Showing this screen on \(v.name)",
+                            title: v.extend ? "\(v.name) is extending this display" : "Showing this screen on \(v.name)",
                             subtitle: v.extend ? "Arrange it in System Settings → Displays."
                                 : model.settings.showTechnicalDetails
                                     ? s.stream.map { "\($0.width)×\($0.height) at \($0.fps) fps" } : nil) {
@@ -377,7 +377,7 @@ private struct HowToConnect: View {
     var body: some View {
         Section {
             Row(symbol: "1.circle.fill", tint: .blue, title: "Open Annex on the other computer and choose “\(model.deviceName)”.") { EmptyView() }
-            Row(symbol: "2.circle.fill", tint: .blue, title: "Pick Show Its Screen or Be Its Extra Display.") { EmptyView() }
+            Row(symbol: "2.circle.fill", tint: .blue, title: "Pick Show Its Screen or Extend Display.") { EmptyView() }
             Row(symbol: "3.circle.fill", tint: .blue, title: "Enter the PIN shown here (first time only).") { EmptyView() }
             if addresses.isEmpty {
                 Row(symbol: "wifi.exclamationmark", tint: .orange, title: "This Mac isn't on a network.",
@@ -457,7 +457,7 @@ private struct ConnectButtons: View {
                 model.extendMode = true
                 connect()
             } label: {
-                Label("Be Its Extra Display", systemImage: "rectangle.split.2x1")
+                Label("Extend Display", systemImage: "rectangle.split.2x1")
             }
             .help(peer?.canExtend == false
                   ? "Extend isn't set up on that computer."
@@ -475,7 +475,7 @@ private struct ConnectPage: View {
     var body: some View {
         Page(title: "Connect") {
             Hero(title: "Connect",
-                 text: "Show another computer's screen here, or be its extra display.",
+                 text: "Show another computer's screen here, or extend its display onto this one.",
                  symbol: "rectangle.connected.to.line.below", tint: .indigo)
             UpdateBanner(updater: model.updater)
             ViewerStatusSection(model: model)
@@ -631,9 +631,9 @@ private struct PeerPage: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.isViewing || !peer.isSharing)
                 }
-                Row(symbol: "rectangle.split.2x1", tint: .blue, title: "Be its extra display",
+                Row(symbol: "rectangle.split.2x1", tint: .blue, title: "Extend display",
                     subtitle: "This Mac becomes a second screen for \(peer.name).") {
-                    Button("Be Its Extra Display") {
+                    Button("Extend Display") {
                         model.extendMode = true
                         model.connect(to: peer)
                     }
@@ -753,7 +753,7 @@ private struct SettingsPage: View {
             Row(symbol: "arrow.up.left.and.arrow.down.right", tint: .purple, title: "Open in full screen") {
                 Toggle("", isOn: $settings.openFullScreen).toggleStyle(.switch).labelsHidden()
             }
-            Row(symbol: "rectangle.split.2x1", tint: .indigo, title: "Use as an extra display by default") {
+            Row(symbol: "rectangle.split.2x1", tint: .indigo, title: "Extend display by default") {
                 Toggle("", isOn: $settings.extendByDefault).toggleStyle(.switch).labelsHidden()
             }
             Row(symbol: "keyboard", tint: .orange, title: "Control the other computer",

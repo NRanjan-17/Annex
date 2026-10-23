@@ -24,7 +24,7 @@
 | | |
 |---|---|
 | **Mirror** | See and use another computer's screen on this one. |
-| **Extend** | Turn this computer into an **extra display** for the other one: drag windows onto it like a real monitor. |
+| **Extend display** | Turn this computer into a **second screen** for the other one: drag windows onto it like a real monitor. |
 | **Control** *(optional)* | Use this computer's mouse and keyboard on the other one. Off by default, allowed per device. |
 
 Works **Mac ↔ Mac, Mac ↔ Windows and Windows ↔ Windows**, in either direction.
@@ -77,7 +77,7 @@ Annex on both: each shows the other under **Nearby** within a few seconds.
 
 1. Pick the sharing computer under **Nearby**, then choose:
    - **Show its screen here**: see and use the sharing computer's screen.
-   - **Be its extra display**: this computer becomes a second screen for the sharing one.
+   - **Extend display**: this computer becomes a second screen for the sharing one.
 2. **The first time only**, the sharing computer shows a **6-digit PIN**. Type it here. After
    that, the two connect without a PIN.
 
@@ -92,9 +92,9 @@ sharing computer shows. Guest Wi-Fi, VPNs and company networks can hide computer
 Everything you can change is in **Settings**: General, Sharing, Viewing, Paired devices, Updates,
 Developer and About. On a Mac, press **⌘,**.
 
-### Extra display (Extend)
+### Extend display
 
-Choose **Be its extra display** (or turn on *Use as an extra display by default* in
+Choose **Extend display** (or turn on *Extend display by default* in
 **Settings → Viewing**). The sharing computer gets a new display called **Annex Display**:
 
 - **Mac:** arrange it and pick its resolution in System Settings → Displays.
@@ -156,8 +156,8 @@ made just for it and deletes that certificate's private key straight away, so Wi
 driver without test signing and nothing else can ever be signed with it. Uninstalling removes the
 driver and the certificate.
 
-**Share this PC** shows whether extra displays are ready. Mirroring, and using a Windows PC as an
-extra display for a **Mac**, don't need the driver.
+**Share this PC** shows whether Extend display is ready. Mirroring, and extending a **Mac**'s display
+onto a Windows PC, don't need the driver.
 
 ### Updates
 
@@ -189,7 +189,7 @@ Details: [docs/SECURITY.md](docs/SECURITY.md) · [docs/PROTOCOL.md](docs/PROTOCO
 |---|---|
 | The other computer isn't under **Nearby** | Same network (not guest Wi-Fi or a VPN)? Click **Refresh** next to Nearby. On Windows: **Connect → Not showing up? → Allow** (firewall) and set the network to *Private*. On a Mac: allow Annex in **Privacy & Security → Local Network**. Or use **Connect by address**. |
 | It's listed but greyed out | It isn't sharing: click **Start Sharing** on that computer. |
-| "Be its extra display" is greyed out | A sharing Windows PC needs the Extend-mode display driver (installer option). **Share this PC** on that PC says what's missing. |
+| "Extend display" is greyed out | A sharing Windows PC needs the Extend-mode display driver (installer option). **Share this PC** on that PC says what's missing. |
 | Black screen when mirroring a Mac | Allow Screen Recording for Annex (System Settings → Privacy & Security), then turn sharing off and on. |
 | Mouse and keyboard do nothing on the other computer | It must allow your device in **Settings → Paired devices** (and on a Mac, have Accessibility). Turn on **Settings → Viewing → Control the other computer** on your side. |
 | The PIN keeps failing | After 5 wrong PINs, pairing pauses for 10 minutes. Type the PIN shown on the *sharing* computer. |

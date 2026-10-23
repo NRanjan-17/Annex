@@ -152,7 +152,7 @@ internal sealed partial class TrayMenu : Window
         Grid.SetColumn(name, 1);
         row.Children.Add(name);
         var show = IconButton("", "Show its screen here", () => a.Connect(peer, false));
-        var extend = IconButton("", "Be its extra display", () => a.Connect(peer, true));
+        var extend = IconButton("", "Extend display", () => a.Connect(peer, true));
         show.IsEnabled = enabled;
         extend.IsEnabled = enabled && peer.Extend != false;
         var buttons = Ui.Row(show, extend);

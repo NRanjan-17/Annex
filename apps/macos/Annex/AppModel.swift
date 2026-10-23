@@ -489,7 +489,7 @@ final class AppModel: ObservableObject {
     static func friendlyReason(_ reason: String, peer: String) -> String {
         switch reason {
         case "extend_not_supported":
-            return "\(peer) can't add an extra display. Set up Extend on that computer, or use Show Its Screen."
+            return "\(peer) can't extend its display. Set up Extend on that computer, or use Show Its Screen."
         case "busy": return "\(peer) is already sharing with 4 computers."
         case "pairing_failed": return "Wrong PIN. Try again."
         case "pairing_cancelled": return "Pairing was cancelled on the other computer."

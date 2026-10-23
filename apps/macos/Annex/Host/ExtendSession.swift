@@ -202,7 +202,7 @@ extension ExtendSession {
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 6_000_000_000)
             guard let self, gen == self.generation, !self.stopped, self.lastFrame.value == nil else { return }
-            self.onError?("The extra display sent no picture. Check Screen Recording for Annex in System Settings.")
+            self.onError?("The extended display sent no picture. Check Screen Recording for Annex in System Settings.")
         }
     }
 }

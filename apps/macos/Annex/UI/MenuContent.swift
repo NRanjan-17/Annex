@@ -149,7 +149,7 @@ private struct ConnectCard: View {
                 IconBadge(systemImage: "macbook.and.iphone", tint: model.isViewing ? .accentColor : .secondary)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Connect to a computer").font(.system(size: 13, weight: .semibold))
-                    Text("Show its screen here, or be its extra display")
+                    Text("Show its screen here, or extend its display")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                 }
             }
@@ -183,7 +183,7 @@ private struct ConnectCard: View {
                             model.extendMode = true
                             model.connect(to: peer)
                         } label: { Image(systemName: "rectangle.split.2x1") }
-                        .help("Be its extra display")
+                        .help("Extend display")
                         .disabled(!peer.canExtend)
                     }
                     .font(.system(size: 13))
