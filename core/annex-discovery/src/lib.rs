@@ -91,11 +91,31 @@ pub struct Discovery {
 pub struct Advertisement {
     daemon: ServiceDaemon,
     fullname: String,
+    withdraw_on_drop: bool,
+}
+
+impl Advertisement {
+    /// The mDNS full instance name.
+    pub fn fullname(&self) -> &str {
+        &self.fullname
+    }
+
+    /// `new` takes over from this record. Under the same name the registration was already
+    /// updated in place, so nothing is withdrawn: other devices see the change, never a
+    /// goodbye (which can expire the fresh record along with the old one). Under another name
+    /// (the device was renamed) the old record is withdrawn.
+    pub fn replaced_by(mut self, new: &Advertisement) {
+        if self.fullname == new.fullname {
+            self.withdraw_on_drop = false;
+        }
+    }
 }
 
 impl Drop for Advertisement {
     fn drop(&mut self) {
-        let _ = self.daemon.unregister(&self.fullname);
+        if self.withdraw_on_drop {
+            let _ = self.daemon.unregister(&self.fullname);
+        }
     }
 }
 
@@ -147,10 +167,15 @@ impl Discovery {
             ("sharing", flag(sharing)),
             ("extend", flag(sharing && extend)),
         ];
-        let info = ServiceInfo::new(MDNS_SERVICE_TCP, &label, &host, "", port, &props[..])?.enable_addr_auto();
+        let mut info = ServiceInfo::new(MDNS_SERVICE_TCP, &label, &host, "", port, &props[..])?.enable_addr_auto();
+        // The name already carries this device's fingerprint, so it can't clash with another
+        // device. Probing would instead mistake our own previous announcement (still on the
+        // network, with other TXT values) for a clash and rename us "… (2)", "… (3)", …
+        info.set_requires_probe(false);
         let fullname = info.get_fullname().to_string();
+        // Registering a name that is already registered updates it in place.
         self.daemon.register(info)?;
-        Ok(Advertisement { daemon: self.daemon.clone(), fullname })
+        Ok(Advertisement { daemon: self.daemon.clone(), fullname, withdraw_on_drop: true })
     }
 
     /// Browses for hosts, calling `on_event` from a background thread. Our own

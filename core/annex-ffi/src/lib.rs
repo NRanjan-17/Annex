@@ -183,29 +183,46 @@ struct Presence {
 impl AnnexCore {
     /// (Re-)registers or drops the not-sharing advertisement to match the current state.
     fn refresh_presence(&self) {
+        self.replace_presence(None);
+    }
+
+    /// Same, taking over from `outgoing` (a stopped host's record). Records with the same name
+    /// are updated in place rather than withdrawn and re-registered; see `Advertisement::replaced_by`.
+    fn replace_presence(&self, outgoing: Option<Advertisement>) {
         let mut p = self.presence.lock().unwrap();
-        // Unregister first: the record has the same name as a host's, and a fresh one picks up renames.
-        p.advert = None;
+        let old: Vec<Advertisement> = p.advert.take().into_iter().chain(outgoing).collect();
         if p.enabled && !p.hosting {
-            match self.discovery() {
-                Ok(d) => {
-                    p.advert = d.advertise(&self.core.device_name(), annex_session::DEFAULT_PORT, false, false).ok();
+            match self.advertise_presence() {
+                Ok(new) => {
+                    for a in old {
+                        a.replaced_by(&new);
+                    }
+                    p.advert = Some(new);
+                    return;
                 }
-                Err((_, e)) => tracing::warn!("presence advertisement failed: {e}"),
+                Err(e) => tracing::warn!("presence advertisement failed: {e}"),
             }
         }
+        drop(old); // not replaced: withdraw
     }
 
-    /// A host starts advertising this device as sharing: drop the presence record first.
-    fn begin_hosting(&self) {
+    fn advertise_presence(&self) -> Result<Advertisement, String> {
+        let d = self.discovery().map_err(|(_, e)| e)?;
+        d.advertise(&self.core.device_name(), annex_session::DEFAULT_PORT, false, false).map_err(|e| e.to_string())
+    }
+
+    /// A host starts advertising this device as sharing. Returns the presence record, which the
+    /// host's record replaces (`Advertisement::replaced_by`).
+    fn begin_hosting(&self) -> Option<Advertisement> {
         let mut p = self.presence.lock().unwrap();
         p.hosting = true;
-        p.advert = None;
+        p.advert.take()
     }
 
-    fn end_hosting(&self) {
+    /// The host stopped; its record (if any) is replaced by the presence record.
+    fn end_hosting(&self, host_advert: Option<Advertisement>) {
         self.presence.lock().unwrap().hosting = false;
-        self.refresh_presence();
+        self.replace_presence(host_advert);
     }
 
     fn discovery(&self) -> Result<Arc<Discovery>, (i32, String)> {
@@ -544,9 +561,13 @@ pub unsafe extern "C" fn annex_host_start(
         let handle =
             c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, callbacks.event_sink())).map_err(failed)?;
         let advert = if advertise {
-            c.begin_hosting();
+            let presence = c.begin_hosting();
             let d = c.discovery()?;
-            Some(d.advertise(&c.core.device_name(), handle.port(), true, extend).map_err(failed)?)
+            let advert = d.advertise(&c.core.device_name(), handle.port(), true, extend).map_err(failed)?;
+            if let Some(old) = presence {
+                old.replaced_by(&advert);
+            }
+            Some(advert)
         } else {
             None
         };
@@ -670,21 +691,22 @@ pub unsafe extern "C" fn annex_host_free(host: *mut AnnexHost) {
     if host.is_null() {
         return;
     }
-    let h = unsafe { Box::from_raw(host) };
+    let mut h = unsafe { Box::from_raw(host) };
     #[cfg(windows)]
     if let Some(s) = &h.screen {
         s.stop();
     }
-    let advertised = h._advert.is_some();
+    let advert = h._advert.take();
     if let Some(c) = unsafe { h.core.as_ref() } {
         c.rt.block_on(h.handle.stop());
     }
     h.callbacks.clear();
     let core = h.core;
     drop(h);
-    // Back to "open, not sharing" on other computers' Nearby lists.
-    if advertised && let Some(c) = unsafe { core.as_ref() } {
-        c.end_hosting();
+    // Back to "open, not sharing" on other computers' Nearby lists: the presence record takes
+    // over the host's (same name, updated in place).
+    if advert.is_some() && let Some(c) = unsafe { core.as_ref() } {
+        c.end_hosting(advert);
     }
 }
 
@@ -760,9 +782,14 @@ pub unsafe extern "C" fn annex_host_start_screen(
         let (host, screen) =
             win_host::start(c, monitor, port, prefer_hardware, gpu, callbacks.event_sink()).map_err(failed)?;
         let advert = if advertise {
-            c.begin_hosting();
+            let presence = c.begin_hosting();
             let d = c.discovery()?;
-            Some(d.advertise(&c.core.device_name(), host.port(), true, host.extend_supported()).map_err(failed)?)
+            let advert =
+                d.advertise(&c.core.device_name(), host.port(), true, host.extend_supported()).map_err(failed)?;
+            if let Some(old) = presence {
+                old.replaced_by(&advert);
+            }
+            Some(advert)
         } else {
             None
         };
