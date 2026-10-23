@@ -1,11 +1,22 @@
 #import "AnnexVirtualDisplay.h"
 
-#import <objc/message.h>
-
 // The only file in Annex that talks to the private CGVirtualDisplay classes. Properties are
-// set with KVC and methods called through objc_msgSend so nothing is linked at build time.
+// set with KVC and methods called through the protocols below, so nothing is linked at build time.
 
 static Class AVDClass(NSString *name) { return NSClassFromString(name); }
+
+// The private methods Annex calls, declared so ARC knows the init methods take ownership of the
+// object they're sent to. (Calling them through a cast objc_msgSend made ARC release the alloc'd
+// object a second time when the init failed and freed it, which crashed.)
+@protocol AVDDisplay <NSObject>
+- (nullable instancetype)initWithDescriptor:(id)descriptor;
+- (BOOL)applySettings:(id)settings;
+- (CGDirectDisplayID)displayID;
+@end
+
+@protocol AVDMode <NSObject>
+- (nullable instancetype)initWithWidth:(unsigned)width height:(unsigned)height refreshRate:(double)refreshRate;
+@end
 
 @implementation AnnexVirtualDisplayMode
 
@@ -20,7 +31,7 @@ static Class AVDClass(NSString *name) { return NSClassFromString(name); }
 @end
 
 @implementation AnnexVirtualDisplay {
-    id _display;  // CGVirtualDisplay *
+    id<AVDDisplay> _display;  // CGVirtualDisplay *
 }
 
 + (BOOL)isSupported {
@@ -55,8 +66,8 @@ static Class AVDClass(NSString *name) { return NSClassFromString(name); }
             void (^handler)(id, id) = ^(id __unused a, id __unused b) { terminationHandler(); };
             [desc setValue:handler forKey:@"terminationHandler"];
         }
-        id (*init)(id, SEL, id) = (id(*)(id, SEL, id))objc_msgSend;
-        _display = init([AVDClass(@"CGVirtualDisplay") alloc], NSSelectorFromString(@"initWithDescriptor:"), desc);
+        id<AVDDisplay> display = [AVDClass(@"CGVirtualDisplay") alloc];
+        _display = [display initWithDescriptor:desc];
     } @catch (NSException *e) {
         NSLog(@"Annex: CGVirtualDisplay creation failed: %@", e);
         _display = nil;
@@ -70,15 +81,13 @@ static Class AVDClass(NSString *name) { return NSClassFromString(name); }
         id settings = [[AVDClass(@"CGVirtualDisplaySettings") alloc] init];
         [settings setValue:@(hiDPI ? 1 : 0) forKey:@"hiDPI"];
         NSMutableArray *cgModes = [NSMutableArray arrayWithCapacity:modes.count];
-        id (*initMode)(id, SEL, unsigned, unsigned, double) = (id(*)(id, SEL, unsigned, unsigned, double))objc_msgSend;
         for (AnnexVirtualDisplayMode *m in modes) {
-            id mode = initMode([AVDClass(@"CGVirtualDisplayMode") alloc],
-                               NSSelectorFromString(@"initWithWidth:height:refreshRate:"), m.width, m.height, m.refreshRate);
+            id<AVDMode> mode = [AVDClass(@"CGVirtualDisplayMode") alloc];
+            mode = [mode initWithWidth:m.width height:m.height refreshRate:m.refreshRate];
             if (mode) [cgModes addObject:mode];
         }
         [settings setValue:cgModes forKey:@"modes"];
-        BOOL (*apply)(id, SEL, id) = (BOOL(*)(id, SEL, id))objc_msgSend;
-        return apply(_display, NSSelectorFromString(@"applySettings:"), settings);
+        return [_display applySettings:settings];
     } @catch (NSException *e) {
         NSLog(@"Annex: CGVirtualDisplay applySettings failed: %@", e);
         return NO;
@@ -87,8 +96,7 @@ static Class AVDClass(NSString *name) { return NSClassFromString(name); }
 
 - (CGDirectDisplayID)displayID {
     if (!_display) return kCGNullDirectDisplay;
-    CGDirectDisplayID (*getID)(id, SEL) = (CGDirectDisplayID(*)(id, SEL))objc_msgSend;
-    return getID(_display, NSSelectorFromString(@"displayID"));
+    return [_display displayID];
 }
 
 - (void)invalidate {

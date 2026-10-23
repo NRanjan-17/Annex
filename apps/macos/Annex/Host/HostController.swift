@@ -174,6 +174,13 @@ final class HostController {
             host.endSession(s.sessionId)
             return
         }
+        // The same viewer back before its old session timed out (a dropped connection, or a switch to
+        // direct Wi-Fi): that session is dead, and its display has the serial the new one needs.
+        for old in extendSessions.values where old.viewerFingerprint == s.fingerprint {
+            extendDisplays.update { $0?.removeValue(forKey: old.sessionID) }
+            extendSessions.removeValue(forKey: old.sessionID)?.stop()
+            host.endSession(old.sessionID)
+        }
         do {
             let session = try ExtendSession(
                 sessionID: s.sessionId, host: host, viewer: s.viewerDisplay ?? DisplayInfo(widthPx: 1920, heightPx: 1080),

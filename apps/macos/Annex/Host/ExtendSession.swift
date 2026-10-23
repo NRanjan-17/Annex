@@ -10,6 +10,7 @@ import Foundation
 final class ExtendSession {
     let sessionID: UInt64
     let viewerName: String
+    let viewerFingerprint: String
     private(set) var pixelSize: (Int, Int) = (0, 0)
     private(set) var hardwareEncoder = false
 
@@ -43,6 +44,7 @@ final class ExtendSession {
         self.sessionID = sessionID
         self.host = host
         self.viewerName = viewerName
+        self.viewerFingerprint = viewerFingerprint
         self.preferHardware = preferHardware
         fps = viewer.refreshHz > 0 ? min(max(viewer.refreshHz, 24), 60) : 60
         let plan = Self.plan(for: viewer)
