@@ -26,13 +26,30 @@ func rgb(_ hex: UInt32) -> CGColor {
             blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
 }
 
+// Written by hand as a classic bottom-up 24-bit BMP: AppKit saves top-down BMPs (negative
+// height), which Inno Setup shows upside down.
 func write(_ name: String, width: Int, height: Int, draw: (CGContext, CGFloat) -> Void) {
-    let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
-                        bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+    let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                        space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
     ctx.interpolationQuality = .high
     draw(ctx, CGFloat(width))
-    let rep = NSBitmapImageRep(cgImage: ctx.makeImage()!)
-    try! rep.representation(using: .bmp, properties: [:])!.write(to: outDir.appendingPathComponent(name))
+    let px = ctx.data!.assumingMemoryBound(to: UInt8.self)  // RGBX, first row = top of the image
+    let rowBytes = (width * 3 + 3) & ~3
+    var bmp = Data()
+    func le<T: FixedWidthInteger>(_ v: T) { withUnsafeBytes(of: v.littleEndian) { bmp.append(contentsOf: $0) } }
+    bmp.append(contentsOf: [0x42, 0x4D])  // "BM"
+    le(UInt32(54 + rowBytes * height)); le(UInt32(0)); le(UInt32(54))
+    le(UInt32(40)); le(Int32(width)); le(Int32(height)); le(UInt16(1)); le(UInt16(24)); le(UInt32(0))
+    le(UInt32(rowBytes * height)); le(Int32(2835)); le(Int32(2835)); le(UInt32(0)); le(UInt32(0))
+    for y in (0..<height).reversed() {  // bottom row first
+        var row = [UInt8](repeating: 0, count: rowBytes)
+        for x in 0..<width {
+            let p = px + (y * width + x) * 4
+            row[x * 3] = p[2]; row[x * 3 + 1] = p[1]; row[x * 3 + 2] = p[0]  // BGR
+        }
+        bmp.append(contentsOf: row)
+    }
+    try! bmp.write(to: outDir.appendingPathComponent(name))
 }
 
 // Welcome / finish panel: the icon's black gradient, with the icon a little above centre.
