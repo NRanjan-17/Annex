@@ -12,6 +12,8 @@ final class ExtendSession {
     let viewerName: String
     let viewerFingerprint: String
     private(set) var pixelSize: (Int, Int) = (0, 0)
+    /// The viewer's screen in pixels: the stream is never bigger than this.
+    private var viewerPixels: (Int, Int) = (1920, 1080)
     private(set) var hardwareEncoder = false
 
     private let host: HostHandle
@@ -48,6 +50,7 @@ final class ExtendSession {
         self.preferHardware = preferHardware
         fps = viewer.refreshHz > 0 ? min(max(viewer.refreshHz, 24), 60) : 60
         let plan = Self.plan(for: viewer)
+        viewerPixels = plan.viewerPixels
         guard let d = AnnexVirtualDisplay(
             name: "Annex Display", vendorID: Self.vendorID, productID: Self.productID,
             serial: Self.serial(for: viewerFingerprint), sizeInMillimeters: plan.millimeters,
@@ -70,31 +73,49 @@ final class ExtendSession {
         var modes: [(Int, Int)]
         var maxPixels: (Int, Int)
         var millimeters: CGSize
+        var viewerPixels: (Int, Int)
 
         static func == (a: Plan, b: Plan) -> Bool {
             a.modes.elementsEqual(b.modes, by: ==) && a.maxPixels == b.maxPixels && a.millimeters == b.millimeters
+                && a.viewerPixels == b.viewerPixels
         }
     }
 
-    /// Modes for a viewer screen: Retina viewers (≥ 150 %) default to a 2x HiDPI mode at their
-    /// native pixel size; others to their native resolution at 1x. macOS adds the usual scaled
-    /// variants itself.
+    /// The scale steps Windows offers; System Settings → Displays shows them as "Larger Text" …
+    /// "More Space".
+    nonisolated static let scales = [100, 125, 150, 175, 200]
+
+    /// Modes for a viewer screen: one "looks like" size per scale step, defaulting to the step
+    /// nearest the viewer's own scaling (so a PC at 150 % starts at 150 %). Above 100 % macOS draws
+    /// them HiDPI, at twice the point size, as on a Retina screen; the capture scales that back
+    /// down to the viewer's pixels.
     nonisolated static func plan(for viewer: DisplayInfo) -> Plan {
         let w = max(viewer.widthPx, 640) & ~1
         let h = max(viewer.heightPx, 480) & ~1
-        let retina = viewer.scalePercent >= 150
-        var modes: [(Int, Int)] = retina ? [(w / 2, h / 2), (w, h)] : [(w, h)]
-        // A couple of common smaller sizes with the same aspect ratio.
-        for scale in [0.75, 0.5] {
-            let m = (Int(Double(w) * scale) & ~1, Int(Double(h) * scale) & ~1)
+        let preferred = scales.min { abs($0 - viewer.scalePercent) < abs($1 - viewer.scalePercent) }!
+        let ordered = [preferred] + scales.filter { $0 != preferred }
+        var modes: [(Int, Int)] = []
+        for scale in ordered {
+            let m = ((w * 100 / scale) & ~1, (h * 100 / scale) & ~1)
             if !modes.contains(where: { $0 == m }) && m.0 >= 640 { modes.append(m) }
         }
-        // Physical size: what the viewer reported, else ~110 points per inch.
-        let ppi = retina ? 220.0 : 110.0
+        // Room for 125 % at 2x (1.6 times the viewer's pixels), within what's sensible to capture.
+        let maxW = max(w, min(w * 8 / 5, 6144)) & ~1
+        let maxPixels = (maxW, (h * maxW / w) & ~1)
+        // Physical size: what the viewer reported, else ~110 points per inch at its scaling.
+        let ppi = 110.0 * Double(max(viewer.scalePercent, 100)) / 100
         let mm = viewer.widthMm > 0 && viewer.heightMm > 0
             ? CGSize(width: viewer.widthMm, height: viewer.heightMm)
             : CGSize(width: (Double(w) / ppi * 25.4).rounded(), height: (Double(h) / ppi * 25.4).rounded())
-        return Plan(modes: modes, maxPixels: (w, h), millimeters: mm)
+        return Plan(modes: modes, maxPixels: maxPixels, millimeters: mm, viewerPixels: (w, h))
+    }
+
+    /// What to stream for a display mode: its pixels, scaled down to fit the viewer's screen.
+    nonisolated static func streamSize(pixels: (Int, Int), viewer: (Int, Int)) -> (Int, Int) {
+        let (pw, ph) = (max(pixels.0, 2), max(pixels.1, 2))
+        guard pw > viewer.0 || ph > viewer.1 else { return (pw & ~1, ph & ~1) }
+        let k = min(Double(viewer.0) / Double(pw), Double(viewer.1) / Double(ph))
+        return (Int((Double(pw) * k).rounded()) & ~1, Int((Double(ph) * k).rounded()) & ~1)
     }
 
     /// Stable 32-bit serial from the viewer's certificate fingerprint.
@@ -133,7 +154,7 @@ final class ExtendSession {
     /// Called when the display's mode may have changed.
     func reconfigured() {
         guard !stopped, let mode = CGDisplayCopyDisplayMode(display.displayID) else { return }
-        let size = (mode.pixelWidth & ~1, mode.pixelHeight & ~1)
+        let size = Self.streamSize(pixels: (mode.pixelWidth, mode.pixelHeight), viewer: viewerPixels)
         if size != pixelSize { restartCapture() }
     }
 
@@ -143,7 +164,8 @@ final class ExtendSession {
         let gen = generation
         let id = display.displayID
         let mode = CGDisplayCopyDisplayMode(id)
-        let size = ((mode?.pixelWidth ?? 1920) & ~1, (mode?.pixelHeight ?? 1080) & ~1)
+        let size = Self.streamSize(pixels: (mode?.pixelWidth ?? viewerPixels.0, mode?.pixelHeight ?? viewerPixels.1),
+                                   viewer: viewerPixels)
         pixelSize = size
         capturer.onFrame = nil
         encoder?.invalidate()

@@ -97,7 +97,8 @@ Preferences are in **Settings** (General, Sharing, Viewing and Developer; on a M
 Choose **Extend display** (or turn on *Extend display by default* in
 **Settings → Viewing**). The sharing computer gets a new display called **Annex Display**:
 
-- **Mac:** arrange it and pick its resolution in System Settings → Displays.
+- **Mac:** arrange it in System Settings → Displays, and pick its scaling there, from *Larger Text*
+  to *More Space* (the same steps as Windows' 100–200 %). It starts at the other computer's own scaling.
 - **Windows:** arrange it in Settings → System → Display. Needs the Extend-mode driver (below).
 
 ### Control the other computer
