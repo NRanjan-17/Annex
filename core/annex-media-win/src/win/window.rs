@@ -79,9 +79,13 @@ fn key_held(vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY) -> boo
 }
 
 /// Forwards a window message as input if forwarding is active. Returns true if consumed.
+///
+/// Windows re-enters the window procedure from inside some calls (SetCapture/ReleaseCapture send
+/// WM_CAPTURECHANGED at once), so the input state is never borrowed across one: a re-entrant
+/// message finds it busy and gets the default handling, and capture changes happen afterwards.
 fn forward_input(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
     INPUT.with(|cell| {
-        let mut guard = cell.borrow_mut();
+        let Ok(mut guard) = cell.try_borrow_mut() else { return false };
         let Some(st) = guard.as_mut() else { return false };
         if !st.active.load(Ordering::Acquire) {
             return false;
@@ -94,34 +98,32 @@ fn forward_input(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
             let _ = unsafe { GetClientRect(hwnd, &mut rc) };
             normalize_point(x, y, video.0, video.1, rc.right as u32, rc.bottom as u32)
         };
-        let button = |b: MouseButton, down: bool, st: &mut InputState| {
+        // Returns the mouse-capture change to make once the state is released: keep receiving moves
+        // and releases while dragging outside the window.
+        let button = |b: MouseButton, down: bool, st: &mut InputState| -> Option<bool> {
             let (x, y) = point();
             (st.sink)(InputEvent::MouseMove { x, y });
             (st.sink)(InputEvent::MouseButton { button: b, down });
-            // Keep receiving moves and releases while dragging outside the window.
             if down {
                 st.buttons_down += 1;
-                // SAFETY: our own window.
-                unsafe { SetCapture(hwnd) };
+                Some(true)
             } else {
                 st.buttons_down = st.buttons_down.saturating_sub(1);
-                if st.buttons_down == 0 {
-                    // SAFETY: releasing our own capture.
-                    let _ = unsafe { ReleaseCapture() };
-                }
+                (st.buttons_down == 0).then_some(false)
             }
         };
+        let mut capture = None;
         match msg {
             WM_MOUSEMOVE => {
                 let (x, y) = point();
                 (st.sink)(InputEvent::MouseMove { x, y });
             }
-            WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => button(MouseButton::Left, true, st),
-            WM_LBUTTONUP => button(MouseButton::Left, false, st),
-            WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => button(MouseButton::Right, true, st),
-            WM_RBUTTONUP => button(MouseButton::Right, false, st),
-            WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => button(MouseButton::Middle, true, st),
-            WM_MBUTTONUP => button(MouseButton::Middle, false, st),
+            WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => capture = button(MouseButton::Left, true, st),
+            WM_LBUTTONUP => capture = button(MouseButton::Left, false, st),
+            WM_RBUTTONDOWN | WM_RBUTTONDBLCLK => capture = button(MouseButton::Right, true, st),
+            WM_RBUTTONUP => capture = button(MouseButton::Right, false, st),
+            WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => capture = button(MouseButton::Middle, true, st),
+            WM_MBUTTONUP => capture = button(MouseButton::Middle, false, st),
             WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
                 // 120 per notch ≈ 40 pixels; HWHEEL positive = scroll right (content moves left).
                 let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
@@ -152,16 +154,35 @@ fn forward_input(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
             WM_SYSCHAR | WM_CHAR => {}
             _ => return false,
         }
+        drop(guard);
+        match capture {
+            // SAFETY: capturing / releasing our own window's mouse capture.
+            Some(true) => unsafe {
+                SetCapture(hwnd);
+            },
+            Some(false) => {
+                let _ = unsafe { ReleaseCapture() };
+            }
+            None => {}
+        }
         true
     })
 }
 
 /// Forwarding input to the host right now (then the local pointer stays hidden).
 fn input_active() -> bool {
-    INPUT.with(|i| i.borrow().as_ref().is_some_and(|st| st.active.load(Ordering::Acquire)))
+    INPUT.with(|i| i.try_borrow().is_ok_and(|st| st.as_ref().is_some_and(|st| st.active.load(Ordering::Acquire))))
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // A panic can't unwind out of the window procedure (the process would abort): log it (the panic
+    // hook does) and let Windows handle the message instead.
+    std::panic::catch_unwind(|| handle_message(hwnd, msg, wparam, lparam))
+        // SAFETY: our own window; default handling.
+        .unwrap_or_else(|_| unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) })
+}
+
+fn handle_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_MOUSEMOVE {
         LAST_MOVE.with(|t| t.set(Some(Instant::now())));
         if !input_active() {
