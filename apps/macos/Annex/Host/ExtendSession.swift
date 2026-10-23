@@ -18,7 +18,8 @@ final class ExtendSession {
 
     private let host: HostHandle
     private let display: AnnexVirtualDisplay
-    private let fps: Int
+    /// The display's current refresh rate, which the stream follows.
+    private var fps: Int
     private let preferHardware: Bool
     private let capturer = ScreenCapturer()
     private var encoder: H264Encoder?
@@ -48,9 +49,9 @@ final class ExtendSession {
         self.viewerName = viewerName
         self.viewerFingerprint = viewerFingerprint
         self.preferHardware = preferHardware
-        fps = viewer.refreshHz > 0 ? min(max(viewer.refreshHz, 24), 60) : 60
         let plan = Self.plan(for: viewer)
         viewerPixels = plan.viewerPixels
+        fps = plan.rates[0]
         guard let d = AnnexVirtualDisplay(
             name: "Annex Display", vendorID: Self.vendorID, productID: Self.productID,
             serial: Self.serial(for: viewerFingerprint), sizeInMillimeters: plan.millimeters,
@@ -59,7 +60,10 @@ final class ExtendSession {
             throw AnnexError(message: "Could not create the virtual display.")
         }
         display = d
-        let modes = plan.modes.map { AnnexVirtualDisplayMode(width: UInt32($0.0), height: UInt32($0.1), refreshRate: Double(fps)) }
+        // Every size at every rate, like a monitor: System Settings → Displays → Refresh Rate.
+        let modes = plan.modes.flatMap { size in
+            plan.rates.map { AnnexVirtualDisplayMode(width: UInt32(size.0), height: UInt32(size.1), refreshRate: Double($0)) }
+        }
         guard d.apply(modes, hiDPI: true) else {
             d.invalidate()
             throw AnnexError(message: "macOS rejected the virtual display's modes.")
@@ -74,10 +78,12 @@ final class ExtendSession {
         var maxPixels: (Int, Int)
         var millimeters: CGSize
         var viewerPixels: (Int, Int)
+        /// Refresh rates, first = default (the viewer's own).
+        var rates: [Int]
 
         static func == (a: Plan, b: Plan) -> Bool {
             a.modes.elementsEqual(b.modes, by: ==) && a.maxPixels == b.maxPixels && a.millimeters == b.millimeters
-                && a.viewerPixels == b.viewerPixels
+                && a.viewerPixels == b.viewerPixels && a.rates == b.rates
         }
     }
 
@@ -107,7 +113,12 @@ final class ExtendSession {
         let mm = viewer.widthMm > 0 && viewer.heightMm > 0
             ? CGSize(width: viewer.widthMm, height: viewer.heightMm)
             : CGSize(width: (Double(w) / ppi * 25.4).rounded(), height: (Double(h) / ppi * 25.4).rounded())
-        return Plan(modes: modes, maxPixels: maxPixels, millimeters: mm, viewerPixels: (w, h))
+        // The rates the viewer's screen supports, its current one first (the default), like a
+        // monitor's own list. Older viewers only send the current rate: add the usual lower ones.
+        let hz = viewer.refreshHz > 0 ? min(max(viewer.refreshHz, 24), 240) : 60
+        let supported = (viewer.refreshRates ?? []).filter { $0 >= 24 && $0 <= 240 && $0 != hz }
+        let rates = [hz] + (supported.isEmpty ? [144, 120, 90, 60].filter { $0 < hz } : supported.sorted(by: >))
+        return Plan(modes: modes, maxPixels: maxPixels, millimeters: mm, viewerPixels: (w, h), rates: rates)
     }
 
     /// What to stream for a display mode: its pixels, scaled down to fit the viewer's screen.
@@ -155,7 +166,12 @@ final class ExtendSession {
     func reconfigured() {
         guard !stopped, let mode = CGDisplayCopyDisplayMode(display.displayID) else { return }
         let size = Self.streamSize(pixels: (mode.pixelWidth, mode.pixelHeight), viewer: viewerPixels)
-        if size != pixelSize { restartCapture() }
+        if size != pixelSize || Self.rate(of: mode, fallback: fps) != fps { restartCapture() }
+    }
+
+    nonisolated static func rate(of mode: CGDisplayMode?, fallback: Int) -> Int {
+        guard let hz = mode?.refreshRate, hz > 0 else { return fallback }
+        return Int(hz.rounded())
     }
 
     private func restartCapture() {
@@ -167,12 +183,14 @@ final class ExtendSession {
         let size = Self.streamSize(pixels: (mode?.pixelWidth ?? viewerPixels.0, mode?.pixelHeight ?? viewerPixels.1),
                                    viewer: viewerPixels)
         pixelSize = size
+        fps = Self.rate(of: mode, fallback: fps)
         capturer.onFrame = nil
         encoder?.invalidate()
         encoder = nil
         host.setStream(session: sessionID, width: size.0, height: size.1, fps: fps)
         let (fps, preferHardware, capturer) = (self.fps, self.preferHardware, self.capturer)
-        let bitrate = max(6_000_000, size.0 * size.1 * fps / 8)
+        // Frames get more alike as the rate goes up, so above 60 fps the bitrate grows half as fast.
+        let bitrate = max(6_000_000, size.0 * size.1 * (min(fps, 60) + max(fps - 60, 0) / 2) / 8)
         baseBitrate = bitrate
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = Result { try H264Encoder(width: size.0, height: size.1, fps: fps, bitrate: bitrate, preferHardware: preferHardware) }

@@ -299,6 +299,7 @@ async fn viewer(o: &mut Opts) {
             height_mm: 0,
             refresh_hz: 60,
             scale_percent: 100,
+            refresh_rates: vec![],
         },
         codecs: vec![Codec::H264, Codec::Raw],
         expected_fingerprint: expected,

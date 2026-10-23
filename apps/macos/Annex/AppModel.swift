@@ -18,7 +18,7 @@ final class AppModel: ObservableObject {
     @Published var displays: [Displays.Info] = []
     @Published var selectedDisplayID: CGDirectDisplayID?
     @Published private(set) var isHosting = false
-    @Published private(set) var hostStatus = HostController.Status()
+    @Published private(set) var hostStatus = HostController.Status() { didSet { updateKeepAwake() } }
 
     @Published private(set) var discovered: [PeerInfo] = []
     @Published var manualAddress = ""
@@ -59,7 +59,21 @@ final class AppModel: ObservableObject {
     private var core: CoreClient?
     private var discovery: DiscoveryHandle?
     private var host: HostController?
-    private var viewer: ViewerHandle?
+    private var viewer: ViewerHandle? { didSet { updateKeepAwake() } }
+    /// Held while a session runs, so neither screen sleeps: the viewer gets no local input, and
+    /// the host's screen (or its Annex display) is what the viewer is watching.
+    private var keepAwake: NSObjectProtocol?
+
+    private func updateKeepAwake() {
+        let active = viewer != nil || !hostStatus.viewers.isEmpty || !hostStatus.extendViewers.isEmpty
+        if active, keepAwake == nil {
+            keepAwake = ProcessInfo.processInfo.beginActivity(
+                options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled], reason: "An Annex session is running")
+        } else if !active, let token = keepAwake {
+            ProcessInfo.processInfo.endActivity(token)
+            keepAwake = nil
+        }
+    }
     private var viewerWindow: ViewerWindowController?
 
     /// Started by "Open at login": stay quietly in the menu bar.

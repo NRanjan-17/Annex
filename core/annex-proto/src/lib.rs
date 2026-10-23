@@ -83,6 +83,10 @@ pub struct DisplayInfo {
     /// Backing scale factor in percent (100 = 1x, 200 = Retina 2x).
     #[serde(default = "default_scale")]
     pub scale_percent: u32,
+    /// Every refresh rate the display supports at its current size, so an Extend display can
+    /// offer the same ones. Empty from older versions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refresh_rates: Vec<u32>,
 }
 
 fn default_scale() -> u32 {
@@ -403,6 +407,7 @@ mod tests {
                     height_mm: 190,
                     refresh_hz: 60,
                     scale_percent: 200,
+                    refresh_rates: vec![],
                 },
                 codecs: vec![Codec::H264],
                 input: false,

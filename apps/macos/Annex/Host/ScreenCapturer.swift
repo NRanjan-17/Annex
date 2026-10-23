@@ -91,10 +91,15 @@ enum Displays {
         let id = CGDirectDisplayID(num.uint32Value)
         let mode = CGDisplayCopyDisplayMode(id)
         let mm = CGDisplayScreenSize(id)
+        // Every rate the screen offers at this size (System Settings → Displays → Refresh Rate).
+        let all = (CGDisplayCopyAllDisplayModes(id, nil) as? [CGDisplayMode]) ?? []
+        let rates = Set(all.filter { $0.pixelWidth == mode?.pixelWidth && $0.pixelHeight == mode?.pixelHeight }
+            .map { Int($0.refreshRate.rounded()) }.filter { $0 > 1 }).sorted(by: >)
         return DisplayInfo(widthPx: mode?.pixelWidth ?? Int(screen.frame.width * screen.backingScaleFactor),
                            heightPx: mode?.pixelHeight ?? Int(screen.frame.height * screen.backingScaleFactor),
                            widthMm: Int(mm.width), heightMm: Int(mm.height),
                            refreshHz: Int((mode?.refreshRate ?? 60) > 0 ? mode!.refreshRate : 60),
-                           scalePercent: Int(screen.backingScaleFactor * 100))
+                           scalePercent: Int(screen.backingScaleFactor * 100),
+                           refreshRates: rates.isEmpty ? nil : rates)
     }
 }

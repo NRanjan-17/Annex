@@ -52,6 +52,12 @@ final class AnnexBTests: XCTestCase {
         let laptop = ExtendSession.plan(for: DisplayInfo(widthPx: 1920, heightPx: 1080, widthMm: 0, heightMm: 0, refreshHz: 60, scalePercent: 125))
         XCTAssertEqual(laptop.modes.first!.0, 1536)
         XCTAssertEqual(laptop.modes.first!.1, 864)
+        // Refresh rates: the viewer's list, current first; without one, the usual lower rates.
+        XCTAssertEqual(standard.rates, [60])
+        let fast = ExtendSession.plan(for: DisplayInfo(widthPx: 1920, heightPx: 1080, refreshHz: 144, refreshRates: [165, 144, 120, 60, 48]))
+        XCTAssertEqual(fast.rates, [144, 165, 120, 60, 48])
+        let old = ExtendSession.plan(for: DisplayInfo(widthPx: 1920, heightPx: 1080, refreshHz: 144))
+        XCTAssertEqual(old.rates, [144, 120, 90, 60])
         // A scaled mode is drawn bigger than the viewer's screen and streamed at its size.
         XCTAssertTrue(ExtendSession.streamSize(pixels: (3072, 1728), viewer: (1920, 1080)) == (1920, 1080))
         XCTAssertTrue(ExtendSession.streamSize(pixels: (1280, 720), viewer: (1920, 1080)) == (1280, 720))

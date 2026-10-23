@@ -914,7 +914,9 @@ mod win_host {
     }
 
     fn bitrate(w: u32, h: u32, fps: u32) -> u32 {
-        (w * h * fps / 8).clamp(4_000_000, 40_000_000)
+        // Frames get more alike as the rate goes up, so above 60 fps the bitrate grows half as fast.
+        let rate = fps.min(60) + fps.saturating_sub(60) / 2;
+        (w * h * rate / 8).clamp(4_000_000, 40_000_000)
     }
 
     impl ScreenState {
@@ -962,7 +964,8 @@ mod win_host {
                 host.end_session(id);
             };
             let serial = idd::serial_for(&fingerprint);
-            let hz = if display.refresh_hz == 0 { 60 } else { display.refresh_hz.clamp(24, 60) };
+            // The viewer's refresh rate, like a monitor; Windows Settings also offers 60 Hz.
+            let hz = if display.refresh_hz == 0 { 60 } else { display.refresh_hz.clamp(24, 240) };
             let connector = match driver.add_monitor(
                 serial,
                 display.width_px.max(640),
@@ -1073,6 +1076,7 @@ mod win_host {
                             height_mm: 0,
                             refresh_hz: 60,
                             scale_percent: 100,
+                            refresh_rates: vec![],
                         }),
                         fingerprint.clone(),
                     );
@@ -1223,6 +1227,7 @@ unsafe fn viewer_config(
             height_mm: 0,
             refresh_hz: 60,
             scale_percent: 100,
+            refresh_rates: vec![],
         },
     };
     Ok(ViewerConfig {

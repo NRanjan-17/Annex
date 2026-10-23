@@ -1,7 +1,7 @@
 use annex_proto::DisplayInfo;
 use windows::Win32::Foundation::{LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
-    DEVMODEW, ENUM_CURRENT_SETTINGS, EnumDisplayMonitors, EnumDisplaySettingsW, GetDC, GetDeviceCaps, GetMonitorInfoW,
+    DEVMODEW, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE, EnumDisplayMonitors, EnumDisplaySettingsW, GetDC, GetDeviceCaps, GetMonitorInfoW,
     HDC, HMONITOR, HORZSIZE, LOGPIXELSX, MONITORINFO, MONITORINFOEXW, ReleaseDC, VERTSIZE,
 };
 use windows::core::{BOOL, PCWSTR};
@@ -9,7 +9,7 @@ use windows::core::{BOOL, PCWSTR};
 /// Physical properties of the primary display (pixels are physical, not DPI-scaled).
 pub fn primary_display_info() -> DisplayInfo {
     let mut info =
-        DisplayInfo { width_px: 1920, height_px: 1080, width_mm: 0, height_mm: 0, refresh_hz: 60, scale_percent: 100 };
+        DisplayInfo { width_px: 1920, height_px: 1080, width_mm: 0, height_mm: 0, refresh_hz: 60, scale_percent: 100, refresh_rates: vec![] };
     unsafe {
         let mut dm = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
         if EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, &mut dm).as_bool() {
@@ -18,6 +18,17 @@ pub fn primary_display_info() -> DisplayInfo {
             if dm.dmDisplayFrequency > 1 {
                 info.refresh_hz = dm.dmDisplayFrequency;
             }
+            // Every rate the screen offers at this size (Settings → Display → Refresh rate).
+            let mut i = 0;
+            let mut m = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
+            while EnumDisplaySettingsW(None, ENUM_DISPLAY_SETTINGS_MODE(i), &mut m).as_bool() {
+                if m.dmPelsWidth == info.width_px && m.dmPelsHeight == info.height_px && m.dmDisplayFrequency > 1 {
+                    info.refresh_rates.push(m.dmDisplayFrequency);
+                }
+                i += 1;
+            }
+            info.refresh_rates.sort_unstable_by(|a, b| b.cmp(a));
+            info.refresh_rates.dedup();
         }
         let hdc = GetDC(None);
         if !hdc.is_invalid() {

@@ -12,7 +12,7 @@ fn stream() -> StreamConfig {
 }
 
 fn display() -> DisplayInfo {
-    DisplayInfo { width_px: 1920, height_px: 1080, width_mm: 527, height_mm: 296, refresh_hz: 60, scale_percent: 100 }
+    DisplayInfo { width_px: 1920, height_px: 1080, width_mm: 527, height_mm: 296, refresh_hz: 60, scale_percent: 100, refresh_rates: vec![] }
 }
 
 fn viewer_cfg(port: u16) -> ViewerConfig {
@@ -385,6 +385,7 @@ async fn extend_session_gets_its_own_stream() {
         height_mm: 190,
         refresh_hz: 120,
         scale_percent: 200,
+        refresh_rates: vec![],
     };
     let extend = connect_viewer(viewer_core("Extend"), cfg, xe, xs);
     let Event::SessionStarted { session_id, mode, stream, viewer_display, .. } =
@@ -393,7 +394,7 @@ async fn extend_session_gets_its_own_stream() {
         unreachable!()
     };
     assert_eq!(mode, Mode::Extend);
-    assert_eq!((stream.width, stream.height, stream.fps), (2880, 1800, 60), "native size, even, ≤ 60 fps");
+    assert_eq!((stream.width, stream.height, stream.fps), (2880, 1800, 120), "native size (even) and refresh rate");
     assert_eq!(viewer_display.unwrap().scale_percent, 200);
     let Event::StreamConfig { stream: vs } = wait_for(&mut xrx, |e| matches!(e, Event::StreamConfig { .. })).await
     else {

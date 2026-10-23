@@ -272,13 +272,14 @@ impl HostHandle {
     }
 }
 
-/// Initial stream for an Extend session: the viewer's native resolution (even), ≤ 60 fps.
+/// Initial stream for an Extend session: the viewer's native resolution (even) and refresh rate
+/// (≤ 240 Hz), like a monitor plugged into the host.
 pub fn extend_stream_for(display: &DisplayInfo) -> StreamConfig {
     StreamConfig {
         codec: Codec::H264,
         width: display.width_px.max(2) & !1,
         height: display.height_px.max(2) & !1,
-        fps: if display.refresh_hz == 0 { 60 } else { display.refresh_hz.clamp(24, 60) },
+        fps: if display.refresh_hz == 0 { 60 } else { display.refresh_hz.clamp(24, 240) },
     }
 }
 

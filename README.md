@@ -98,8 +98,13 @@ Choose **Extend display** (or turn on *Extend display by default* in
 **Settings → Viewing**). The sharing computer gets a new display called **Annex Display**:
 
 - **Mac:** arrange it in System Settings → Displays, and pick its scaling there, from *Larger Text*
-  to *More Space* (the same steps as Windows' 100–200 %). It starts at the other computer's own scaling.
-- **Windows:** arrange it in Settings → System → Display. Needs the Extend-mode driver (below).
+  to *More Space* (the same steps as Windows' 100–200 %), and its refresh rate: the same rates
+  the other computer's screen supports, so a 144 Hz laptop gets 144 Hz. It starts at the other
+  computer's own scaling and refresh rate.
+- **Windows:** arrange it, and pick its scale and refresh rate, in Settings → System → Display.
+  Needs the Extend-mode driver (below).
+
+Neither computer's screen goes to sleep while a session runs.
 
 ### Control the other computer
 

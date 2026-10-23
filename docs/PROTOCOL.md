@@ -113,7 +113,9 @@ A CBOR map with a text key `t` holding the message type. Field names are snake_c
 | `bye` | both | `reason` text (`user`, `host_stopped`, `not_trusted`, `pairing_failed`, `pairing_cancelled`, `pairing_locked`, `pairing_timeout`, ...) |
 
 **DisplayInfo**: `width_px`, `height_px` (required); `width_mm`, `height_mm`, `refresh_hz`,
-`scale_percent` (100 = 1x, 200 = Retina), optional with defaults 0/0/0/100.
+`scale_percent` (100 = 1x, 200 = Retina), optional with defaults 0/0/0/100; `refresh_rates`
+(every rate the screen supports at its current size, so an Extend display offers the same ones),
+optional and left out when empty.
 
 **StreamConfig**: `codec`, `width`, `height`, `fps`, all required and non-zero.
 

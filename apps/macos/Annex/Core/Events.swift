@@ -15,6 +15,8 @@ struct DisplayInfo: Codable, Equatable {
     var heightMm: Int = 0
     var refreshHz: Int = 60
     var scalePercent: Int = 100
+    /// Every refresh rate the screen supports at its current size (absent from older versions).
+    var refreshRates: [Int]? = nil
 }
 
 /// Host side: show `pin` until `pairingFinished` arrives for `requestId`.

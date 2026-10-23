@@ -180,6 +180,23 @@ public sealed partial class MainWindow : Window
     [System.Runtime.InteropServices.LibraryImport("user32.dll")]
     private static partial uint GetDpiForWindow(nint hwnd);
 
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    private static partial uint SetThreadExecutionState(uint flags);
+
+    private const uint EsContinuous = 0x80000000, EsSystemRequired = 0x1, EsDisplayRequired = 0x2;
+    private bool _keepingAwake;
+
+    /// While a session runs, neither screen sleeps: the viewer gets no local input, and the host's
+    /// screen (or its Annex display) is what the viewer is watching. Always called on the UI
+    /// thread, which lives as long as the app, so the continuous state holds.
+    private void UpdateKeepAwake()
+    {
+        bool active = _viewer is not null || _sessions.Count > 0;
+        if (active == _keepingAwake) return;
+        _keepingAwake = active;
+        SetThreadExecutionState(active ? EsContinuous | EsSystemRequired | EsDisplayRequired : EsContinuous);
+    }
+
     // ---- Shell: title bar + sidebar ---------------------------------------------------
 
     private void BuildShell()
@@ -314,6 +331,7 @@ public sealed partial class MainWindow : Window
 
     private void RenderIf(params string[] panes)
     {
+        UpdateKeepAwake();
         if (panes.Contains(_pane) || (_pane.StartsWith("peer:", StringComparison.Ordinal) && panes.Contains("peer"))) Render();
         else UpdateDeviceCard();
     }
