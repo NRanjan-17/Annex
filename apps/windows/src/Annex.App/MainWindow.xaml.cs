@@ -198,7 +198,12 @@ public sealed partial class MainWindow : Window
 
         // WinUI's own two-tone layout, like Windows Settings: the sidebar on Mica, the pages on a
         // raised layer with a rounded corner; the menu button folds the sidebar to icons.
-        _nav.PaneDisplayMode = NavigationViewPaneDisplayMode.Left;
+        // Auto with no thresholds: always the full sidebar, and the menu button folds it to icons. (In
+        // fixed Left mode a folded sidebar left the page laid out at the open width, so it was pushed
+        // right and cut off.)
+        _nav.PaneDisplayMode = NavigationViewPaneDisplayMode.Auto;
+        _nav.CompactModeThresholdWidth = 0;
+        _nav.ExpandedModeThresholdWidth = 0;
         _nav.IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed;
         _nav.IsPaneToggleButtonVisible = true;
         _nav.IsTitleBarAutoPaddingEnabled = false;
