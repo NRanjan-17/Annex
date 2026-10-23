@@ -148,6 +148,55 @@ internal static class Ui
         };
     }
 
+    /// <summary>One row of a <see cref="Group"/>: title and description on the left, a control on the right.</summary>
+    public static Grid GroupRow(string title, string? description = null, UIElement? control = null, UIElement? leading = null)
+    {
+        var grid = new Grid { ColumnSpacing = 12, MinHeight = 40 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        if (leading is FrameworkElement le)
+        {
+            le.VerticalAlignment = VerticalAlignment.Center;
+            grid.Children.Add(le);
+        }
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 2 };
+        text.Children.Add(Text(title, "BodyTextBlockStyle"));
+        if (!string.IsNullOrEmpty(description)) text.Children.Add(Text(description, "CaptionTextBlockStyle", Secondary));
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+        if (control is FrameworkElement fe)
+        {
+            fe.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(fe, 2);
+            Add(grid, fe);
+        }
+        return grid;
+    }
+
+    /// <summary>Rows in one rounded card, separated by thin lines.</summary>
+    public static Border Group(params UIElement?[] rows)
+    {
+        var stack = new StackPanel();
+        foreach (var row in rows)
+        {
+            if (row is null) continue;
+            if (stack.Children.Count > 0)
+                stack.Children.Add(new Border { Height = 1, Background = Res<Brush>("CardStrokeColorDefaultBrush"), Margin = new Thickness(16, 0, 16, 0) });
+            var cell = new Border { Padding = new Thickness(16, 10, 16, 10), Child = row };
+            stack.Children.Add(cell);
+        }
+        return new Border
+        {
+            Child = stack,
+            CornerRadius = new CornerRadius(8),
+            Background = Res<Brush>("CardBackgroundFillColorDefaultBrush"),
+            BorderBrush = Res<Brush>("CardStrokeColorDefaultBrush"),
+            BorderThickness = new Thickness(1),
+            Margin = new Thickness(0, 0, 0, 2),
+        };
+    }
+
     /// <summary>A switch with its "On"/"Off" label on the left, like Settings.</summary>
     public static StackPanel Switch(bool on, Action<bool> changed, bool enabled = true)
     {

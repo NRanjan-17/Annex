@@ -27,6 +27,8 @@ public sealed class AppSettings
     public bool BetaUpdates { get; set; }
     /// <summary>The update the user chose "Not now" for (the banner returns for a newer one).</summary>
     public string? DismissedUpdate { get; set; }
+    /// <summary>When Annex last finished checking for updates (shown on the About page).</summary>
+    public DateTimeOffset? LastUpdateCheck { get; set; }
     /// <summary>Write annex.log for bug reports. Off by default.</summary>
     public bool SaveLog { get; set; }
     /// <summary>Viewer: bitrate ceiling asked of hosts (Fast suits Wi-Fi).</summary>

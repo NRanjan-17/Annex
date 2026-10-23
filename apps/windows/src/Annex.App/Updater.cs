@@ -18,6 +18,9 @@ internal sealed class Updater
     public UpdateInfo? Available { get; private set; }
     public string? Error { get; private set; }
 
+    /// <summary>When a check last finished (up to date or found an update).</summary>
+    public DateTimeOffset? LastChecked { get; set; }
+
     /// <summary>Raised on any change (possibly off the UI thread).</summary>
     public event Action? Changed;
 
@@ -67,6 +70,7 @@ internal sealed class Updater
             var json = await s_http.GetStringAsync(AnnexNative.UpdateReleasesUrl).ConfigureAwait(false);
             Available = AnnexNative.PickUpdate(json, beta, AssetSuffix);
             Error = null;
+            LastChecked = DateTimeOffset.Now;
             Set(Available is null ? Stage.UpToDate : Stage.Available);
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or AnnexException)

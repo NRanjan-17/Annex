@@ -146,7 +146,7 @@ public sealed partial class MainWindow : Window
     /// writes selftest-ok to the data folder. Any exception lands in crash.log instead.</summary>
     private void SelfTest()
     {
-        foreach (var pane in new[] { "share", "connect", "settings", "connect", "settings", "share" })
+        foreach (var pane in new[] { "share", "connect", "settings", "devices", "about", "connect", "settings", "about", "share" })
             Go(pane);
         // Settings again with technical details flipped, then back as it was.
         var tech = _settings.ShowTechnicalDetails;
@@ -284,10 +284,14 @@ public sealed partial class MainWindow : Window
             IsEnabled = !refreshing,
             Foreground = Ui.Secondary,
         });
+        var footer = _nav.FooterMenuItems;
+        footer.Clear();
+        footer.Add(NavItem("Paired devices", "\uE716", "devices"));
+        footer.Add(NavItem("About", "\uE946", "about"));
         if (_pane.StartsWith("peer:", StringComparison.Ordinal) && !_hosts.Any(h => "peer:" + h.Instance == _pane))
             _pane = "connect";
         _nav.SelectedItem = _pane == "settings" ? _nav.SettingsItem
-            : items.OfType<NavigationViewItem>().FirstOrDefault(i => (string?)i.Tag == _pane);
+            : items.Concat(footer).OfType<NavigationViewItem>().FirstOrDefault(i => (string?)i.Tag == _pane);
         _buildingNav = false;
     }
 
@@ -310,6 +314,8 @@ public sealed partial class MainWindow : Window
             case "share": SharePage(stack); break;
             case "connect": ConnectPage(stack); break;
             case "settings": SettingsPage(stack); break;
+            case "devices": DevicesPage(stack); break;
+            case "about": AboutPage(stack); break;
             default:
                 var peer = _hosts.FirstOrDefault(h => "peer:" + h.Instance == _pane);
                 if (peer is not null) PeerPage(stack, peer); else ConnectPage(stack);
@@ -714,21 +720,15 @@ public sealed partial class MainWindow : Window
 
     private void SettingsPage(StackPanel p)
     {
-        p.Children.Add(Ui.Hero("\uE713", "Settings", "How Annex starts, shares, shows other computers and updates."));
+        p.Children.Add(Ui.Hero("\uE713", "Settings", "How Annex starts, shares and shows other computers."));
         p.Children.Add(Ui.Section("General"));
         GeneralSection(p);
         p.Children.Add(Ui.Section("Sharing"));
         SharingSection(p);
         p.Children.Add(Ui.Section("Viewing"));
         ViewingSection(p);
-        p.Children.Add(Ui.Section("Paired devices"));
-        DevicesSection(p);
-        p.Children.Add(Ui.Section("Updates"));
-        UpdatesSection(p);
         p.Children.Add(Ui.Section("Developer"));
         DeveloperSection(p);
-        p.Children.Add(Ui.Section("About"));
-        AboutSection(p);
     }
 
     /// <summary>Identity codes, addresses, stream and latency figures (Settings → Developer).</summary>
@@ -789,6 +789,12 @@ public sealed partial class MainWindow : Window
         DirectWifiOption(p);
     }
 
+    private void DevicesPage(StackPanel p)
+    {
+        p.Children.Add(Ui.Hero("\uE716", "Paired devices", "Paired devices connect without a PIN."));
+        DevicesSection(p);
+    }
+
     private void DevicesSection(StackPanel p)
     {
         if (_trusted.Any(t => t.AllowInput))
@@ -812,18 +818,83 @@ public sealed partial class MainWindow : Window
             p.Children.Add(Ui.Text($"This PC's identity code: {Fingerprint}", "CaptionTextBlockStyle", Ui.Secondary));
     }
 
-    private void UpdatesSection(StackPanel p)
+    private const string RepoUrl = "https://github.com/NRanjan-17/Annex";
+
+    private static Button LinkButton(string text, string url) =>
+        Ui.Button(text, () => _ = Windows.System.Launcher.LaunchUriAsync(new Uri(url)));
+
+    /// <summary>About: the app, then everything about updates in one group.</summary>
+    private void AboutPage(StackPanel p)
     {
-        p.Children.Add(UpdateStatusCard());
-        p.Children.Add(Ui.Card("\uE895", "Check for updates automatically", "Once a day, from GitHub. Nothing about you is sent.",
-            Ui.Switch(_settings.CheckForUpdates, on => { _settings.CheckForUpdates = on; _settings.Save(); })));
-        p.Children.Add(Ui.Card("\uE9D5", "Beta updates", "Get pre-release versions early. Turn off to go back to the latest normal release.",
-            Ui.Switch(_settings.BetaUpdates, on =>
-            {
-                _settings.BetaUpdates = on;
-                _settings.Save();
-                _ = _updater.CheckAsync(on);
-            })));
+        var head = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, Spacing = 4, Padding = new Thickness(24, 28, 24, 22) };
+        var icon = Ui.AppIcon(96);
+        icon.HorizontalAlignment = HorizontalAlignment.Center;
+        head.Children.Add(icon);
+        var name = Ui.Text("Annex", "TitleTextBlockStyle", wrap: false);
+        name.HorizontalAlignment = HorizontalAlignment.Center;
+        name.Margin = new Thickness(0, 12, 0, 0);
+        head.Children.Add(name);
+        var version = Ui.Text($"Version {AnnexNative.Version}", "BodyTextBlockStyle", Ui.Secondary, wrap: false);
+        version.HorizontalAlignment = HorizontalAlignment.Center;
+        head.Children.Add(version);
+        var description = Ui.Text("Use another computer as a second display, or mirror its screen.\nMac and Windows, over your network or a cable, encrypted end to end.",
+            "BodyTextBlockStyle", Ui.Secondary);
+        description.TextAlignment = TextAlignment.Center;
+        description.HorizontalAlignment = HorizontalAlignment.Center;
+        description.Margin = new Thickness(0, 12, 0, 0);
+        head.Children.Add(description);
+        var buttons = Ui.Row(LinkButton("Release notes", $"{RepoUrl}/releases/tag/v{AnnexNative.Version}"),
+            LinkButton("Report an issue", $"{RepoUrl}/issues"),
+            new HyperlinkButton { Content = "View on GitHub", NavigateUri = new Uri(RepoUrl) });
+        buttons.HorizontalAlignment = HorizontalAlignment.Center;
+        buttons.Margin = new Thickness(0, 16, 0, 0);
+        head.Children.Add(buttons);
+        var copyright = Ui.Text("MIT License · © 2026 Nalinish Ranjan", "CaptionTextBlockStyle", Ui.Tertiary, wrap: false);
+        copyright.HorizontalAlignment = HorizontalAlignment.Center;
+        copyright.Margin = new Thickness(0, 14, 0, 0);
+        head.Children.Add(copyright);
+        p.Children.Add(Ui.Group(head));
+
+        p.Children.Add(Ui.Section("Updates"));
+        var checkNow = Ui.Button("Check now", () => _ = _updater.CheckAsync(_settings.BetaUpdates));
+        checkNow.IsEnabled = !_updater.Busy;
+        checkNow.HorizontalAlignment = HorizontalAlignment.Left;
+        var last = _updater.LastChecked is { } when
+            ? $"Last checked: {when.LocalDateTime:g}"
+            : "Not checked yet.";
+        p.Children.Add(Ui.Group(
+            Ui.GroupRow("Check for updates automatically", "Once a day, from GitHub. Nothing about you is sent.",
+                Ui.Switch(_settings.CheckForUpdates, on => { _settings.CheckForUpdates = on; _settings.Save(); })),
+            Ui.GroupRow("Receive beta updates", "Beta versions include features in development and may contain bugs.",
+                Ui.Switch(_settings.BetaUpdates, on =>
+                {
+                    _settings.BetaUpdates = on;
+                    _settings.Save();
+                    _ = _updater.CheckAsync(on);
+                })),
+            UpdateStatusRow(),
+            checkNow,
+            Ui.Text(last, "CaptionTextBlockStyle", Ui.Tertiary)));
+    }
+
+    /// <summary>The update status line: up to date, checking, failed, or an update to install.</summary>
+    private Grid UpdateStatusRow()
+    {
+        static FontIcon Mark(string glyph, string brush) => new() { Glyph = glyph, FontSize = 18, Foreground = Ui.Res<Brush>(brush) };
+        static ProgressRing Spin() => new() { IsActive = true, Width = 18, Height = 18 };
+        return _updater.State switch
+        {
+            Updater.Stage.Checking => Ui.GroupRow("Checking for updates…", leading: Spin()),
+            Updater.Stage.Downloading => Ui.GroupRow("Downloading the update…", leading: Spin()),
+            Updater.Stage.Installing => Ui.GroupRow("Installing… Annex opens again in a moment.", leading: Spin()),
+            Updater.Stage.Available => Ui.GroupRow(UpdateText(), "Annex closes and opens again when it's done.", UpdateButtons(),
+                Mark("\uE896", "AccentFillColorDefaultBrush")),
+            Updater.Stage.Failed => Ui.GroupRow(_updater.Error ?? "Couldn't check for updates.", leading: Mark("\uE7BA", "SystemFillColorCautionBrush")),
+            Updater.Stage.UpToDate => Ui.GroupRow("You're on the latest version.", leading: Mark("\uEC61", "SystemFillColorSuccessBrush")),
+            _ => Ui.GroupRow(_updater.LastChecked is null ? "Not checked yet." : "You're on the latest version.",
+                leading: Mark(_updater.LastChecked is null ? "\uE946" : "\uEC61",
+                    _updater.LastChecked is null ? "TextFillColorSecondaryBrush" : "SystemFillColorSuccessBrush")),
+        };
     }
 
     private void DeveloperSection(StackPanel p)
@@ -837,21 +908,20 @@ public sealed partial class MainWindow : Window
                 Ui.Button("Open", () => System.Diagnostics.Process.Start("explorer.exe", DataDirectory))));
     }
 
-    private void AboutSection(StackPanel p)
-    {
-        p.Children.Add(Ui.Card("\uE946", $"Annex {AnnexNative.Version}", "Encrypted, local, no accounts.", Ui.AppIcon(32)));
-        p.Children.Add(Ui.Card("", "Website and source code", "github.com/NRanjan-17/Annex",
-            new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex") }));
-        p.Children.Add(Ui.Card("", "Report an issue", null,
-            new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex/issues") }));
-        p.Children.Add(Ui.Text("MIT License · Copyright © 2026 Nalinish Ranjan", "CaptionTextBlockStyle", Ui.Secondary));
-    }
-
     // ---- Updates ----------------------------------------------------------------------
 
     private void StartUpdateChecks()
     {
-        _updater.Changed += () => _ui.TryEnqueue(() => RenderIf("settings", "share", "connect"));
+        _updater.LastChecked = _settings.LastUpdateCheck;
+        _updater.Changed += () => _ui.TryEnqueue(() =>
+        {
+            if (_updater.LastChecked != _settings.LastUpdateCheck)
+            {
+                _settings.LastUpdateCheck = _updater.LastChecked;
+                _settings.Save();
+            }
+            RenderIf("about", "share", "connect");
+        });
         // Shortly after launch, then once a day while Annex runs.
         var timer = _ui.CreateTimer();
         timer.Interval = TimeSpan.FromSeconds(10);
@@ -867,25 +937,6 @@ public sealed partial class MainWindow : Window
         ? $"Annex {u.Version} is available." + (u.Downgrade ? " It's the latest normal release." : u.Prerelease ? " It's a pre-release." : "")
         : "";
 
-    private static ProgressRing Spinner() => new() { IsActive = true, Width = 20, Height = 20 };
-
-    /// <summary>The status line on the General page: up to date, checking, or an update to install.</summary>
-    private Border UpdateStatusCard()
-    {
-        var (title, detail, control) = _updater.State switch
-        {
-            Updater.Stage.Checking => ("Checking for updates…", (string?)null, (UIElement)Spinner()),
-            Updater.Stage.Available => (UpdateText(), "Annex closes and opens again when it's done.", UpdateButtons()),
-            Updater.Stage.Downloading => ("Downloading the update…", null, Spinner()),
-            Updater.Stage.Installing => ("Installing… Annex opens again in a moment.", null, Spinner()),
-            Updater.Stage.UpToDate => ("Annex is up to date.", $"Version {AnnexNative.Version}.", CheckNowButton()),
-            Updater.Stage.Failed => (_updater.Error ?? "Couldn't check for updates.", null, CheckNowButton()),
-            _ => ($"Version {AnnexNative.Version}", null, CheckNowButton()),
-        };
-        return Ui.Card("\uE777", title, detail, control);
-    }
-
-    private Button CheckNowButton() => Ui.Button("Check now", () => _ = _updater.CheckAsync(_settings.BetaUpdates));
 
     private StackPanel UpdateButtons()
     {
@@ -1144,7 +1195,7 @@ public sealed partial class MainWindow : Window
                 {
                     XamlRoot = Content.XamlRoot,
                     Title = $"Let {ask.PeerName} control this PC?",
-                    Content = $"{ask.PeerName} wants to use this PC's mouse and keyboard. You can change this in Settings → Paired devices.",
+                    Content = $"{ask.PeerName} wants to use this PC's mouse and keyboard. You can change this in Paired devices.",
                     PrimaryButtonText = "Allow",
                     CloseButtonText = "Not now",
                     DefaultButton = ContentDialogButton.Primary,
@@ -1377,7 +1428,7 @@ public sealed partial class MainWindow : Window
     {
         if (_core is null) return;
         _trusted = [.. _core.TrustedPeers];
-        RenderIf("settings", "connect", "peer", "share");
+        RenderIf("devices", "connect", "peer", "share");
     }
 
     private void Disconnect()
