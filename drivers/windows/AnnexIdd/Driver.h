@@ -51,6 +51,7 @@ struct MonitorEntry {
     EdidSpec spec{};
     std::array<uint8_t, 128> edid{};
     IDDCX_MONITOR monitor = nullptr;
+    bool pending = false;  // still being created/announced by AddMonitor
     std::unique_ptr<SwapChainProcessor> processor;
 };
 
@@ -75,7 +76,7 @@ public:
 
 private:
     void Watchdog();
-    void DepartLocked(MonitorEntry& entry);
+    void Depart(std::unique_ptr<MonitorEntry> entry);
 
     WDFDEVICE m_device;
     IDDCX_ADAPTER m_adapter = nullptr;

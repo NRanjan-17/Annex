@@ -171,14 +171,25 @@ NTSTATUS Adapter::AddMonitor(const ANNEX_ADD_MONITOR& in, ANNEX_ADD_MONITOR_RESU
     if (in.Version != ANNEX_IDD_PROTOCOL_VERSION) return STATUS_REVISION_MISMATCH;
     if (in.Width < 640 || in.Height < 480 || in.Width > 8192 || in.Height > 8192) return STATUS_INVALID_PARAMETER;
 
-    std::lock_guard<std::mutex> guard(m_lock);
-    if (m_monitors.size() >= ANNEX_IDD_MAX_MONITORS) return STATUS_TOO_MANY_NODES;
-    auto entry = std::make_unique<MonitorEntry>();
-    entry->connector = ConnectorFor(in.Serial, m_monitors);
-    if (entry->connector == UINT_MAX) return STATUS_TOO_MANY_NODES;
-    entry->owner = in.Owner;
-    entry->spec = {in.Serial, in.Width & ~1u, in.Height & ~1u, in.RefreshHz ? in.RefreshHz : 60, in.WidthMm, in.HeightMm};
-    entry->edid = BuildEdid(entry->spec);
+    // IddCx calls back into ModesForSerial/ModesForMonitor/AssignSwapChain while it creates and
+    // announces the monitor, so the entry is listed first (callbacks see its real size) and the
+    // lock is never held across an IddCx call (re-locking std::mutex on one thread throws, which
+    // kills the driver host).
+    MonitorEntry* entry = nullptr;
+    {
+        std::lock_guard<std::mutex> guard(m_lock);
+        if (m_monitors.size() >= ANNEX_IDD_MAX_MONITORS) return STATUS_TOO_MANY_NODES;
+        auto fresh = std::make_unique<MonitorEntry>();
+        fresh->connector = ConnectorFor(in.Serial, m_monitors);
+        if (fresh->connector == UINT_MAX) return STATUS_TOO_MANY_NODES;
+        fresh->owner = in.Owner;
+        fresh->pending = true;
+        fresh->spec = {in.Serial, in.Width & ~1u, in.Height & ~1u, in.RefreshHz ? in.RefreshHz : 60, in.WidthMm,
+                       in.HeightMm};
+        fresh->edid = BuildEdid(fresh->spec);
+        entry = fresh.get();
+        m_monitors.push_back(std::move(fresh));
+    }
 
     IDDCX_MONITOR_INFO info = {};
     info.Size = sizeof(info);
@@ -196,14 +207,23 @@ NTSTATUS Adapter::AddMonitor(const ANNEX_ADD_MONITOR& in, ANNEX_ADD_MONITOR_RESU
     create.pMonitorInfo = &info;
     IDARG_OUT_MONITORCREATE created = {};
     NTSTATUS status = IddCxMonitorCreate(m_adapter, &create, &created);
-    if (!NT_SUCCESS(status)) return status;
-    entry->monitor = created.MonitorObject;
-    IDARG_OUT_MONITORARRIVAL arrival = {};
-    status = IddCxMonitorArrival(entry->monitor, &arrival);
+    if (NT_SUCCESS(status)) {
+        {
+            std::lock_guard<std::mutex> guard(m_lock);
+            entry->monitor = created.MonitorObject;
+        }
+        IDARG_OUT_MONITORARRIVAL arrival = {};
+        status = IddCxMonitorArrival(created.MonitorObject, &arrival);
+        if (!NT_SUCCESS(status)) WdfObjectDelete(reinterpret_cast<WDFOBJECT>(created.MonitorObject));
+    }
+
+    std::lock_guard<std::mutex> guard(m_lock);
     if (!NT_SUCCESS(status)) {
-        WdfObjectDelete(reinterpret_cast<WDFOBJECT>(entry->monitor));
+        m_monitors.erase(std::find_if(m_monitors.begin(), m_monitors.end(),
+                                      [&](const auto& m) { return m.get() == entry; }));
         return status;
     }
+    entry->pending = false;
     out.ConnectorIndex = entry->connector;
     bool known = false;
     for (auto& lease : m_leases)
@@ -212,25 +232,27 @@ NTSTATUS Adapter::AddMonitor(const ANNEX_ADD_MONITOR& in, ANNEX_ADD_MONITOR_RESU
             known = true;
         }
     if (!known) m_leases.emplace_back(in.Owner, GetTickCount64());
-    m_monitors.push_back(std::move(entry));
     return STATUS_SUCCESS;
 }
 
-void Adapter::DepartLocked(MonitorEntry& entry) {
-    entry.processor.reset();
-    if (entry.monitor) {
-        IddCxMonitorDeparture(entry.monitor);
-        entry.monitor = nullptr;
-    }
+/// Called without the lock: stopping the swap chain and departing re-enter our IddCx callbacks.
+void Adapter::Depart(std::unique_ptr<MonitorEntry> entry) {
+    entry->processor.reset();
+    if (entry->monitor) IddCxMonitorDeparture(entry->monitor);
 }
 
 NTSTATUS Adapter::RemoveMonitor(UINT connector, UINT64 owner) {
-    std::lock_guard<std::mutex> guard(m_lock);
-    auto it = std::find_if(m_monitors.begin(), m_monitors.end(),
-                           [&](const auto& m) { return m->connector == connector && m->owner == owner; });
-    if (it == m_monitors.end()) return STATUS_NOT_FOUND;
-    DepartLocked(**it);
-    m_monitors.erase(it);
+    std::unique_ptr<MonitorEntry> removed;
+    {
+        std::lock_guard<std::mutex> guard(m_lock);
+        auto it = std::find_if(m_monitors.begin(), m_monitors.end(), [&](const auto& m) {
+            return !m->pending && m->connector == connector && m->owner == owner;
+        });
+        if (it == m_monitors.end()) return STATUS_NOT_FOUND;
+        removed = std::move(*it);
+        m_monitors.erase(it);
+    }
+    Depart(std::move(removed));
     return STATUS_SUCCESS;
 }
 
@@ -244,24 +266,28 @@ void Adapter::Watchdog() {
     // Remove monitors whose app stopped pinging (crashed or killed): no window is ever stranded
     // on a display nobody is watching.
     while (WaitForSingleObject(m_stop, 1000) == WAIT_TIMEOUT) {
-        std::lock_guard<std::mutex> guard(m_lock);
-        const ULONGLONG now = GetTickCount64();
-        for (auto lease = m_leases.begin(); lease != m_leases.end();) {
-            if (now - lease->second > ANNEX_IDD_LEASE_MS) {
-                const UINT64 owner = lease->first;
-                for (auto m = m_monitors.begin(); m != m_monitors.end();) {
-                    if ((*m)->owner == owner) {
-                        DepartLocked(**m);
-                        m = m_monitors.erase(m);
-                    } else {
-                        ++m;
+        std::vector<std::unique_ptr<MonitorEntry>> expired;
+        {
+            std::lock_guard<std::mutex> guard(m_lock);
+            const ULONGLONG now = GetTickCount64();
+            for (auto lease = m_leases.begin(); lease != m_leases.end();) {
+                if (now - lease->second > ANNEX_IDD_LEASE_MS) {
+                    const UINT64 owner = lease->first;
+                    for (auto m = m_monitors.begin(); m != m_monitors.end();) {
+                        if ((*m)->owner == owner && !(*m)->pending) {
+                            expired.push_back(std::move(*m));
+                            m = m_monitors.erase(m);
+                        } else {
+                            ++m;
+                        }
                     }
+                    lease = m_leases.erase(lease);
+                } else {
+                    ++lease;
                 }
-                lease = m_leases.erase(lease);
-            } else {
-                ++lease;
             }
         }
+        for (auto& entry : expired) Depart(std::move(entry));
     }
 }
 
@@ -280,22 +306,26 @@ std::vector<DISPLAYCONFIG_VIDEO_SIGNAL_INFO> Adapter::ModesForMonitor(IDDCX_MONI
 }
 
 void Adapter::AssignSwapChain(IDDCX_MONITOR monitor, const IDARG_IN_SETSWAPCHAIN* args) {
-    std::lock_guard<std::mutex> guard(m_lock);
-    for (auto& m : m_monitors) {
-        if (m->monitor == monitor) {
-            m->processor.reset();
-            m->processor = std::make_unique<SwapChainProcessor>(args->hSwapChain, args->RenderAdapterLuid,
-                                                                args->hNextSurfaceAvailable);
-            return;
+    std::unique_ptr<SwapChainProcessor> old;
+    {
+        std::lock_guard<std::mutex> guard(m_lock);
+        for (auto& m : m_monitors) {
+            if (m->monitor == monitor) {
+                old = std::move(m->processor);
+                m->processor = std::make_unique<SwapChainProcessor>(args->hSwapChain, args->RenderAdapterLuid,
+                                                                    args->hNextSurfaceAvailable);
+                return;  // old stops (joins its thread) here, after the lock is released
+            }
         }
     }
     WdfObjectDelete(reinterpret_cast<WDFOBJECT>(args->hSwapChain));
 }
 
 void Adapter::UnassignSwapChain(IDDCX_MONITOR monitor) {
+    std::unique_ptr<SwapChainProcessor> old;
     std::lock_guard<std::mutex> guard(m_lock);
     for (auto& m : m_monitors)
-        if (m->monitor == monitor) m->processor.reset();
+        if (m->monitor == monitor) old = std::move(m->processor);
 }
 
 }  // namespace annex
