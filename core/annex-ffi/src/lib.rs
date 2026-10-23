@@ -819,14 +819,9 @@ mod win_host {
                 Ok(c) => c,
                 Err(e) => return fail(e.to_string()),
             };
-            tracing::info!(
-                id,
-                connector,
-                width = display.width_px,
-                height = display.height_px,
-                hz,
-                "extend: virtual monitor added"
-            );
+            // (Plain locals: inside tracing's macros `display` names tracing's display() helper.)
+            let (asked_w, asked_h) = (display.width_px, display.height_px);
+            tracing::info!(id, connector, width = asked_w, height = asked_h, hz, "extend: virtual monitor added");
             let monitor = match driver.wait_for_monitor(connector, Duration::from_secs(5)) {
                 Ok(m) => {
                     tracing::info!(id, name = %m.name, width = m.width, height = m.height, "extend: monitor is active");
