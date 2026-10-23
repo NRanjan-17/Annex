@@ -437,15 +437,22 @@ async fn connect_best(core: &Arc<Core>, cfg: &ViewerConfig) -> Result<Establishe
                         tries.abort_all();
                         return Ok(est);
                     }
-                    Some(Ok(Err(e))) => last_err = Some(e),
+                    Some(Ok(Err(e))) => {
+                        tracing::info!(quic, "connect attempt failed: {e}");
+                        last_err = Some(e);
+                    }
                     Some(Err(_)) => {}
                     None => break,
                 },
                 _ = &mut deadline => {
+                    tracing::info!(quic, "connect attempts timed out");
                     tries.abort_all();
                     break;
                 }
             }
+        }
+        if quic {
+            tracing::warn!("QUIC did not connect; trying TCP (video over TCP stalls when packets are lost)");
         }
     }
     Err(last_err.unwrap_or(SessionError::Timeout("connect")))
