@@ -789,6 +789,12 @@ private struct AboutPage: View {
                 Link(destination: URL(string: "https://github.com/NRanjan-17/Annex/issues")!) {
                     Row(symbol: "ladybug.fill", tint: .red, title: "Report an issue") { Image(systemName: "arrow.up.right").foregroundStyle(.tertiary) }
                 }
+                Row(symbol: "doc.text", tint: .gray, title: "Log file", subtitle: "For bug reports. Stays on this Mac.") {
+                    Button("Show in Finder") {
+                        let log = AppModel.dataDirectory.appendingPathComponent("annex.log")
+                        NSWorkspace.shared.activateFileViewerSelecting([log])
+                    }
+                }
             } footer: {
                 Text("MIT License · Copyright © 2026 Nalinish Ranjan").font(.caption).foregroundStyle(.secondary)
             }

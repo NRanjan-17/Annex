@@ -455,7 +455,9 @@ async fn run_session(
     } else {
         None
     };
+    tracing::info!(id, peer = %peer.device_name, mode = ?req.mode, input = req.input, quality = ?req.quality, "session request");
     if let Some(reason) = reject {
+        tracing::warn!(id, reason, "session rejected");
         writer.send_control(&Control::SessionReject { reason: reason.into() }).await?;
         return Ok(reason.into());
     }

@@ -242,6 +242,27 @@ pub struct AnnexDiscovery {
     callbacks: Arc<Callbacks>,
 }
 
+/// Writes the core's log to `<data_dir>/annex.log` (once per process). Local only, for the user to
+/// look at or attach to a bug report; restarted when it grows past 5 MB.
+fn init_logging(data_dir: &std::path::Path) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let path = data_dir.join("annex.log");
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
+            let _ = std::fs::rename(&path, data_dir.join("annex.old.log"));
+        }
+        let _ = std::fs::create_dir_all(data_dir);
+        let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else { return };
+        let _ = tracing_subscriber::fmt()
+            .with_writer(Mutex::new(file))
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_target(false)
+            .try_init();
+        tracing::info!(version = env!("CARGO_PKG_VERSION"), os = std::env::consts::OS, "annex core started");
+    });
+}
+
 fn new_core(core: Arc<Core>, out: *mut *mut AnnexCore) -> Result<i32, (i32, String)> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -296,6 +317,7 @@ pub unsafe extern "C" fn annex_core_new(
         }
         let dir = PathBuf::from(unsafe { str_arg(data_dir, "data_dir") }?);
         let name = unsafe { str_arg(device_name, "device_name") }?;
+        init_logging(&dir);
         let core = Core::open(&dir, name, TrustPolicy::Pair).map_err(failed)?;
         new_core(core, out)
     })
@@ -774,8 +796,12 @@ mod win_host {
         }
 
         fn start_extend(self: &Arc<Self>, id: u64, display: DisplayInfo, fingerprint: String) {
-            let Some(driver) = self.driver.clone() else { return };
             let Some(host) = self.host() else { return };
+            let Some(driver) = self.driver.clone() else {
+                tracing::error!("extend session {id}: no display driver");
+                host.end_session(id);
+                return;
+            };
             let fail = |e: String| {
                 tracing::error!("extend session {id} failed: {e}");
                 host.end_session(id);
@@ -793,8 +819,19 @@ mod win_host {
                 Ok(c) => c,
                 Err(e) => return fail(e.to_string()),
             };
+            tracing::info!(
+                id,
+                connector,
+                width = display.width_px,
+                height = display.height_px,
+                hz,
+                "extend: virtual monitor added"
+            );
             let monitor = match driver.wait_for_monitor(connector, Duration::from_secs(5)) {
-                Ok(m) => m,
+                Ok(m) => {
+                    tracing::info!(id, name = %m.name, width = m.width, height = m.height, "extend: monitor is active");
+                    m
+                }
                 Err(e) => {
                     let _ = driver.remove_monitor(connector);
                     return fail(e.to_string());
@@ -828,6 +865,7 @@ mod win_host {
                 };
                 match HostPipeline::start(cfg, clock(), output) {
                     Ok(p) => {
+                        tracing::info!(id, w, h, "extend: capturing the virtual monitor");
                         *pipeline.lock().unwrap() = Some(p);
                         Some((w, h))
                     }

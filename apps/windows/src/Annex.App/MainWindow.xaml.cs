@@ -680,6 +680,8 @@ public sealed partial class MainWindow : Window
             new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex") }));
         p.Children.Add(Ui.Card("", "Report an issue", null,
             new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex/issues") }));
+        var logs = Ui.Button("Open", () => System.Diagnostics.Process.Start("explorer.exe", DataDirectory));
+        p.Children.Add(Ui.Card("", "Log file", "annex.log, for bug reports. Stays on this PC.", logs));
         p.Children.Add(Ui.Text("MIT License · Copyright © 2026 Nalinish Ranjan", "CaptionTextBlockStyle", Ui.Secondary));
     }
 

@@ -15,6 +15,7 @@ annex-session = { path = "../annex-session" }
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread"] }
 tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "registry"] }
 
 [lints]
 workspace = true
