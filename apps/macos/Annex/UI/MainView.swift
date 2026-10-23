@@ -169,9 +169,15 @@ private struct SidebarItem: View {
     }
 }
 
-// MARK: Building blocks
 
-/// A rounded, gradient-filled icon like the ones in System Settings.
+// MARK: Building blocks
+//
+// Every page uses one design language, the one the About page started: a header card, then
+// sections, each a small bold title over one rounded group of full-width rows divided by
+// hairlines. Rows carry text on the left and one control on the right; only status rows get an
+// icon (a check, a warning, a spinner), never a coloured tile.
+
+/// A rounded, gradient-filled icon like the ones in System Settings (used by page headers).
 struct IconTile: View {
     let symbol: String
     let tint: Color
@@ -186,6 +192,148 @@ struct IconTile: View {
     }
 }
 
+/// A page: a scrolling column of cards and sections, centred and no wider than reads well.
+private struct Page<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) { content }
+                .padding(24)
+                .frame(maxWidth: 720)
+                .frame(maxWidth: .infinity)
+        }
+        .navigationTitle(title)
+    }
+}
+
+/// A rounded group, like System Settings' boxes. Rows end in a hairline; the last one is clipped
+/// away so the group never shows a line along its bottom edge.
+private struct SettingsGroup<Content: View>: View {
+    var padding: CGFloat = 0
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(spacing: 0) { content }
+            .padding(.bottom, padding == 0 ? -1 : 0)
+            .clipped()
+            .padding(padding)
+            .frame(maxWidth: .infinity)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.045)))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
+    }
+}
+
+/// A section: a small bold title (optionally with a control at its right), one group, a footnote.
+private struct GroupSection<Content: View, Accessory: View>: View {
+    var title: String?
+    var footer: String?
+    @ViewBuilder var accessory: Accessory
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let title {
+                HStack {
+                    Text(title).font(.headline)
+                    Spacer()
+                    accessory
+                }
+                .padding(.horizontal, 4)
+            }
+            SettingsGroup { content }
+            if let footer, !footer.isEmpty {
+                Text(footer)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 4)
+            }
+        }
+    }
+}
+
+private extension GroupSection where Accessory == EmptyView {
+    init(_ title: String? = nil, footer: String? = nil, @ViewBuilder content: () -> Content) {
+        self.init(title: title, footer: footer, accessory: { EmptyView() }, content: content)
+    }
+}
+
+/// One full-width cell of a group: padding and the hairline under it. For custom row layouts.
+private struct GroupCell<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            Divider().padding(.horizontal, 16)
+        }
+    }
+}
+
+/// What a status row shows on its left.
+private enum RowStatus {
+    case symbol(String, Color)
+    case spinner
+}
+
+/// A row: title and optional subtitle on the left, one control on the right.
+private struct GroupRow<Trailing: View>: View {
+    let title: String
+    var subtitle: String?
+    var status: RowStatus?
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        GroupCell {
+            HStack(spacing: 10) {
+                switch status {
+                case .symbol(let name, let tint):
+                    Image(systemName: name).foregroundStyle(tint).font(.system(size: 16))
+                case .spinner:
+                    ProgressView().controlSize(.small)
+                case nil:
+                    EmptyView()
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).fixedSize(horizontal: false, vertical: true)
+                    if let subtitle {
+                        Text(subtitle).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                // The text gets the room; controls take only their natural size (never truncated).
+                .layoutPriority(1)
+                Spacer(minLength: 12)
+                trailing.fixedSize()
+            }
+        }
+    }
+}
+
+private extension GroupRow where Trailing == EmptyView {
+    init(title: String, subtitle: String? = nil, status: RowStatus? = nil) {
+        self.init(title: title, subtitle: subtitle, status: status) { EmptyView() }
+    }
+}
+
+/// A row with a switch on the right.
+private struct ToggleRow: View {
+    let title: String
+    var subtitle: String?
+    @Binding var isOn: Bool
+    var disabled = false
+
+    var body: some View {
+        GroupRow(title: title, subtitle: subtitle) {
+            Toggle("", isOn: $isOn).toggleStyle(.switch).labelsHidden().disabled(disabled)
+        }
+    }
+}
+
 /// The card at the top of each page: big icon, title, one-line description.
 private struct Hero<Icon: View>: View {
     let title: String
@@ -193,63 +341,45 @@ private struct Hero<Icon: View>: View {
     @ViewBuilder var icon: Icon
 
     var body: some View {
-        Section {
+        SettingsGroup(padding: 22) {
             VStack(spacing: 6) {
                 icon
-                Text(title).font(.system(size: 19, weight: .semibold))
+                Text(title).font(.system(size: 20, weight: .semibold)).padding(.top, 4)
                 Text(text)
-                    .font(.system(size: 12.5))
+                    .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
+                    .frame(maxWidth: 440)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
         }
     }
 }
 
 private extension Hero where Icon == IconTile {
     init(title: String, text: String, symbol: String, tint: Color) {
-        self.init(title: title, text: text) { IconTile(symbol: symbol, tint: tint, size: 48) }
+        self.init(title: title, text: text) { IconTile(symbol: symbol, tint: tint, size: 52) }
     }
 }
 
-/// A row with an icon tile, a title, an optional subtitle and trailing content.
-private struct Row<Trailing: View>: View {
-    let symbol: String
-    let tint: Color
-    let title: String
-    var subtitle: String?
-    @ViewBuilder var trailing: Trailing
+/// Re-reads permissions every couple of seconds while a page is open (System Settings doesn't
+/// tell apps when they change).
+private struct WatchesPermissions: ViewModifier {
+    let model: AppModel
 
-    var body: some View {
-        HStack(spacing: 10) {
-            IconTile(symbol: symbol, tint: tint)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                if let subtitle {
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
+    func body(content: Content) -> some View {
+        content.task {
+            while !Task.isCancelled {
+                model.refreshPermissions()
+                try? await Task.sleep(for: .seconds(2))
             }
-            // The text gets the room; controls take only their natural size (never truncated).
-            .layoutPriority(1)
-            Spacer(minLength: 12)
-            trailing
-                .fixedSize()
         }
-        .padding(.vertical, 2)
     }
 }
 
-private struct Page<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        Form { content }
-            .formStyle(.grouped)
-            .navigationTitle(title)
+private func openPrivacySettings(_ anchor: String) {
+    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
+        NSWorkspace.shared.open(url)
     }
 }
 
@@ -260,32 +390,15 @@ private struct SharePage: View {
     @ObservedObject var settings: AppSettings
 
     var body: some View {
-        sharePage
-            // Permission changes in System Settings don't notify apps; look again while this page is open.
-            .task {
-                while !Task.isCancelled {
-                    model.refreshPermissions()
-                    try? await Task.sleep(for: .seconds(2))
-                }
-            }
-    }
-
-    private var sharePage: some View {
         Page(title: "Share This Mac") {
             Hero(title: "Share This Mac",
                  text: "Let another computer show this screen, or extend this display onto it.",
                  symbol: "display.2", tint: .blue)
             UpdateBanner(updater: model.updater)
-            Section {
-                HStack(spacing: 12) {
-                    IconTile(symbol: model.isHosting ? "dot.radiowaves.left.and.right" : "pause.fill",
-                             tint: model.isHosting ? .blue : .gray, size: 34)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(model.isHosting ? "Sharing is on" : "Sharing is off")
-                            .font(.system(size: 15, weight: .semibold))
-                        Text(shareStatus).font(.callout).foregroundStyle(.secondary)
-                    }
-                    Spacer()
+            GroupSection {
+                GroupRow(title: model.isHosting ? "Sharing is on" : "Sharing is off", subtitle: shareStatus,
+                         status: model.isHosting ? .symbol("dot.radiowaves.left.and.right", .green)
+                                                 : .symbol("pause.circle.fill", .secondary)) {
                     if model.isHosting {
                         Button(role: .destructive) { model.setHosting(false) } label: {
                             Label("Stop Sharing", systemImage: "stop.fill").padding(.horizontal, 6)
@@ -299,10 +412,9 @@ private struct SharePage: View {
                         .controlSize(.large)
                     }
                 }
-                .padding(.vertical, 4)
                 if model.displays.count > 1 {
-                    Row(symbol: "display", tint: .blue, title: "Screen to share",
-                        subtitle: model.isHosting ? "Stop sharing to pick another screen." : nil) {
+                    GroupRow(title: "Screen to share",
+                             subtitle: model.isHosting ? "Stop sharing to pick another screen." : nil) {
                         Picker("", selection: $model.selectedDisplayID) {
                             ForEach(model.displays) { d in Text(d.name).tag(Optional(d.id)) }
                         }
@@ -311,33 +423,25 @@ private struct SharePage: View {
                         .disabled(model.isHosting)
                     }
                 }
-            }
-            if model.isHosting && !model.screenRecordingAllowed {
-                Section {
-                    Row(symbol: "record.circle", tint: .orange, title: "Screen Recording is off",
-                        subtitle: "Allow Annex in Privacy & Security, then reopen Annex. After an update, remove it with − and add it again.") {
-                        Button("Open Settings") {
-                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }
+                if model.isHosting && !model.screenRecordingAllowed {
+                    GroupRow(title: "Screen Recording is off",
+                             subtitle: "Allow Annex in Privacy & Security, then reopen Annex. After an update, remove it with − and add it again.",
+                             status: .symbol("exclamationmark.triangle.fill", .orange)) {
+                        Button("Open Settings") { openPrivacySettings("Privacy_ScreenCapture") }
                     }
                 }
-            }
-            if let err = model.hostStatus.error {
-                Section {
-                    Label(err, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                if let err = model.hostStatus.error {
+                    GroupRow(title: err, status: .symbol("exclamationmark.triangle.fill", .orange))
                 }
             }
             if model.isHosting && model.hostStatus.viewerName != nil {
                 let s = model.hostStatus
-                Section("Connected now") {
+                GroupSection("Connected now") {
                     ForEach(s.viewers) { v in
-                        Row(symbol: v.extend ? "rectangle.split.2x1" : "rectangle.on.rectangle", tint: .green,
-                            title: v.extend ? "\(v.name) is extending this display" : "Showing this screen on \(v.name)",
-                            subtitle: v.extend ? "Arrange it in System Settings → Displays."
-                                : model.settings.showTechnicalDetails
-                                    ? s.stream.map { "\($0.width)×\($0.height) at \($0.fps) fps" } : nil) {
+                        GroupRow(title: v.extend ? "\(v.name) is extending this display" : "Showing this screen on \(v.name)",
+                                 subtitle: v.extend ? "Arrange it in System Settings → Displays."
+                                     : model.settings.showTechnicalDetails
+                                         ? s.stream.map { "\($0.width)×\($0.height) at \($0.fps) fps" } : nil) {
                             if model.hostDirectWiFi == nil {
                                 Button("Direct Wi-Fi") { model.switchViewerToDirectWiFi(v) }
                                     .help("Join \(v.name)'s hotspot for less lag. Works with a Windows PC.")
@@ -345,14 +449,12 @@ private struct SharePage: View {
                         }
                     }
                     if let ssid = model.hostDirectWiFi {
-                        Row(symbol: "wifi", tint: .blue, title: "On direct Wi-Fi",
-                            subtitle: "Joined “\(ssid)”.") { EmptyView() }
+                        GroupRow(title: "On direct Wi-Fi", subtitle: "Joined “\(ssid)”.")
                     } else if let direct = model.directStatus {
-                        Row(symbol: "wifi", tint: .blue, title: "Direct Wi-Fi", subtitle: direct) { EmptyView() }
+                        GroupRow(title: "Direct Wi-Fi", subtitle: direct)
                     }
                     ForEach(s.controllingViewers, id: \.self) { name in
-                        Row(symbol: "keyboard", tint: .orange, title: "\(name) is controlling this Mac",
-                            subtitle: "Turn it off in Paired Devices.") { EmptyView() }
+                        GroupRow(title: "\(name) is controlling this Mac", subtitle: "Turn it off in Paired Devices.")
                     }
                 }
             }
@@ -360,6 +462,7 @@ private struct SharePage: View {
                 HowToConnect(model: model, port: port)
             }
         }
+        .modifier(WatchesPermissions(model: model))
     }
 
     private var shareStatus: String {
@@ -379,38 +482,36 @@ private struct HowToConnect: View {
     @State private var copied: String?
 
     var body: some View {
-        Section {
-            Row(symbol: "1.circle.fill", tint: .blue, title: "Open Annex on the other computer and choose “\(model.deviceName)”.") { EmptyView() }
-            Row(symbol: "2.circle.fill", tint: .blue, title: "Pick Show Its Screen or Extend Display.") { EmptyView() }
-            Row(symbol: "3.circle.fill", tint: .blue, title: "Enter the PIN shown here (first time only).") { EmptyView() }
+        GroupSection("Connect from another computer",
+                     footer: addresses.isEmpty ? nil : "Not listed there? Connect by address."
+                         + (model.settings.showTechnicalDetails ? " Identity code: \(model.fingerprintDisplay)" : "")) {
+            GroupRow(title: "1. Open Annex on the other computer and choose “\(model.deviceName)”.")
+            GroupRow(title: "2. Pick Show Its Screen or Extend Display.")
+            GroupRow(title: "3. Enter the PIN shown here (first time only).")
             if addresses.isEmpty {
-                Row(symbol: "wifi.exclamationmark", tint: .orange, title: "This Mac isn't on a network.",
-                    subtitle: "Connect it to Wi-Fi, Ethernet or a cable.") { EmptyView() }
+                GroupRow(title: "This Mac isn't on a network.", subtitle: "Connect it to Wi-Fi, Ethernet or a cable.",
+                         status: .symbol("exclamationmark.triangle.fill", .orange))
             }
             ForEach(addresses, id: \.self) { a in
                 let text = port == Int(annexDefaultPort) ? a.ip : "\(a.ip):\(port)"
-                HStack(spacing: 10) {
-                    Text(text)
-                        .font(.system(size: 14, weight: .medium, design: .monospaced))
-                        .textSelection(.enabled)
-                    Text(a.isDirectLink ? "Cable" : "Network")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button(copied == text ? "Copied" : "Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(text, forType: .string)
-                        copied = text
+                GroupCell {
+                    HStack(spacing: 10) {
+                        Text(text)
+                            .font(.system(size: 14, weight: .medium, design: .monospaced))
+                            .textSelection(.enabled)
+                        Text(a.isDirectLink ? "Cable" : "Network")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(copied == text ? "Copied" : "Copy") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(text, forType: .string)
+                            copied = text
+                        }
+                        .controlSize(.small)
                     }
-                    .controlSize(.small)
                 }
             }
-        } header: {
-            Text("Connect from another computer")
-        } footer: {
-            Text(addresses.isEmpty ? "" : "Not listed there? Connect by address."
-                 + (model.settings.showTechnicalDetails ? " Identity code: \(model.fingerprintDisplay)" : ""))
-                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
         }
         .onAppear { addresses = LocalAddresses.current() }
     }
@@ -422,18 +523,12 @@ private let annexDefaultPort: UInt16 = 47800
 /// Shown while nothing that's sharing has been found: what usually blocks discovery.
 private struct NotShowingUp: View {
     var body: some View {
-        Section("Can't find it?") {
-            Row(symbol: "wifi", tint: .gray, title: "Use the same network",
-                subtitle: "Guest Wi-Fi and VPNs can hide computers.") { EmptyView() }
-            Row(symbol: "network", tint: .gray, title: "Allow Local Network for Annex") {
-                Button("Open Settings") {
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
+        GroupSection("Can't find it?") {
+            GroupRow(title: "Use the same network", subtitle: "Guest Wi-Fi and VPNs can hide computers.")
+            GroupRow(title: "Allow Local Network for Annex") {
+                Button("Open Settings") { openPrivacySettings("Privacy_LocalNetwork") }
             }
-            Row(symbol: "shield", tint: .gray, title: "On Windows, allow the firewall",
-                subtitle: "In Annex on the PC: Connect → Allow.") { EmptyView() }
+            GroupRow(title: "On Windows, allow the firewall", subtitle: "In Annex on the PC: Connect → Allow.")
         }
     }
 }
@@ -483,42 +578,31 @@ private struct ConnectPage: View {
                  symbol: "rectangle.connected.to.line.below", tint: .indigo)
             UpdateBanner(updater: model.updater)
             ViewerStatusSection(model: model)
-            Section {
+            GroupSection(title: "Nearby", accessory: { NearbyRefreshButton(model: model) }) {
                 if model.discovered.isEmpty {
-                    Row(symbol: "magnifyingglass", tint: .gray, title: "Looking for computers…",
-                        subtitle: "Start sharing on the other computer.") {
-                        ProgressView().controlSize(.small)
-                    }
+                    GroupRow(title: "Looking for computers…", subtitle: "Start sharing on the other computer.",
+                             status: .spinner)
                 }
                 ForEach(model.discovered) { peer in
                     PeerRow(model: model, peer: peer)
-                }
-            } header: {
-                HStack {
-                    Text("Nearby")
-                    Spacer()
-                    NearbyRefreshButton(model: model)
                 }
             }
             if model.discovered.allSatisfy({ !$0.isSharing }) {
                 NotShowingUp()
             }
-            Section {
-                Row(symbol: "network", tint: .gray, title: "Address") {
+            GroupSection("Connect by address", footer: "Use this if the computer isn't listed.") {
+                GroupRow(title: "Address") {
                     InputField(text: $model.manualAddress, placeholder: "192.168.1.20",
                                onSubmit: { model.extendMode = false; model.connectManual() })
                         .frame(width: 200)
                 }
-                HStack {
-                    Spacer()
-                    ConnectButtons(model: model, connect: { model.connectManual() }, compact: true)
-                        .disabled(model.isViewing || model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+                GroupCell {
+                    HStack {
+                        Spacer()
+                        ConnectButtons(model: model, connect: { model.connectManual() }, compact: true)
+                            .disabled(model.isViewing || model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
                 }
-            } header: {
-                Text("Connect by address")
-            } footer: {
-                Text("Use this if the computer isn't listed.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -551,13 +635,10 @@ private struct PeerRow: View {
     let peer: PeerInfo
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Row(symbol: "desktopcomputer", tint: peer.isSharing ? .teal : .gray, title: peer.name, subtitle: subtitle) { EmptyView() }
-            HStack {
-                Spacer()
-                ConnectButtons(model: model, connect: { model.connect(to: peer) }, compact: true, peer: peer)
-            }
+        GroupRow(title: peer.name, subtitle: subtitle) {
+            ConnectButtons(model: model, connect: { model.connect(to: peer) }, compact: true, peer: peer)
         }
+        .opacity(peer.isSharing ? 1 : 0.6)
     }
 
     private var subtitle: String {
@@ -571,35 +652,32 @@ private struct ViewerStatusSection: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        if let direct = model.directStatus {
-            Section {
-                Row(symbol: "wifi", tint: .blue, title: "Direct Wi-Fi", subtitle: direct) { EmptyView() }
-            }
-        }
-        if let status = model.viewerStatus {
-            Section {
-                Row(symbol: model.isViewing ? "play.rectangle.fill" : "info.circle", tint: model.isViewing ? .green : .gray,
-                    title: status,
-                    subtitle: model.settings.showTechnicalDetails
-                        ? model.latency.map { String(format: "Latency %.0f ms (p95 %.0f ms) · %.0f fps", $0.p50Ms, $0.p95Ms, $0.fps) }
-                        : nil) {
-                    if model.isViewing {
-                        Button(role: .destructive) { model.disconnectViewer() } label: {
-                            Label("Disconnect", systemImage: "xmark")
+        if model.directStatus != nil || model.viewerStatus != nil {
+            GroupSection {
+                if let direct = model.directStatus {
+                    GroupRow(title: "Direct Wi-Fi", subtitle: direct)
+                }
+                if let status = model.viewerStatus {
+                    GroupRow(title: status,
+                             subtitle: model.settings.showTechnicalDetails
+                                 ? model.latency.map { String(format: "Latency %.0f ms (p95 %.0f ms) · %.0f fps", $0.p50Ms, $0.p95Ms, $0.fps) }
+                                 : nil,
+                             status: model.isViewing ? .symbol("play.circle.fill", .green) : .symbol("info.circle", .secondary)) {
+                        if model.isViewing {
+                            Button(role: .destructive) { model.disconnectViewer() } label: {
+                                Label("Disconnect", systemImage: "xmark")
+                            }
                         }
                     }
-                }
-                if model.isViewing && model.controllingHost {
-                    Row(symbol: "keyboard", tint: .orange, title: "You're in control",
-                        subtitle: "Press ⌃⌥⇧Q to leave.") { EmptyView() }
-                }
-                if model.isViewing && model.onDirectWiFi {
-                    Row(symbol: "wifi", tint: .blue, title: "On direct Wi-Fi",
-                        subtitle: "Connected straight to the PC's hotspot.") { EmptyView() }
-                } else if model.isViewing {
-                    Row(symbol: "wifi", tint: .blue, title: "Switch to direct Wi-Fi",
-                        subtitle: "Less lag: connect straight to the PC's hotspot.") {
-                        Button("Switch") { model.switchToDirectWiFi() }
+                    if model.isViewing && model.controllingHost {
+                        GroupRow(title: "You're in control", subtitle: "Press ⌃⌥⇧Q to leave.")
+                    }
+                    if model.isViewing && model.onDirectWiFi {
+                        GroupRow(title: "On direct Wi-Fi", subtitle: "Connected straight to the PC's hotspot.")
+                    } else if model.isViewing {
+                        GroupRow(title: "Switch to direct Wi-Fi", subtitle: "Less lag: connect straight to the PC's hotspot.") {
+                            Button("Switch") { model.switchToDirectWiFi() }
+                        }
                     }
                 }
             }
@@ -619,15 +697,12 @@ private struct PeerPage: View {
                     : "The first connection needs a PIN.",
                  symbol: "desktopcomputer", tint: .teal)
             ViewerStatusSection(model: model)
-            if !peer.isSharing {
-                Section {
-                    Label("Not sharing. Start sharing on \(peer.name) first.",
-                          systemImage: "info.circle")
+            GroupSection {
+                if !peer.isSharing {
+                    GroupRow(title: "Not sharing", subtitle: "Start sharing on \(peer.name) first.",
+                             status: .symbol("info.circle", .secondary))
                 }
-            }
-            Section {
-                Row(symbol: "rectangle.on.rectangle", tint: .indigo, title: "Show its screen here",
-                    subtitle: "Use \(peer.name)'s screen on this Mac.") {
+                GroupRow(title: "Show its screen here", subtitle: "Use \(peer.name)'s screen on this Mac.") {
                     Button("Show Its Screen") {
                         model.extendMode = false
                         model.connect(to: peer)
@@ -635,8 +710,7 @@ private struct PeerPage: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.isViewing || !peer.isSharing)
                 }
-                Row(symbol: "rectangle.split.2x1", tint: .blue, title: "Extend display",
-                    subtitle: "This Mac becomes a second screen for \(peer.name).") {
+                GroupRow(title: "Extend display", subtitle: "This Mac becomes a second screen for \(peer.name).") {
                     Button("Extend Display") {
                         model.extendMode = true
                         model.connect(to: peer)
@@ -644,12 +718,10 @@ private struct PeerPage: View {
                     .disabled(model.isViewing || !peer.isSharing || !peer.canExtend)
                 }
             }
-            Section {
-                Row(symbol: "wifi", tint: .gray, title: "Use direct Wi-Fi",
-                    subtitle: "Connect straight to a Windows PC's hotspot first, then start. Less lag.") {
-                    Toggle("", isOn: $model.useDirectWiFi).toggleStyle(.switch).labelsHidden()
-                        .disabled(model.isViewing)
-                }
+            GroupSection {
+                ToggleRow(title: "Use direct Wi-Fi",
+                          subtitle: "Connect straight to a Windows PC's hotspot first, then start. Less lag.",
+                          isOn: $model.useDirectWiFi, disabled: model.isViewing)
             }
             if model.settings.showTechnicalDetails {
                 PeerDetails(peer: peer)
@@ -663,12 +735,18 @@ private struct PeerDetails: View {
     let peer: PeerInfo
 
     var body: some View {
-        Section("Details") {
-            LabeledContent("Addresses", value: peer.addresses.joined(separator: ", "))
-            LabeledContent("Port", value: "\(peer.port)")
+        GroupSection("Details") {
+            GroupRow(title: "Addresses", subtitle: peer.addresses.joined(separator: ", "))
+            GroupRow(title: "Port", subtitle: "\(peer.port)")
             if let fp = peer.fingerprint {
-                LabeledContent("Identity code") {
-                    Text(Annex.displayFingerprint(fp)).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                GroupCell {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Identity code")
+                        Text(Annex.displayFingerprint(fp))
+                            .font(.system(.callout, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                 }
             }
         }
@@ -677,8 +755,7 @@ private struct PeerDetails: View {
 
 // MARK: Settings
 
-/// Every preference in one place, in sections: General, Sharing, Viewing, Paired Devices, Updates,
-/// Developer and About.
+/// Preferences: General, Sharing, Viewing and Developer.
 private struct SettingsPage: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: AppSettings
@@ -686,24 +763,19 @@ private struct SettingsPage: View {
 
     var body: some View {
         Page(title: "Settings") {
+            Hero(title: "Settings", text: "How Annex starts, shares and shows other computers.",
+                 symbol: "gearshape.fill", tint: .gray)
             general
             sharing
             viewing
             developer
         }
-        // Permission changes in System Settings don't notify apps; look again while this page is open.
-        .task {
-            while !Task.isCancelled {
-                model.refreshPermissions()
-                try? await Task.sleep(for: .seconds(2))
-            }
-        }
+        .modifier(WatchesPermissions(model: model))
     }
 
     private var general: some View {
-        Section {
-            Row(symbol: "laptopcomputer", tint: .blue, title: "Device name",
-                subtitle: "Shown to other computers. Leave empty to use the Mac's own name.") {
+        GroupSection("General") {
+            GroupRow(title: "Device name", subtitle: "Shown to other computers. Leave empty to use the Mac's own name.") {
                 // Empty = the Mac's own name (shown as the placeholder).
                 InputField(text: $name, placeholder: AppModel.systemName, onSubmit: {
                     if name.trimmingCharacters(in: .whitespaces) != (settings.customDeviceName ?? "") {
@@ -713,36 +785,26 @@ private struct SettingsPage: View {
                 .frame(width: 220)
             }
             .onAppear { name = settings.customDeviceName ?? "" }
-            Row(symbol: "power", tint: .blue, title: "Open at login") {
-                Toggle("", isOn: Binding(get: { settings.launchAtLogin }, set: { settings.setLaunchAtLogin($0) }))
-                    .toggleStyle(.switch).labelsHidden()
-            }
+            ToggleRow(title: "Open at login",
+                      isOn: Binding(get: { settings.launchAtLogin }, set: { settings.setLaunchAtLogin($0) }))
             if let err = settings.launchAtLoginError {
-                Text(err).font(.caption).foregroundStyle(.red)
+                GroupRow(title: err, status: .symbol("exclamationmark.triangle.fill", .orange))
             }
-            Row(symbol: "display.2", tint: .blue, title: "Start sharing when Annex opens") {
-                Toggle("", isOn: $settings.startSharingAtLaunch).toggleStyle(.switch).labelsHidden()
-            }
-        } header: {
-            Text("General")
+            ToggleRow(title: "Start sharing when Annex opens", isOn: $settings.startSharingAtLaunch)
         }
     }
 
     private var sharing: some View {
-        Section {
-            Row(symbol: "cpu", tint: .gray, title: "Hardware video encoder",
-                subtitle: model.isHosting ? "Stop sharing to change it." : "Recommended. Lowest delay.") {
-                Toggle("", isOn: $settings.preferHardwareEncoder).toggleStyle(.switch).labelsHidden()
-                    .disabled(model.isHosting)
-            }
-        } header: {
-            Text("Sharing")
+        GroupSection("Sharing") {
+            ToggleRow(title: "Hardware video encoder",
+                      subtitle: model.isHosting ? "Stop sharing to change it." : "Recommended. Lowest delay.",
+                      isOn: $settings.preferHardwareEncoder, disabled: model.isHosting)
         }
     }
 
     private var viewing: some View {
-        Section {
-            Row(symbol: "dial.medium", tint: .purple, title: "Quality", subtitle: "Use Fast on Wi-Fi.") {
+        GroupSection("Viewing") {
+            GroupRow(title: "Quality", subtitle: "Use Fast on Wi-Fi.") {
                 Picker("", selection: $settings.quality) {
                     Text("Best").tag(0)
                     Text("Balanced").tag(1)
@@ -751,29 +813,18 @@ private struct SettingsPage: View {
                 .labelsHidden()
                 .fixedSize()
             }
-            Row(symbol: "arrow.up.left.and.arrow.down.right", tint: .purple, title: "Open in full screen") {
-                Toggle("", isOn: $settings.openFullScreen).toggleStyle(.switch).labelsHidden()
-            }
-            Row(symbol: "rectangle.split.2x1", tint: .indigo, title: "Extend display by default") {
-                Toggle("", isOn: $settings.extendByDefault).toggleStyle(.switch).labelsHidden()
-            }
-            Row(symbol: "keyboard", tint: .orange, title: "Control the other computer",
-                subtitle: "When it allows it. Press ⌃⌥⇧Q to leave.") {
-                Toggle("", isOn: $settings.controlWhenViewing).toggleStyle(.switch).labelsHidden()
-            }
-        } header: {
-            Text("Viewing")
+            ToggleRow(title: "Open in full screen", isOn: $settings.openFullScreen)
+            ToggleRow(title: "Extend display by default", isOn: $settings.extendByDefault)
+            ToggleRow(title: "Control the other computer", subtitle: "When it allows it. Press ⌃⌥⇧Q to leave.",
+                      isOn: $settings.controlWhenViewing)
         }
     }
 
     private var developer: some View {
-        Section {
-            Row(symbol: "info.circle", tint: .gray, title: "Show technical details",
-                subtitle: "Identity codes, addresses and connection details.") {
-                Toggle("", isOn: $settings.showTechnicalDetails).toggleStyle(.switch).labelsHidden()
-            }
-            Row(symbol: "doc.text", tint: .gray, title: "Save a log file",
-                subtitle: "For bug reports. Stays on this Mac. Off by default.") {
+        GroupSection("Developer") {
+            ToggleRow(title: "Show technical details", subtitle: "Identity codes, addresses and connection details.",
+                      isOn: $settings.showTechnicalDetails)
+            GroupRow(title: "Save a log file", subtitle: "For bug reports. Stays on this Mac. Off by default.") {
                 HStack(spacing: 8) {
                     if settings.saveLog {
                         Button("Show in Finder") {
@@ -784,8 +835,6 @@ private struct SettingsPage: View {
                     Toggle("", isOn: $settings.saveLog).toggleStyle(.switch).labelsHidden()
                 }
             }
-        } header: {
-            Text("Developer")
         }
     }
 
@@ -806,81 +855,61 @@ private struct DevicesPage: View {
 
     var body: some View {
         Page(title: "Paired Devices") {
-            devices
-        }
-        // Permission changes in System Settings don't notify apps; look again while this page is open.
-        .task {
-            while !Task.isCancelled {
-                model.refreshPermissions()
-                try? await Task.sleep(for: .seconds(2))
-            }
-        }
-    }
-
-    private var devices: some View {
-        Section {
+            Hero(title: "Paired Devices", text: "Paired devices connect without a PIN.",
+                 symbol: "person.2.fill", tint: .teal)
             if model.trusted.contains(where: \.allowInput) && !model.accessibilityTrusted {
-                Row(symbol: "hand.raised.fill", tint: .orange, title: "Accessibility is off",
-                    subtitle: "Needed for remote control. After an update, remove Annex with − and add it again.") {
-                    Button("Open Settings") { InputInjector.openAccessibilitySettings() }
+                GroupSection {
+                    GroupRow(title: "Accessibility is off",
+                             subtitle: "Needed for remote control. After an update, remove Annex with − and add it again.",
+                             status: .symbol("exclamationmark.triangle.fill", .orange)) {
+                        Button("Open Settings") { InputInjector.openAccessibilitySettings() }
+                    }
                 }
             }
             if model.trusted.isEmpty {
-                Row(symbol: "lock.shield", tint: .gray, title: "No paired devices",
-                    subtitle: "Pair by connecting from another computer.") { EmptyView() }
+                GroupSection {
+                    GroupRow(title: "No paired devices", subtitle: "Pair by connecting from another computer.")
+                }
             }
-            ForEach(model.trusted) { peer in DeviceRow(model: model, peer: peer) }
-        } footer: {
-            Text("Paired devices connect without a PIN."
-                 + (settings.showTechnicalDetails ? " This Mac's identity code: \(model.fingerprintDisplay)" : ""))
-                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            ForEach(model.trusted) { peer in DeviceGroup(model: model, peer: peer) }
+            if settings.showTechnicalDetails {
+                Text("This Mac's identity code: \(model.fingerprintDisplay)")
+                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    .padding(.horizontal, 4)
+            }
         }
+        .modifier(WatchesPermissions(model: model))
+    }
+}
+
+/// One paired device: who it is, and whether it may use this Mac's mouse and keyboard.
+private struct DeviceGroup: View {
+    @ObservedObject var model: AppModel
+    let peer: TrustedPeer
+    @State private var confirmRemove = false
+
+    var body: some View {
+        GroupSection {
+            GroupRow(title: peer.name, subtitle: lastSeen) {
+                Button("Remove…", role: .destructive) { confirmRemove = true }
+            }
+            ToggleRow(title: "Can use this Mac's mouse and keyboard",
+                      isOn: Binding(get: { peer.allowInput }, set: { model.setAllowInput(peer, $0) }))
+        }
+        .confirmationDialog("Remove \(peer.name)?", isPresented: $confirmRemove) {
+            Button("Remove", role: .destructive) { model.revoke(peer) }
+        } message: {
+            Text("It will need a PIN to connect again.")
+        }
+    }
+
+    private var lastSeen: String {
+        guard peer.lastSeen > 0 else { return "Paired" }
+        return "Last connected " + Date(timeIntervalSince1970: TimeInterval(peer.lastSeen)).formatted(.relative(presentation: .named))
     }
 }
 
 // MARK: About
-
-/// A rounded group like System Settings' boxes, for pages built from stacks rather than a Form.
-private struct GroupCard<Content: View>: View {
-    var padding: CGFloat = 0
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(spacing: 0) { content }
-            .padding(padding)
-            .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.045)))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
-    }
-}
-
-/// One full-width row of a Card: text on the left, a control on the right, a hairline below.
-private struct CardRow<Trailing: View>: View {
-    let title: String
-    var subtitle: String?
-    var divider = true
-    @ViewBuilder var trailing: Trailing
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                    if let subtitle {
-                        Text(subtitle).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .layoutPriority(1)
-                Spacer(minLength: 12)
-                trailing.fixedSize()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .frame(minHeight: 44)
-            if divider { Divider().padding(.horizontal, 16) }
-        }
-    }
-}
 
 private struct AboutPage: View {
     @ObservedObject var model: AppModel
@@ -890,29 +919,33 @@ private struct AboutPage: View {
     private static let repo = URL(string: "https://github.com/NRanjan-17/Annex")!
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                header
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Updates").font(.headline).padding(.leading, 4)
-                    updates
+        Page(title: "About") {
+            header
+            GroupSection("Updates") {
+                ToggleRow(title: "Check for updates automatically", subtitle: "Once a day, from GitHub. Nothing about you is sent.",
+                          isOn: $settings.checkForUpdates)
+                ToggleRow(title: "Receive beta updates",
+                          subtitle: "Beta versions include features in development and may contain bugs.",
+                          isOn: $settings.betaUpdates)
+                status
+                GroupCell {
+                    Button("Check Now") { Task { await updater.check() } }
+                        .disabled(updater.isBusy)
                 }
-                GroupCard {
-                    CardRow(title: "Uninstall Annex", subtitle: "Removes Annex, its settings and paired devices from this Mac.",
-                            divider: false) {
-                        Button("Uninstall…") { SettingsPage.runUninstaller() }
-                    }
+                GroupCell {
+                    Text(lastChecked).font(.caption).foregroundStyle(.tertiary)
                 }
             }
-            .padding(24)
-            .frame(maxWidth: 720)
-            .frame(maxWidth: .infinity)
+            GroupSection {
+                GroupRow(title: "Uninstall Annex", subtitle: "Removes Annex, its settings and paired devices from this Mac.") {
+                    Button("Uninstall…") { SettingsPage.runUninstaller() }
+                }
+            }
         }
-        .navigationTitle("About")
     }
 
     private var header: some View {
-        GroupCard(padding: 28) {
+        SettingsGroup(padding: 28) {
             VStack(spacing: 0) {
                 Image(nsImage: NSApp.applicationIconImage)
                     .resizable()
@@ -942,64 +975,25 @@ private struct AboutPage: View {
         }
     }
 
-    private var updates: some View {
-        GroupCard {
-            CardRow(title: "Check for updates automatically", subtitle: "Once a day, from GitHub. Nothing about you is sent.") {
-                Toggle("", isOn: $settings.checkForUpdates).toggleStyle(.switch).labelsHidden()
-            }
-            CardRow(title: "Receive beta updates",
-                    subtitle: "Beta versions include features in development and may contain bugs.") {
-                Toggle("", isOn: $settings.betaUpdates).toggleStyle(.switch).labelsHidden()
-            }
-            status
-            HStack {
-                Button("Check Now") { Task { await updater.check() } }
-                    .disabled(updater.isBusy)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .frame(minHeight: 44)
-            Divider().padding(.horizontal, 16)
-            HStack {
-                Text(lastChecked).font(.caption).foregroundStyle(.tertiary)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-        }
-    }
-
     /// The updater's state as one row: an icon, a sentence and the action that fits.
-    @ViewBuilder private var status: some View {
-        let (symbol, tint, text): (String?, Color, String) = switch updater.state {
-        case .idle: (nil, .secondary, "Annex \(Annex.version)")
-        case .checking: (nil, .secondary, "Checking for updates…")
-        case .upToDate: ("checkmark.circle.fill", .green, "You're on the latest version.")
-        case .available(let info): ("arrow.down.circle.fill", .blue, Updater.headline(info))
-        case .downloading: (nil, .secondary, "Downloading the update…")
-        case .installing: (nil, .secondary, "Installing… Annex reopens in a moment.")
-        case .failed(let message): ("exclamationmark.triangle.fill", .orange, message)
-        case .manual(let message): ("arrow.down.circle", .blue, message)
+    private var status: some View {
+        let (state, text): (RowStatus?, String) = switch updater.state {
+        case .idle: (nil, "Annex \(Annex.version)")
+        case .checking: (.spinner, "Checking for updates…")
+        case .upToDate: (.symbol("checkmark.circle.fill", .green), "You're on the latest version.")
+        case .available(let info): (.symbol("arrow.down.circle.fill", .blue), Updater.headline(info))
+        case .downloading: (.spinner, "Downloading the update…")
+        case .installing: (.spinner, "Installing… Annex reopens in a moment.")
+        case .failed(let message): (.symbol("exclamationmark.triangle.fill", .orange), message)
+        case .manual(let message): (.symbol("arrow.down.circle", .blue), message)
         }
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                if let symbol {
-                    Image(systemName: symbol).foregroundStyle(tint).font(.system(size: 16))
-                } else if updater.isBusy {
-                    ProgressView().controlSize(.small)
-                }
-                Text(text).fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 12)
-                if case .available(let info) = updater.state {
+        return GroupRow(title: text, status: state) {
+            if case .available(let info) = updater.state {
+                HStack(spacing: 12) {
                     if let page = URL(string: info.pageUrl) { Link("What's New", destination: page) }
                     Button("Install") { updater.confirmAndInstall() }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .frame(minHeight: 44)
-            Divider().padding(.horizontal, 16)
         }
     }
 
@@ -1009,54 +1003,14 @@ private struct AboutPage: View {
     }
 }
 
-private struct DeviceRow: View {
-    @ObservedObject var model: AppModel
-    let peer: TrustedPeer
-    @State private var confirmRemove = false
-
-    var body: some View {
-        Row(symbol: "desktopcomputer", tint: .teal, title: peer.name, subtitle: lastSeen) {
-            HStack(spacing: 8) {
-                Text("Can control").font(.callout).foregroundStyle(.secondary)
-                Toggle("", isOn: Binding(get: { peer.allowInput }, set: { model.setAllowInput(peer, $0) }))
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .controlSize(.small)
-            }
-            .help("Let \(peer.name) use this Mac's mouse and keyboard")
-            Menu {
-                Button("Remove \(peer.name)…", role: .destructive) { confirmRemove = true }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-        }
-        .confirmationDialog("Remove \(peer.name)?", isPresented: $confirmRemove) {
-            Button("Remove", role: .destructive) { model.revoke(peer) }
-        } message: {
-            Text("It will need a PIN to connect again.")
-        }
-    }
-
-    private var lastSeen: String {
-        var parts: [String] = []
-        if peer.lastSeen > 0 {
-            parts.append("Last connected " + Date(timeIntervalSince1970: TimeInterval(peer.lastSeen)).formatted(.relative(presentation: .named)))
-        }
-        return parts.isEmpty ? "Paired" : parts.joined(separator: " · ")
-    }
-}
-
 /// Shown at the top of Share and Connect when an automatic check found an update.
 private struct UpdateBanner: View {
     @ObservedObject var updater: Updater
 
     var body: some View {
         if let info = updater.bannerUpdate {
-            Section {
-                Row(symbol: "arrow.down.circle.fill", tint: .blue, title: Updater.headline(info)) {
+            GroupSection {
+                GroupRow(title: Updater.headline(info), status: .symbol("arrow.down.circle.fill", .blue)) {
                     HStack(spacing: 8) {
                         Button("Not Now") { updater.dismissBanner() }
                         Button("Install") { updater.confirmAndInstall() }
