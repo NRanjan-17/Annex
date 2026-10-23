@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::Serialize;
 
 pub use annex_proto::MDNS_SERVICE_TCP;
@@ -147,7 +147,16 @@ impl Drop for Browser {
 
 impl Discovery {
     pub fn new(own_fingerprint: &str) -> Result<Self, DiscoveryError> {
-        Ok(Discovery { daemon: ServiceDaemon::new()?, own_fingerprint: own_fingerprint.to_string() })
+        let daemon = ServiceDaemon::new()?;
+        // Loopback addresses (127.0.0.1, ::1, and macOS's fe80::1 on lo0) mean nothing to another
+        // computer; advertising them only made viewers waste connection attempts.
+        let _ = daemon.disable_interface(vec![
+            IfKind::LoopbackV4,
+            IfKind::LoopbackV6,
+            IfKind::Name("lo0".into()),
+            IfKind::Name("lo".into()),
+        ]);
+        Ok(Discovery { daemon, own_fingerprint: own_fingerprint.to_string() })
     }
 
     /// Advertises this device as a host that is sharing, on all interfaces.
@@ -339,6 +348,11 @@ mod tests {
                 && p.port == 47999
             {
                 assert_eq!(p.name, "Live Test");
+                assert!(
+                    !p.addresses.iter().any(|a| a == "127.0.0.1" || a == "::1" || a == "fe80::1"),
+                    "loopback addresses advertised: {:?}",
+                    p.addresses
+                );
                 return;
             }
         }

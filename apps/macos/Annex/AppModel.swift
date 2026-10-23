@@ -54,6 +54,7 @@ final class AppModel: ObservableObject {
     /// Bumped whenever a viewer is replaced, so late events from the old one are ignored.
     private var viewerGeneration = 0
     private var cancellables: Set<AnyCancellable> = []
+    private let localNetwork = LocalNetworkAccess()
 
     private var core: CoreClient?
     private var discovery: DiscoveryHandle?
@@ -117,6 +118,8 @@ final class AppModel: ObservableObject {
             discovery = try DiscoveryHandle(core: core) { [weak self] e in
                 DispatchQueue.main.async { self?.handleDiscovery(e) }
             }
+            // Ask for Local Network access now, not when the first viewer connects.
+            if !Self.isRunningTests { localNetwork.request() }
         } catch {
             startupError = error.localizedDescription
         }
