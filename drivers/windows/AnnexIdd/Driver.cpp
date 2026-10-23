@@ -404,6 +404,9 @@ static NTSTATUS AnnexQueryTargetModes(IDDCX_MONITOR monitor, const IDARG_IN_QUER
         in->pTargetModes[i] = {};
         in->pTargetModes[i].Size = sizeof(IDDCX_TARGET_MODE);
         in->pTargetModes[i].TargetVideoSignalInfo.targetVideoSignalInfo = modes[i];
+        // Target modes must name their vsync divider (1 = every vsync); monitor modes leave it 0.
+        // A zero divider here makes IddCxMonitorArrival fail with STATUS_INVALID_PARAMETER.
+        in->pTargetModes[i].TargetVideoSignalInfo.targetVideoSignalInfo.AdditionalSignalInfo.vSyncFreqDivider = 1;
     }
     return STATUS_SUCCESS;
 }
