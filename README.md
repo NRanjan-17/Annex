@@ -89,8 +89,8 @@ sharing computer shows. Guest Wi-Fi, VPNs and company networks can hide computer
 
 ## Using it
 
-Everything you can change is in **Settings**: General, Sharing, Viewing, Paired devices, Updates,
-Developer and About. On a Mac, press **⌘,**.
+Preferences are in **Settings** (General, Sharing, Viewing and Developer; on a Mac, press **⌘,**).
+**Paired devices** and **About**, with updates, have their own pages at the bottom of the sidebar.
 
 ### Extend display
 
@@ -104,7 +104,7 @@ Choose **Extend display** (or turn on *Extend display by default* in
 
 Off by default, and both sides have to agree:
 
-1. On the **sharing** computer: **Settings → Paired devices**, turn on control for the device
+1. On the **sharing** computer: **Paired devices**, turn on control for the device
    you'll use it from. On a Mac, allow **Accessibility** when asked.
 2. On the computer you're **sitting at**: **Settings → Viewing → Control the other computer**.
 
@@ -113,7 +113,7 @@ remote input.
 
 ### Paired devices
 
-Every device you pair with a PIN is listed in **Settings → Paired devices**. Remove one to make it
+Every device you pair with a PIN is listed under **Paired devices**. Remove one to make it
 enter a PIN again next time. Rename this computer in **Settings → General → Device name**.
 
 ### Smoother on Wi-Fi
@@ -161,14 +161,14 @@ onto a Windows PC, don't need the driver.
 
 ### Updates
 
-Annex checks GitHub at launch and once a day and installs new versions for you (**Settings →
+Annex checks GitHub at launch and once a day and installs new versions for you (**About →
 Updates**). Turn on **Beta updates** to get pre-releases early; turn it off to go back to the
 latest normal release. Every update is checked against a signature made when the release is built,
 so a modified download is never installed.
 
 ## Uninstall
 
-- **macOS:** **Settings → About → Uninstall…**. It removes the app, its identity key (Keychain),
+- **macOS:** **About → Uninstall…**. It removes the app, its identity key (Keychain),
   paired devices, settings and permissions.
 - **Windows:** Settings → Apps → Annex → Uninstall. It removes the app, the display driver, the
   firewall rule, *Start with Windows*, and all settings, keys and paired devices.
@@ -191,7 +191,7 @@ Details: [docs/SECURITY.md](docs/SECURITY.md) · [docs/PROTOCOL.md](docs/PROTOCO
 | It's listed but greyed out | It isn't sharing: click **Start Sharing** on that computer. |
 | "Extend display" is greyed out | A sharing Windows PC needs the Extend-mode display driver (installer option). **Share this PC** on that PC says what's missing. |
 | Black screen when mirroring a Mac | Allow Screen Recording for Annex (System Settings → Privacy & Security), then turn sharing off and on. |
-| Mouse and keyboard do nothing on the other computer | It must allow your device in **Settings → Paired devices** (and on a Mac, have Accessibility). Turn on **Settings → Viewing → Control the other computer** on your side. |
+| Mouse and keyboard do nothing on the other computer | It must allow your device under **Paired devices** (and on a Mac, have Accessibility). Turn on **Settings → Viewing → Control the other computer** on your side. |
 | The PIN keeps failing | After 5 wrong PINs, pairing pauses for 10 minutes. Type the PIN shown on the *sharing* computer. |
 | Laggy picture | Use a cable or Ethernet instead of Wi-Fi, or try *Direct Wi-Fi*. Keep *Hardware video encoder* on (Settings → Sharing). |
 
