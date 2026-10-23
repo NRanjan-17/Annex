@@ -123,10 +123,10 @@ private struct ShareCard: View {
     }
 
     private var summary: String {
-        guard model.isHosting else { return "Let another computer show this screen or extend it" }
+        guard model.isHosting else { return "Not visible to other computers." }
         let s = model.hostStatus
-        if s.viewerName != nil { return "Connected" }
-        if s.listeningPort != nil { return "Waiting for a viewer…" }
+        if s.viewerName != nil { return "Connected." }
+        if s.listeningPort != nil { return "Waiting for a connection." }
         return "Starting…"
     }
 }
@@ -152,7 +152,7 @@ private struct ConnectCard: View {
                 if model.discovered.isEmpty {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.mini)
-                        Text("Looking for computers on this network…")
+                        Text("Looking for computers…")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                     }
@@ -215,7 +215,7 @@ private struct ConnectCard: View {
                 if model.isViewing {
                     HStack {
                         if model.controllingHost {
-                            Label("Your mouse and keyboard control it · ⌃⌥⇧Q to leave", systemImage: "keyboard")
+                            Label("You're in control · ⌃⌥⇧Q to leave", systemImage: "keyboard")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()

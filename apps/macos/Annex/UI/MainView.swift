@@ -53,42 +53,41 @@ private struct Sidebar: View {
     var body: some View {
         // Rows draw their own selection (a soft grey, like Music) instead of the List's accent fill.
         List {
-            ThisMacCard(model: model)
-                .listRowInsets(EdgeInsets(top: 6, leading: 6, bottom: 10, trailing: 6))
-                .contentShape(Rectangle())
-                .onTapGesture { model.pane = .general }
-                .help("Rename this Mac in General")
-
             Section {
-                item("Share This Mac", "display.2", .share, badge: model.isHosting ? "On" : nil)
-                item("Connect", "rectangle.connected.to.line.below", .connect, badge: model.isViewing ? "Live" : nil)
+                item("Share This Mac", "display.2", .share, active: model.isHosting)
+                item("Connect", "rectangle.connected.to.line.below", .connect, active: model.isViewing)
             }
 
             Section("Nearby") {
                 if model.discovered.isEmpty {
                     HStack(spacing: 10) {
-                        ProgressView().controlSize(.small).frame(width: 22)
-                        Text("Searching…").foregroundStyle(.secondary)
+                        ProgressView().controlSize(.mini).frame(width: 20)
+                        Text("Searching…").font(.system(size: 13)).foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
                 }
                 ForEach(model.discovered) { peer in
-                    item(peer.name, "desktopcomputer", .peer(peer.id), badge: nil)
+                    item(peer.name, "desktopcomputer", .peer(peer.id), active: false, dimmed: !peer.isSharing)
                 }
             }
 
-            Section("Annex") {
-                item("Paired Devices", "lock.shield", .devices, badge: model.trusted.isEmpty ? nil : "\(model.trusted.count)")
-                item("General", "gearshape", .general, badge: nil)
-                item("Viewing", "play.rectangle", .viewing, badge: nil)
-                item("About", "info.circle", .about, badge: nil)
+            Section("Settings") {
+                item("Paired Devices", "lock.shield", .devices, active: false)
+                item("General", "gearshape", .general, active: false)
+                item("Viewing", "play.rectangle", .viewing, active: false)
+                item("About", "info.circle", .about, active: false)
             }
         }
         .listStyle(.sidebar)
+        // This Mac, at the bottom like the account row in Music.
+        .safeAreaInset(edge: .bottom) {
+            ThisMacFooter(model: model)
+        }
     }
 
-    private func item(_ title: String, _ symbol: String, _ pane: Pane, badge: String?) -> some View {
-        SidebarItem(title: title, symbol: symbol, badge: badge, selected: model.pane == pane) {
+    private func item(_ title: String, _ symbol: String, _ pane: Pane, active: Bool, dimmed: Bool = false) -> some View {
+        SidebarItem(title: title, symbol: symbol, active: active, dimmed: dimmed, selected: model.pane == pane) {
             model.pane = pane
         }
         .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
@@ -100,57 +99,65 @@ extension Color {
     static let annex = Color(red: 0.42, green: 0.36, blue: 0.95)
 }
 
-private struct ThisMacCard: View {
+private struct ThisMacFooter: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(nsImage: NSApp.applicationIconImage)
-                .resizable()
-                .frame(width: 40, height: 40)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(model.deviceName.isEmpty ? "This Mac" : model.deviceName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                Text(model.isHosting ? "Sharing" : "This Mac")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+        Button { model.pane = .general } label: {
+            HStack(spacing: 10) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 28, height: 28)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(model.deviceName.isEmpty ? "This Mac" : model.deviceName)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                    Text(model.isHosting ? "Sharing" : "This Mac")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .help("Rename this Mac")
     }
 }
 
 private struct SidebarItem: View {
     let title: String
     let symbol: String
-    let badge: String?
+    let active: Bool
+    let dimmed: Bool
     let selected: Bool
     let action: () -> Void
     @State private var hovered = false
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: 9) {
                 // A fixed box keeps every symbol centred on the same column, whatever its shape.
                 Image(systemName: symbol)
-                    .font(.system(size: 15, weight: .regular))
-                    .foregroundStyle(Color.annex)
-                    .frame(width: 22, height: 22)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(dimmed ? Color.secondary : Color.annex)
+                    .frame(width: 20, height: 20)
                 Text(title)
                     .font(.system(size: 13, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(dimmed ? .secondary : .primary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                if let badge {
-                    Text(badge)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
+                if active {
+                    Circle().fill(Color.green).frame(width: 7, height: 7)
                 }
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .frame(height: 30)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.primary.opacity(selected ? 0.11 : hovered ? 0.05 : 0)))
+                .fill(Color.primary.opacity(selected ? 0.10 : hovered ? 0.05 : 0)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -183,24 +190,24 @@ private struct Hero<Icon: View>: View {
 
     var body: some View {
         Section {
-            VStack(spacing: 8) {
+            VStack(spacing: 6) {
                 icon
-                Text(title).font(.system(size: 22, weight: .bold))
+                Text(title).font(.system(size: 19, weight: .semibold))
                 Text(text)
-                    .font(.system(size: 13))
+                    .font(.system(size: 12.5))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 460)
+                    .frame(maxWidth: 420)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
+            .padding(.vertical, 10)
         }
     }
 }
 
 private extension Hero where Icon == IconTile {
     init(title: String, text: String, symbol: String, tint: Color) {
-        self.init(title: title, text: text) { IconTile(symbol: symbol, tint: tint, size: 64) }
+        self.init(title: title, text: text) { IconTile(symbol: symbol, tint: tint, size: 48) }
     }
 }
 
@@ -262,7 +269,7 @@ private struct SharePage: View {
     private var sharePage: some View {
         Page(title: "Share This Mac") {
             Hero(title: "Share This Mac",
-                 text: "Start sharing to let another computer show this Mac's screen, or become an extra display for this Mac.",
+                 text: "Let another computer show this screen or use it as an extra display.",
                  symbol: "display.2", tint: .blue)
             Section {
                 HStack(spacing: 12) {
@@ -302,8 +309,8 @@ private struct SharePage: View {
             }
             if model.isHosting && !model.screenRecordingAllowed {
                 Section {
-                    Row(symbol: "record.circle", tint: .orange, title: "Allow Screen Recording for Annex",
-                        subtitle: "macOS needs this to share the screen. Turn on Annex in Privacy & Security → Screen & System Audio Recording, then quit and reopen Annex. If it's already on, remove it with − and add it again: each new Annex version needs to be allowed once.") {
+                    Row(symbol: "record.circle", tint: .orange, title: "Screen Recording is off",
+                        subtitle: "Allow Annex in Privacy & Security, then reopen Annex. After an update, remove it with − and add it again.") {
                         Button("Open Settings") {
                             if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
                                 NSWorkspace.shared.open(url)
@@ -321,16 +328,16 @@ private struct SharePage: View {
                 let s = model.hostStatus
                 Section("Connected now") {
                     ForEach(s.mirrorViewers, id: \.self) { name in
-                        Row(symbol: "rectangle.on.rectangle", tint: .green, title: "\(name) is showing this screen",
+                        Row(symbol: "rectangle.on.rectangle", tint: .green, title: "Showing this screen on \(name)",
                             subtitle: s.stream.map { "\($0.width)×\($0.height) at \($0.fps) fps" }) { EmptyView() }
                     }
                     ForEach(s.extendViewers, id: \.self) { name in
-                        Row(symbol: "rectangle.split.2x1", tint: .green, title: "\(name) is an extra display for this Mac",
-                            subtitle: "Arrange it in System Settings → Displays") { EmptyView() }
+                        Row(symbol: "rectangle.split.2x1", tint: .green, title: "\(name) is an extra display",
+                            subtitle: "Arrange it in System Settings → Displays.") { EmptyView() }
                     }
                     ForEach(s.controllingViewers, id: \.self) { name in
-                        Row(symbol: "keyboard", tint: .orange, title: "\(name) is using your mouse and keyboard",
-                            subtitle: "Turn it off in Paired Devices") { EmptyView() }
+                        Row(symbol: "keyboard", tint: .orange, title: "\(name) is controlling this Mac",
+                            subtitle: "Turn it off in Paired Devices.") { EmptyView() }
                     }
                 }
             }
@@ -339,7 +346,7 @@ private struct SharePage: View {
             }
             Section {
                 Row(symbol: "cpu", tint: .gray, title: "Hardware video encoder",
-                    subtitle: "Recommended. The software encoder adds about a quarter of a second of delay.") {
+                    subtitle: "Recommended. Lowest delay.") {
                     Toggle("", isOn: $settings.preferHardwareEncoder).toggleStyle(.switch).labelsHidden()
                         .disabled(model.isHosting)
                 }
@@ -352,8 +359,8 @@ private struct SharePage: View {
     private var shareStatus: String {
         guard model.isHosting else { return "Other computers can't see this Mac." }
         let s = model.hostStatus
-        if s.viewerName != nil { return "Connected · \(s.hardwareEncoder ? "hardware" : "software") encoder" }
-        if s.listeningPort != nil { return "Waiting for another computer to connect" }
+        if s.viewerName != nil { return "Connected." }
+        if s.listeningPort != nil { return "Waiting for a connection." }
         return "Starting…"
     }
 }
@@ -367,40 +374,36 @@ private struct HowToConnect: View {
 
     var body: some View {
         Section {
-            Row(symbol: "1.circle.fill", tint: .blue, title: "Open Annex on the other computer",
-                subtitle: "Go to Connect. “\(model.deviceName)” is listed under Nearby.") { EmptyView() }
-            Row(symbol: "2.circle.fill", tint: .blue, title: "Choose what you want",
-                subtitle: "“Show its screen here” puts this Mac's screen on that computer. “Be its extra display” turns that computer into a second screen for this Mac.") { EmptyView() }
-            Row(symbol: "3.circle.fill", tint: .blue, title: "First time only: enter the PIN",
-                subtitle: "This Mac shows a 6-digit PIN to type there. The identity codes should match: \(model.fingerprintDisplay)") { EmptyView() }
-            if !addresses.isEmpty {
-                Row(symbol: "questionmark.circle.fill", tint: .gray, title: "Not listed there?",
-                    subtitle: "Use Connect by address on the other computer with one of these:") { EmptyView() }
-                ForEach(addresses, id: \.self) { a in
-                    let text = port == Int(annexDefaultPort) ? a.ip : "\(a.ip):\(port)"
-                    HStack(spacing: 10) {
-                        Text(text)
-                            .font(.system(size: 15, weight: .medium, design: .monospaced))
-                            .textSelection(.enabled)
-                        Text(a.isDirectLink ? "Direct cable" : "Network · \(a.interface)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button(copied == text ? "Copied" : "Copy") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(text, forType: .string)
-                            copied = text
-                        }
-                        .controlSize(.small)
+            Row(symbol: "1.circle.fill", tint: .blue, title: "Open Annex on the other computer and choose “\(model.deviceName)”.") { EmptyView() }
+            Row(symbol: "2.circle.fill", tint: .blue, title: "Pick Show Its Screen or Be Its Extra Display.") { EmptyView() }
+            Row(symbol: "3.circle.fill", tint: .blue, title: "Enter the PIN shown here (first time only).") { EmptyView() }
+            if addresses.isEmpty {
+                Row(symbol: "wifi.exclamationmark", tint: .orange, title: "This Mac isn't on a network.",
+                    subtitle: "Connect it to Wi-Fi, Ethernet or a cable.") { EmptyView() }
+            }
+            ForEach(addresses, id: \.self) { a in
+                let text = port == Int(annexDefaultPort) ? a.ip : "\(a.ip):\(port)"
+                HStack(spacing: 10) {
+                    Text(text)
+                        .font(.system(size: 14, weight: .medium, design: .monospaced))
+                        .textSelection(.enabled)
+                    Text(a.isDirectLink ? "Cable" : "Network")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(copied == text ? "Copied" : "Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                        copied = text
                     }
-                    .padding(.leading, 36)
+                    .controlSize(.small)
                 }
-            } else {
-                Row(symbol: "wifi.exclamationmark", tint: .orange, title: "This Mac isn't on a network",
-                    subtitle: "Connect it to Wi-Fi, Ethernet or a cable to the other computer.") { EmptyView() }
             }
         } header: {
-            Text("How to connect from the other computer")
+            Text("Connect from another computer")
+        } footer: {
+            Text(addresses.isEmpty ? "" : "Not listed there? Connect by address. Identity code: \(model.fingerprintDisplay)")
+                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
         }
         .onAppear { addresses = LocalAddresses.current() }
     }
@@ -412,21 +415,18 @@ private let annexDefaultPort: UInt16 = 47800
 /// Shown while nothing that's sharing has been found: what usually blocks discovery.
 private struct NotShowingUp: View {
     var body: some View {
-        Section("Not showing up?") {
-            Row(symbol: "wifi", tint: .gray, title: "Both computers on the same network",
-                subtitle: "Same Wi-Fi or router, or a cable between them. Guest Wi-Fi and VPNs often block computers from seeing each other.") { EmptyView() }
-            Row(symbol: "network", tint: .gray, title: "Allow Local Network access",
-                subtitle: "Annex needs it to find other computers. Make sure Annex is on in Privacy & Security → Local Network.") {
+        Section("Can't find it?") {
+            Row(symbol: "wifi", tint: .gray, title: "Use the same network",
+                subtitle: "Guest Wi-Fi and VPNs can hide computers.") { EmptyView() }
+            Row(symbol: "network", tint: .gray, title: "Allow Local Network for Annex") {
                 Button("Open Settings") {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork") {
                         NSWorkspace.shared.open(url)
                     }
                 }
             }
-            Row(symbol: "shield", tint: .gray, title: "On a Windows PC: allow Annex through the firewall",
-                subtitle: "In Annex on that PC, open Connect and click Allow under Not showing up.") { EmptyView() }
-            Row(symbol: "keyboard", tint: .gray, title: "Still nothing?",
-                subtitle: "Use Connect by address below with an address the other computer shows.") { EmptyView() }
+            Row(symbol: "shield", tint: .gray, title: "On Windows, allow the firewall",
+                subtitle: "In Annex on the PC: Connect → Allow.") { EmptyView() }
         }
     }
 }
@@ -446,10 +446,10 @@ private struct ConnectButtons: View {
                 model.extendMode = false
                 connect()
             } label: {
-                Label(compact ? "Show Its Screen" : "Show Its Screen Here", systemImage: "rectangle.on.rectangle")
+                Label("Show Its Screen", systemImage: "rectangle.on.rectangle")
             }
             .buttonStyle(.borderedProminent)
-            .help("See and use the other computer's screen on this Mac")
+            .help("Use the other computer's screen on this Mac.")
             Button {
                 model.extendMode = true
                 connect()
@@ -457,8 +457,8 @@ private struct ConnectButtons: View {
                 Label("Be Its Extra Display", systemImage: "rectangle.split.2x1")
             }
             .help(peer?.canExtend == false
-                  ? "It can't add an extra display (on Windows it needs the Annex display driver)"
-                  : "This Mac becomes a second screen for the other computer")
+                  ? "Extend isn't set up on that computer."
+                  : "This Mac becomes a second screen for it.")
             .disabled(peer?.canExtend == false)
         }
         .fixedSize()
@@ -471,14 +471,14 @@ private struct ConnectPage: View {
 
     var body: some View {
         Page(title: "Connect") {
-            Hero(title: "Connect to Another Computer",
-                 text: "Show another computer's screen on this Mac, or use this Mac as an extra display for it. Turn on sharing in Annex on that computer first.",
+            Hero(title: "Connect",
+                 text: "Show another computer's screen here, or be its extra display.",
                  symbol: "rectangle.connected.to.line.below", tint: .indigo)
             ViewerStatusSection(model: model)
             Section("Nearby") {
                 if model.discovered.isEmpty {
                     Row(symbol: "magnifyingglass", tint: .gray, title: "Looking for computers…",
-                        subtitle: "Open Annex on the other computer and click Start Sharing. It appears here automatically.") {
+                        subtitle: "Start sharing on the other computer.") {
                         ProgressView().controlSize(.small)
                     }
                 }
@@ -490,8 +490,7 @@ private struct ConnectPage: View {
                 NotShowingUp()
             }
             Section {
-                Row(symbol: "network", tint: .gray, title: "Address",
-                    subtitle: "Shown on the other computer under How to connect.") {
+                Row(symbol: "network", tint: .gray, title: "Address") {
                     InputField(text: $model.manualAddress, placeholder: "192.168.1.20",
                                onSubmit: { model.extendMode = false; model.connectManual() })
                         .frame(width: 200)
@@ -504,7 +503,7 @@ private struct ConnectPage: View {
             } header: {
                 Text("Connect by address")
             } footer: {
-                Text("For when the other computer isn't listed under Nearby (guest Wi-Fi, VPNs, other subnets).")
+                Text("Use this if the computer isn't listed.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -526,9 +525,9 @@ private struct PeerRow: View {
     }
 
     private var subtitle: String {
-        guard peer.isSharing else { return "Annex is open there, but it isn't sharing. Click Start Sharing on it first." }
-        return (model.isPaired(peer) ? "Paired" : "Not paired yet · you'll enter a PIN the first time")
-            + (peer.canExtend ? "" : " · can't be extended (no display driver)")
+        guard peer.isSharing else { return "Not sharing" }
+        return (model.isPaired(peer) ? "Paired" : "New · PIN needed")
+            + (peer.canExtend ? "" : " · Extend unavailable")
     }
 }
 
@@ -553,12 +552,12 @@ private struct ViewerStatusSection: View {
                     }
                 }
                 if model.isViewing && model.controllingHost {
-                    Row(symbol: "keyboard", tint: .orange, title: "Your mouse and keyboard control it",
-                        subtitle: "Press ⌃⌥⇧Q in the viewer to leave") { EmptyView() }
+                    Row(symbol: "keyboard", tint: .orange, title: "You're in control",
+                        subtitle: "Press ⌃⌥⇧Q to leave.") { EmptyView() }
                 }
                 if model.isViewing && !model.onDirectWiFi {
                     Row(symbol: "wifi", tint: .blue, title: "Switch to direct Wi-Fi",
-                        subtitle: "Lag on Wi-Fi? A Windows PC starts its own hotspot and this Mac joins it, so video goes straight between them instead of through the router.") {
+                        subtitle: "Less lag: connect straight to the PC's hotspot.") {
                         Button("Switch") { model.switchToDirectWiFi() }
                     }
                 }
@@ -575,19 +574,19 @@ private struct PeerPage: View {
         Page(title: peer.name) {
             Hero(title: peer.name,
                  text: model.isPaired(peer)
-                    ? "Paired with this Mac. Connects without a PIN."
-                    : "On your network. The first time, you'll enter the PIN shown on \(peer.name).",
+                    ? "Paired. Connects without a PIN."
+                    : "The first connection needs a PIN.",
                  symbol: "desktopcomputer", tint: .teal)
             ViewerStatusSection(model: model)
             if !peer.isSharing {
                 Section {
-                    Label("Annex is open on \(peer.name), but it isn't sharing. Click Start Sharing there, then come back.",
+                    Label("Not sharing. Start sharing on \(peer.name) first.",
                           systemImage: "info.circle")
                 }
             }
             Section {
                 Row(symbol: "rectangle.on.rectangle", tint: .indigo, title: "Show its screen here",
-                    subtitle: "See and use \(peer.name)'s screen on this Mac.") {
+                    subtitle: "Use \(peer.name)'s screen on this Mac.") {
                     Button("Show Its Screen") {
                         model.extendMode = false
                         model.connect(to: peer)
@@ -596,7 +595,7 @@ private struct PeerPage: View {
                     .disabled(model.isViewing || !peer.isSharing)
                 }
                 Row(symbol: "rectangle.split.2x1", tint: .blue, title: "Be its extra display",
-                    subtitle: "This Mac becomes a second screen for \(peer.name). Drag windows onto it from there.") {
+                    subtitle: "This Mac becomes a second screen for \(peer.name).") {
                     Button("Be Its Extra Display") {
                         model.extendMode = true
                         model.connect(to: peer)
@@ -625,20 +624,20 @@ private struct DevicesPage: View {
     var body: some View {
         Page(title: "Paired Devices") {
             Hero(title: "Paired Devices",
-                 text: "Devices you've paired with a PIN connect without asking again. Choose which ones may use this Mac's mouse and keyboard.",
+                 text: "Paired devices connect without a PIN.",
                  symbol: "lock.shield.fill", tint: .green)
             if model.trusted.contains(where: \.allowInput) && !model.accessibilityTrusted {
                 Section {
-                    Row(symbol: "hand.raised.fill", tint: .orange, title: "Annex needs Accessibility access",
-                        subtitle: "macOS only lets apps use the mouse and keyboard with this permission. If Annex is already switched on there, select it, remove it with −, and add it again: each new Annex version needs to be allowed once.") {
+                    Row(symbol: "hand.raised.fill", tint: .orange, title: "Accessibility is off",
+                        subtitle: "Needed for remote control. After an update, remove Annex with − and add it again.") {
                         Button("Open Settings") { InputInjector.openAccessibilitySettings() }
                     }
                 }
             }
             Section {
                 if model.trusted.isEmpty {
-                    Row(symbol: "lock.shield", tint: .gray, title: "No paired devices yet",
-                        subtitle: "Connect from another computer and enter the PIN this Mac shows.") { EmptyView() }
+                    Row(symbol: "lock.shield", tint: .gray, title: "No paired devices",
+                        subtitle: "Pair by connecting from another computer.") { EmptyView() }
                 }
                 ForEach(model.trusted) { peer in DeviceRow(model: model, peer: peer) }
             } footer: {
@@ -705,11 +704,11 @@ private struct GeneralPage: View {
 
     var body: some View {
         Page(title: "General") {
-            Hero(title: "General", text: "How Annex starts. It lives in the menu bar and keeps everything on your own network: no accounts, no cloud.",
+            Hero(title: "General", text: "Startup and this Mac's name.",
                  symbol: "gearshape.fill", tint: .gray)
             Section {
                 Row(symbol: "laptopcomputer", tint: .blue, title: "Device name",
-                    subtitle: "What other computers see when they find this Mac") {
+                    subtitle: "Shown to other computers.") {
                     // Empty = the Mac's own name (shown as the placeholder).
                     InputField(text: $name, placeholder: AppModel.systemName) {
                         if name.trimmingCharacters(in: .whitespaces) != (settings.customDeviceName ?? "") {
@@ -719,7 +718,7 @@ private struct GeneralPage: View {
                     .frame(width: 220)
                 }
             } footer: {
-                Text("Leave it empty to use the name from System Settings → General → About.")
+                Text("Leave empty to use the Mac's own name.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .onAppear { name = settings.customDeviceName ?? "" }
@@ -744,10 +743,10 @@ private struct ViewingPage: View {
 
     var body: some View {
         Page(title: "Viewing") {
-            Hero(title: "Viewing", text: "How other computers appear on this Mac.", symbol: "play.rectangle.fill", tint: .purple)
+            Hero(title: "Viewing", text: "How other computers appear here.", symbol: "play.rectangle.fill", tint: .purple)
             Section {
                 Row(symbol: "dial.medium", tint: .purple, title: "Quality",
-                    subtitle: "Lower quality uses less bandwidth, so the picture keeps up on Wi-Fi. Applies to the next connection.") {
+                    subtitle: "Use Fast on Wi-Fi.") {
                     Picker("", selection: $settings.quality) {
                         Text("Best").tag(0)
                         Text("Balanced").tag(1)
@@ -767,11 +766,11 @@ private struct ViewingPage: View {
             }
             Section {
                 Row(symbol: "keyboard", tint: .orange, title: "Control the other computer",
-                    subtitle: "Use this Mac's mouse and keyboard on it. It must allow this Mac in its Paired Devices.") {
+                    subtitle: "When it allows it.") {
                     Toggle("", isOn: $settings.controlWhenViewing).toggleStyle(.switch).labelsHidden()
                 }
             } footer: {
-                Text("While in control, press ⌃⌥⇧Q to leave the session.").font(.caption).foregroundStyle(.secondary)
+                Text("Press ⌃⌥⇧Q to leave.").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -780,7 +779,7 @@ private struct ViewingPage: View {
 private struct AboutPage: View {
     var body: some View {
         Page(title: "About Annex") {
-            Hero(title: "Annex", text: "Version \(Annex.version)\nUse another computer as a second display, or mirror its screen. Encrypted end to end.") {
+            Hero(title: "Annex", text: "Version \(Annex.version). Encrypted, local, no accounts.") {
                 Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 88, height: 88)
             }
             Section {

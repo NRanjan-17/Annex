@@ -27,8 +27,8 @@ Works **Mac ↔ Mac, Mac ↔ Windows, Windows ↔ Windows**, in either direction
 | macOS 14 Sonoma or later | ✅ | ✅ |
 | Windows 10 (2004) / Windows 11, x64 or ARM | ✅ | ✅ |
 
-> **Pre-release.** Annex is new. The builds aren't code-signed yet, so macOS and Windows warn
-> you the first time you open them (the steps below show how to get past that). Please
+> **First release.** The builds aren't code-signed yet, so macOS and Windows warn you the first
+> time you open them (the steps below show how to get past that). Please
 > [report anything odd](https://github.com/NRanjan-17/Annex/issues).
 
 ## Install

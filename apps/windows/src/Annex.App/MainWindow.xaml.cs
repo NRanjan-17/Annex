@@ -246,7 +246,7 @@ public sealed partial class MainWindow : Window
             items.Add(new NavigationViewItem { Content = "Searching…", Icon = Ui.Glyph(""), IsEnabled = false, SelectsOnInvoked = false });
         foreach (var h in _hosts)
             items.Add(NavItem(h.Name, "", "peer:" + h.Instance));
-        items.Add(new NavigationViewItemHeader { Content = "Annex" });
+        items.Add(new NavigationViewItemHeader { Content = "Settings" });
         items.Add(NavItem("Paired devices", "", "devices"));
         items.Add(NavItem("General", "", "general"));
         items.Add(NavItem("Viewing", "", "viewing"));
@@ -298,7 +298,7 @@ public sealed partial class MainWindow : Window
     private void SharePage(StackPanel p)
     {
         p.Children.Add(Ui.Hero("", "Share this PC",
-            "Start sharing to let another computer show this PC's screen, or become an extra display for this PC."));
+            "Let another computer show this screen or use it as an extra display."));
         var action = _host is null
             ? Ui.Button("Start sharing", () => SetHosting(true), accent: true)
             : Ui.Button("Stop sharing", () => SetHosting(false));
@@ -315,23 +315,18 @@ public sealed partial class MainWindow : Window
         ExtendCard(p);
         if (_hotspot.IsOn)
             p.Children.Add(Ui.Card("", "Direct Wi-Fi is on",
-                $"Network “{_hotspot.Ssid}”. Another computer joined it for a faster, router-free link.",
+                $"Network “{_hotspot.Ssid}”.",
                 Ui.Button("Stop", () => { _ = _hotspot.StopAsync(); RenderIf("share"); })));
 
         if (_host is not null)
         {
-            p.Children.Add(Ui.Section("How to connect from the other computer"));
-            p.Children.Add(Ui.Card("", "1. Open Annex on the other computer",
-                $"Go to Connect. “{_core?.DeviceName}” is listed under Nearby."));
-            p.Children.Add(Ui.Card("", "2. Choose what you want",
-                "“Show its screen here” puts this PC's screen on that computer. “Be its extra display” turns that computer into a second screen for this PC."));
-            p.Children.Add(Ui.Card("", "3. First time only: enter the PIN",
-                $"This PC shows a 6-digit PIN to type there. The identity codes should match: {Fingerprint}"));
+            p.Children.Add(Ui.Section("Connect from another computer"));
+            p.Children.Add(Ui.Card("", $"1. Open Annex on the other computer and choose “{_core?.DeviceName}”."));
+            p.Children.Add(Ui.Card("", "2. Pick Show its screen or Be its extra display."));
+            p.Children.Add(Ui.Card("", "3. Enter the PIN shown here (first time only).", $"Identity code: {Fingerprint}"));
             var addresses = LocalAddresses();
-            p.Children.Add(Ui.Card("", "Not listed there?",
-                addresses.Count == 0
-                    ? "This PC isn't on a network right now. Connect it to Wi-Fi, Ethernet or a cable."
-                    : "Use Connect by address on the other computer with one of these:"));
+            p.Children.Add(Ui.Card("", addresses.Count == 0 ? "This PC isn't on a network." : "Not listed there? Connect by address:",
+                addresses.Count == 0 ? "Connect it to Wi-Fi, Ethernet or a cable." : null));
             foreach (var (ip, direct) in addresses)
             {
                 var text = _host.Port == DefaultPort ? ip : $"{ip}:{_host.Port}";
@@ -347,7 +342,7 @@ public sealed partial class MainWindow : Window
                     Clipboard.SetContent(data);
                     copy.Content = "Copied";
                 };
-                var card = Ui.Card(direct ? "" : "", text, direct ? "Direct cable" : "Network", copy);
+                var card = Ui.Card(direct ? "" : "", text, direct ? "Cable" : "Network", copy);
                 card.Margin = new Thickness(36, 0, 0, 2);
                 p.Children.Add(card);
             }
@@ -368,7 +363,7 @@ public sealed partial class MainWindow : Window
 
         p.Children.Add(Ui.Section("Video"));
         p.Children.Add(Ui.Card("", "Hardware video encoder",
-            _host is null ? "Recommended. Uses the graphics card's encoder (NVENC, Quick Sync, AMF)." : "Stop sharing to change this.",
+            _host is null ? "Recommended. Lowest delay." : "Stop sharing to change this.",
             Ui.Switch(_settings.PreferHardwareEncoder, on => { _settings.PreferHardwareEncoder = on; _settings.Save(); }, enabled: _host is null)));
     }
 
@@ -385,17 +380,17 @@ public sealed partial class MainWindow : Window
         switch (x.State)
         {
             case "ready":
-                p.Children.Add(Ui.Card("", "Extra displays: ready",
-                    "Other computers can choose “Be its extra display” to become a second screen for this PC."));
+                p.Children.Add(Ui.Card("", "Extra displays are ready",
+                    "Other computers can be a second screen for this PC."));
                 break;
             case "not_installed":
-                p.Children.Add(Ui.Card("", "Extra displays: not set up",
-                    "To let another computer be a second screen for this PC, run the Annex installer again and tick “Install the Extend-mode display driver”. Showing this PC's screen works without it."));
+                p.Children.Add(Ui.Card("", "Extra displays aren't set up",
+                    "Run the installer again and tick the Extend-mode display driver."));
                 break;
             default:
                 var why = x.Problem == 52 && !x.TestSigning
-                    ? "Windows didn't accept the driver's signature. Run the Annex installer again with “Install the Extend-mode display driver” ticked: it signs the driver for this PC. If that still fails, test signing works as a last resort:  bcdedit /set testsigning on  in an administrator terminal, then restart."
-                    : $"The Annex display driver is installed but not running (Device Manager problem code {x.Problem}). Restart the PC; if it stays, run the Annex installer again with the driver option ticked.";
+                    ? "Windows rejected the driver's signature. Run the installer again with the driver ticked."
+                    : $"The display driver isn't running (code {x.Problem}). Restart the PC or reinstall the driver.";
                 var copy = new Button { Content = "Copy command" };
                 copy.Click += (_, _) =>
                 {
@@ -404,7 +399,7 @@ public sealed partial class MainWindow : Window
                     Clipboard.SetContent(data);
                     copy.Content = "Copied";
                 };
-                p.Children.Add(Ui.Card("", "Extra displays: driver not loaded", why, x.Problem == 52 && !x.TestSigning ? copy : null));
+                p.Children.Add(Ui.Card("", "Extra displays aren't working", why));
                 break;
         }
     }
@@ -412,8 +407,8 @@ public sealed partial class MainWindow : Window
     private string ShareStatus()
     {
         if (_host is null) return "Other computers can't see this PC.";
-        if (_sessions.Count > 0) return $"Connected to {string.Join(", ", _sessions.Values.Select(s => s.Name).Distinct())}";
-        return "Waiting for another computer to connect";
+        if (_sessions.Count > 0) return $"Connected to {string.Join(", ", _sessions.Values.Select(s => s.Name).Distinct())}.";
+        return "Waiting for a connection.";
     }
 
     /// The two things you can do with another computer, as buttons that say what happens.
@@ -421,10 +416,10 @@ public sealed partial class MainWindow : Window
     {
         var show = Ui.Button("Show its screen here", () => connect(false), accent: true);
         var extend = Ui.Button("Be its extra display", () => connect(true));
-        ToolTipService.SetToolTip(show, "See and use the other computer's screen on this PC");
+        ToolTipService.SetToolTip(show, "Use the other computer's screen on this PC.");
         ToolTipService.SetToolTip(extend, peer?.Extend == false
-            ? $"{peer.Name} can't add an extra display (on Windows it needs the Annex display driver)"
-            : "This PC becomes a second screen for the other computer");
+            ? "Extend isn't set up on that computer."
+            : "This PC becomes a second screen for it.");
         var sharing = peer?.Sharing ?? true;
         show.IsEnabled = _viewer is null && sharing;
         extend.IsEnabled = _viewer is null && sharing && peer?.Extend != false;
@@ -432,28 +427,23 @@ public sealed partial class MainWindow : Window
     }
 
     private string PeerSubtitle(PeerInfo h) =>
-        !h.Sharing ? "Annex is open there, but it isn't sharing. Click Start sharing on it first."
-        : (IsPaired(h) ? "Paired" : "Not paired yet · you'll enter a PIN the first time")
-          + (h.Extend == false ? " · can't be extended (no display driver)" : "");
+        !h.Sharing ? "Not sharing"
+        : (IsPaired(h) ? "Paired" : "New · PIN needed")
+          + (h.Extend == false ? " · Extend unavailable" : "");
 
     /// <summary>Shown while nothing (or nothing sharing) is found: what usually blocks discovery.</summary>
     private void NotShowingUp(StackPanel p)
     {
-        p.Children.Add(Ui.Section("Not showing up?"));
-        p.Children.Add(Ui.Card("", "Both computers on the same network",
-            "Same Wi-Fi or router, or a cable between them. Guest Wi-Fi and VPNs often block computers from seeing each other."));
+        p.Children.Add(Ui.Section("Can't find it?"));
+        p.Children.Add(Ui.Card("", "Use the same network", "Guest Wi-Fi and VPNs can hide computers."));
         if (_firewallAllowed != true)
         {
             var allow = Ui.Button("Allow", () => _ = AllowThroughFirewallAsync());
-            p.Children.Add(Ui.Card("", "Allow Annex through Windows Firewall",
-                _firewallAllowed == false
-                    ? "Windows Firewall is blocking Annex, so this PC can't find other computers or be found. Click Allow and confirm the prompt."
-                    : "If Windows asked whether to allow Annex and it was dismissed, other computers stay hidden.", allow));
+            p.Children.Add(Ui.Card("", "Allow Annex through the firewall",
+                _firewallAllowed == false ? "The firewall is blocking Annex." : null, allow));
         }
         var network = Ui.Button("Open", () => _ = Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:network-status")));
-        p.Children.Add(Ui.Card("", "Network set to Private",
-            "On a Public network Windows hides this PC. Open your network's properties and choose Private.", network));
-        p.Children.Add(Ui.Card("", "Still nothing?", "Use Connect by address below with an address the other computer shows."));
+        p.Children.Add(Ui.Card("", "Set the network to Private", "Public networks hide this PC.", network));
     }
 
     private const string FirewallRule = "Annex";
@@ -500,29 +490,29 @@ public sealed partial class MainWindow : Window
     /// <summary>Session-end codes from the core, in words.</summary>
     private static string FriendlyReason(string reason, string peer) => reason switch
     {
-        "extend_not_supported" => $"{peer} can't add an extra display. On Windows it needs the Annex display driver (see Share this PC on that computer). Try “Show its screen here” instead.",
+        "extend_not_supported" => $"{peer} can't add an extra display. Set up Extend on that computer, or use Show its screen.",
         "busy" => $"{peer} is already sharing with 4 computers.",
-        "pairing_failed" => "The PIN didn't match. Try again and type the PIN shown on the other computer.",
+        "pairing_failed" => "Wrong PIN. Try again.",
         "pairing_cancelled" => "Pairing was cancelled on the other computer.",
-        "pairing_locked" => "Too many wrong PINs. Pairing is paused for 10 minutes.",
+        "pairing_locked" => "Too many wrong PINs. Try again in 10 minutes.",
         "host_stopped" => $"{peer} stopped sharing.",
         "host_ended_session" => $"{peer} ended the session.",
         "closed" or "connection closed" => $"Disconnected from {peer}.",
         _ when reason.Contains("refused", StringComparison.OrdinalIgnoreCase) || reason.Contains("timed out", StringComparison.OrdinalIgnoreCase)
-            => $"Couldn't reach {peer}. Check that it's sharing and that both are on the same network ({reason}).",
+            => $"Couldn't reach {peer}. Check that it's sharing and on the same network.",
         _ => reason,
     };
 
     private void ConnectPage(StackPanel p)
     {
-        p.Children.Add(Ui.Hero("", "Connect to another computer",
-            "Show another computer's screen on this PC, or use this PC as an extra display for it. Turn on sharing in Annex on that computer first."));
+        p.Children.Add(Ui.Hero("", "Connect",
+            "Show another computer's screen here, or be its extra display."));
         ViewerStatus(p);
 
         p.Children.Add(Ui.Section("Nearby"));
         if (_hosts.Count == 0)
             p.Children.Add(Ui.Card("", "Looking for computers…",
-                "Open Annex on the other computer and click Start sharing. It appears here automatically.",
+                "Start sharing on the other computer.",
                 new ProgressRing { IsActive = true, Width = 20, Height = 20 }));
         foreach (var h in _hosts)
             p.Children.Add(Ui.Card("", h.Name, PeerSubtitle(h),
@@ -531,7 +521,7 @@ public sealed partial class MainWindow : Window
             NotShowingUp(p);
 
         p.Children.Add(Ui.Section("Connect by address"));
-        p.Children.Add(Ui.Card("", "Address", "Shown on the other computer under How to connect. Use it when the computer isn't listed under Nearby.",
+        p.Children.Add(Ui.Card("", "Address", "Use this if the computer isn't listed.",
             Ui.Reuse(_addressBox)));
         var buttons = ConnectButtons(extend => { _extend = extend; ConnectManual(); });
         buttons.HorizontalAlignment = HorizontalAlignment.Right;
@@ -547,12 +537,12 @@ public sealed partial class MainWindow : Window
         p.Children.Add(Ui.Card(_viewer is not null ? "" : "", _viewerStatus, _latency,
             _viewer is not null ? Ui.Button("Disconnect", Disconnect) : null));
         if (_viewer is not null && _controlling)
-            p.Children.Add(Ui.Card("", "Your mouse and keyboard control it", "Press Ctrl+Alt+Shift+Q in the viewer to leave."));
+            p.Children.Add(Ui.Card("", "You're in control", "Press Ctrl+Alt+Shift+Q to leave."));
         else if (_viewer is not null)
-            p.Children.Add(Ui.Card("", "Leave the viewer", "Press Esc, or close its window."));
+            p.Children.Add(Ui.Card("", "Press Esc to leave the viewer."));
         if (_viewer is not null && !_onDirectWifi && _directPending is null)
             p.Children.Add(Ui.Card("", "Switch to direct Wi-Fi",
-                "Lag on Wi-Fi? This PC starts its own hotspot and the other computer joins it, so video goes straight between them instead of through the router.",
+                "Less lag: the other computer joins this PC's hotspot.",
                 Ui.Button("Switch", () => _ = SwitchToDirectWifiAsync())));
     }
 
@@ -572,7 +562,7 @@ public sealed partial class MainWindow : Window
         }
         _directPending = (_viewerFingerprint, _viewingName, _viewerExtend, DateTimeOffset.UtcNow.AddSeconds(60));
         _viewer.OfferDirectLink(_hotspot.Ssid!, _hotspot.Passphrase!);
-        _directStatus = $"Asking {_viewingName} to join “{_hotspot.Ssid}”. The picture pauses for a few seconds while it switches.";
+        _directStatus = $"Asking {_viewingName} to join “{_hotspot.Ssid}”. The picture pauses for a moment.";
         RenderIf("connect", "peer");
         var timer = _ui.CreateTimer();
         timer.Interval = TimeSpan.FromSeconds(61);
@@ -582,7 +572,7 @@ public sealed partial class MainWindow : Window
             if (_directPending is { } d && DateTimeOffset.UtcNow >= d.Until)
             {
                 _directPending = null;
-                _directStatus = $"{d.Name} didn't come back on the direct link. Reconnect from Nearby.";
+                _directStatus = $"{d.Name} didn't come back on direct Wi-Fi. Reconnect from Nearby.";
                 _ = _hotspot.StopAsync();
                 RenderIf("connect", "peer");
             }
@@ -606,17 +596,17 @@ public sealed partial class MainWindow : Window
     private void PeerPage(StackPanel p, PeerInfo peer)
     {
         p.Children.Add(Ui.Hero("", peer.Name, IsPaired(peer)
-            ? "Paired with this PC. Connects without a PIN."
-            : $"On your network. The first time, you'll enter the PIN shown on {peer.Name}."));
+            ? "Paired. Connects without a PIN."
+            : "The first connection needs a PIN."));
         ViewerStatus(p);
         if (!peer.Sharing)
-            p.Children.Add(Ui.Info("Not sharing", $"Annex is open on {peer.Name}, but it isn't sharing. Click Start sharing there, then come back.", InfoBarSeverity.Informational));
+            p.Children.Add(Ui.Info("Not sharing", $"Start sharing on {peer.Name} first.", InfoBarSeverity.Informational));
         var show = Ui.Button("Show its screen", () => { _extend = false; ConnectToPeer(peer); }, accent: true);
         var extend = Ui.Button("Be its extra display", () => { _extend = true; ConnectToPeer(peer); });
         show.IsEnabled = _viewer is null && peer.Sharing;
         extend.IsEnabled = _viewer is null && peer.Sharing && peer.Extend != false;
-        p.Children.Add(Ui.Card("", "Show its screen here", $"See and use {peer.Name}'s screen on this PC.", show));
-        p.Children.Add(Ui.Card("", "Be its extra display", $"This PC becomes a second screen for {peer.Name}. Drag windows onto it from there.", extend));
+        p.Children.Add(Ui.Card("", "Show its screen here", $"Use {peer.Name}'s screen on this PC.", show));
+        p.Children.Add(Ui.Card("", "Be its extra display", $"This PC becomes a second screen for {peer.Name}.", extend));
         p.Children.Add(Ui.Section("Details"));
         p.Children.Add(Ui.Card("", "Addresses", $"{string.Join(", ", peer.Addresses)} · port {peer.Port}"));
         if (peer.Fingerprint is { } fp)
@@ -626,13 +616,12 @@ public sealed partial class MainWindow : Window
     private void DevicesPage(StackPanel p)
     {
         p.Children.Add(Ui.Hero("", "Paired devices",
-            "Devices you've paired with a PIN connect without asking again. Choose which ones may use this PC's mouse and keyboard."));
+            "Paired devices connect without a PIN."));
         if (_trusted.Any(t => t.AllowInput))
-            p.Children.Add(Ui.Info("About remote control",
-                "Windows doesn't let other apps type into administrator windows or UAC prompts, so those ignore remote input.",
+            p.Children.Add(Ui.Info("Note", "Remote control can't type into administrator windows or UAC prompts.",
                 InfoBarSeverity.Informational));
         if (_trusted.Count == 0)
-            p.Children.Add(Ui.Card("", "No paired devices yet", "Connect from another computer and enter the PIN this PC shows."));
+            p.Children.Add(Ui.Card("", "No paired devices", "Pair by connecting from another computer."));
         foreach (var peer in _trusted)
         {
             var control = new ToggleSwitch { IsOn = peer.AllowInput, OnContent = "Can control", OffContent = "View only", MinWidth = 0 };
@@ -651,10 +640,10 @@ public sealed partial class MainWindow : Window
     private void GeneralPage(StackPanel p)
     {
         p.Children.Add(Ui.Hero("", "General",
-            "How Annex starts. It lives in the system tray and keeps everything on your own network: no accounts, no cloud."));
+            "Startup and this PC's name."));
         p.Children.Add(Ui.Card("", "Device name",
-            "What other computers see. Leave it empty to use this PC's name.", Ui.Reuse(_nameBox)));
-        p.Children.Add(Ui.Card("", "Start with Windows", "Annex starts in the tray when you sign in.",
+            "Shown to other computers. Leave empty to use this PC's name.", Ui.Reuse(_nameBox)));
+        p.Children.Add(Ui.Card("", "Start with Windows", "Opens in the tray when you sign in.",
             Ui.Switch(AppSettings.StartWithWindows, on => AppSettings.StartWithWindows = on)));
         p.Children.Add(Ui.Card("", "Start sharing when Annex opens", null,
             Ui.Switch(_settings.StartSharingAtLaunch, on => { _settings.StartSharingAtLaunch = on; _settings.Save(); })));
@@ -662,10 +651,10 @@ public sealed partial class MainWindow : Window
 
     private void ViewingPage(StackPanel p)
     {
-        p.Children.Add(Ui.Hero("", "Viewing", "How other computers appear on this PC."));
+        p.Children.Add(Ui.Hero("", "Viewing", "How other computers appear here."));
         var quality = new ComboBox
         {
-            ItemsSource = new[] { "Best (cable or fast network)", "Balanced", "Fast (Wi-Fi)" },
+            ItemsSource = new[] { "Best", "Balanced", "Fast (Wi-Fi)" },
             SelectedIndex = (int)_settings.Quality,
             MinWidth = 220,
         };
@@ -675,17 +664,17 @@ public sealed partial class MainWindow : Window
             _settings.Save();
         };
         p.Children.Add(Ui.Card("", "Quality",
-            "Lower quality uses less bandwidth, so the picture keeps up on Wi-Fi. Applies to the next connection.", quality));
+            "Use Fast on Wi-Fi.", quality));
         p.Children.Add(Ui.Card("", "Use as an extra display by default", null,
             Ui.Switch(_settings.ExtendByDefault, on => { _settings.ExtendByDefault = on; _extend = on; _settings.Save(); })));
         p.Children.Add(Ui.Card("", "Control the other computer",
-            "Use this PC's mouse and keyboard on the other computer when it allows it (on that computer: Paired devices → Can control). Press Ctrl+Alt+Shift+Q to leave.",
+            "When it allows it. Press Ctrl+Alt+Shift+Q to leave.",
             Ui.Switch(_settings.UseMouseAndKeyboard, on => { _settings.UseMouseAndKeyboard = on; _settings.Save(); })));
     }
 
     private void AboutPage(StackPanel p)
     {
-        p.Children.Add(Ui.Hero("", "Annex", $"Version {AnnexNative.Version}. Use another computer as a second display, or mirror its screen. Encrypted end to end.",
+        p.Children.Add(Ui.Hero("", "Annex", $"Version {AnnexNative.Version}. Encrypted, local, no accounts.",
             Ui.AppIcon(64)));
         p.Children.Add(Ui.Card("", "Website and source code", "github.com/NRanjan-17/Annex",
             new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex") }));
@@ -853,7 +842,7 @@ public sealed partial class MainWindow : Window
         }
         catch (AnnexException ex)
         {
-            _hostError = $"Could not start sharing: {ex.Message}";
+            _hostError = $"Couldn't start sharing: {ex.Message}";
         }
     }
 
@@ -901,7 +890,7 @@ public sealed partial class MainWindow : Window
                 {
                     XamlRoot = Content.XamlRoot,
                     Title = $"Let {ask.PeerName} control this PC?",
-                    Content = $"{ask.PeerName} wants to use this PC's mouse and keyboard. You can change this any time in Paired devices.",
+                    Content = $"{ask.PeerName} wants to use this PC's mouse and keyboard. You can change this in Paired devices.",
                     PrimaryButtonText = "Allow",
                     CloseButtonText = "Not now",
                     DefaultButton = ContentDialogButton.Primary,
@@ -1025,7 +1014,7 @@ public sealed partial class MainWindow : Window
         }
         catch (AnnexException ex)
         {
-            _viewerStatus = $"Connect failed: {ex.Message}";
+            _viewerStatus = $"Couldn't connect: {ex.Message}";
         }
         RenderIf("connect", "peer");
     }
@@ -1038,11 +1027,11 @@ public sealed partial class MainWindow : Window
                 await PromptForPin(req);
                 return;
             case CoreEvent.PairingFinished { Success: false } f:
-                _viewerStatus = $"Pairing with {f.PeerName} failed: the PIN didn't match or pairing was cancelled.";
+                _viewerStatus = $"Pairing with {f.PeerName} didn't finish. Check the PIN and try again.";
                 break;
             case CoreEvent.SessionStarted s:
                 _viewerStatus = (s.Mode == "extend" ? $"Extra display for {s.PeerName}" : $"Viewing {s.PeerName}")
-                    + (s.ConnectionDescription.Length > 0 ? $" ({s.ConnectionDescription})" : "");
+                    + (s.Link == "direct" ? " · cable" : "");
                 _viewingName = s.PeerName;
                 _viewerFingerprint = s.Fingerprint;
                 _viewerExtend = s.Mode == "extend";
@@ -1059,7 +1048,7 @@ public sealed partial class MainWindow : Window
                 _ = _hotspot.StopAsync();
                 break;
             case CoreEvent.StreamChanged(var st):
-                _viewerStatus = $"Viewing {_viewingName} — {st.Width}×{st.Height} at {st.Fps} fps";
+                _viewerStatus = $"Viewing {_viewingName} · {st.Width}×{st.Height}";
                 break;
             case CoreEvent.Latency(var l):
                 _latency = $"Latency {l.P50Ms:F0} ms (p95 {l.P95Ms:F0} ms) · {l.Fps:F0} fps";

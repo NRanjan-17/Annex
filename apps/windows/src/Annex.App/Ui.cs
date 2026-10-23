@@ -49,14 +49,14 @@ internal static class Ui
     {
         var tile = icon ?? new Border
         {
-            Width = 64,
-            Height = 64,
-            CornerRadius = new CornerRadius(14),
+            Width = 52,
+            Height = 52,
+            CornerRadius = new CornerRadius(12),
             Background = Res<Brush>("AccentFillColorDefaultBrush"),
-            Child = new FontIcon { Glyph = glyph, FontSize = 30, Foreground = Res<Brush>("TextOnAccentFillColorPrimaryBrush") },
+            Child = new FontIcon { Glyph = glyph, FontSize = 24, Foreground = Res<Brush>("TextOnAccentFillColorPrimaryBrush") },
         };
         var text = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        text.Children.Add(Text(title, "TitleTextBlockStyle"));
+        text.Children.Add(Text(title, "SubtitleTextBlockStyle"));
         text.Children.Add(Text(description, "BodyTextBlockStyle", Secondary));
         var grid = new Grid { ColumnSpacing = 20, Margin = new Thickness(0, 16, 0, 20) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });

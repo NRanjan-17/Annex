@@ -206,7 +206,7 @@ final class AppModel: ObservableObject {
             viewerPeerName = title
             viewerStatus = "Connecting to \(title)…"
         } catch {
-            viewerStatus = "Connect failed: \(error.localizedDescription)"
+            viewerStatus = "Couldn't connect: \(error.localizedDescription)"
         }
     }
 
@@ -224,7 +224,7 @@ final class AppModel: ObservableObject {
     private func handleViewerEvent(_ e: CoreEvent) {
         switch e {
         case .sessionStarted(let s):
-            let via = s.connectionDescription.isEmpty ? "" : " (\(s.connectionDescription))"
+            let via = s.link == "direct" ? " · cable" : ""
             viewerStatus = (s.mode == "extend" ? "Extending \(s.peerName)" : "Viewing \(s.peerName)") + via
             viewerPeerName = s.peerName
             viewerFingerprint = s.fingerprint
@@ -241,7 +241,7 @@ final class AppModel: ObservableObject {
             }
         case .streamConfig(let s):
             viewerWindow?.setStreamSize(width: s.width, height: s.height)
-            viewerStatus = "Viewing \(viewerPeerName) — \(s.width)×\(s.height) @ \(s.fps) fps"
+            viewerStatus = "Viewing \(viewerPeerName) · \(s.width)×\(s.height)"
         case .inputAllowed(_, let allowed):
             controllingHost = allowed
             viewerWindow?.setControlling(allowed, hostName: viewerPeerName)
@@ -262,7 +262,7 @@ final class AppModel: ObservableObject {
                 viewerStatus = nil
             } else {
                 if directReconnect != nil {
-                    directStatus = "Couldn't reach \(viewerPeerName) on the direct link. Connect again from Nearby."
+                    directStatus = "Couldn't reach \(viewerPeerName) on direct Wi-Fi. Connect again from Nearby."
                     directReconnect = nil
                 }
                 viewerStatus = reason == "user" ? nil : Self.friendlyReason(reason, peer: viewerPeerName)
@@ -284,14 +284,14 @@ final class AppModel: ObservableObject {
     /// Viewer: ask the other computer (a Windows PC) to start its hotspot for a direct link.
     func switchToDirectWiFi() {
         guard let viewer else { return }
-        directStatus = "Asking \(viewerPeerName) to start a direct Wi-Fi link…"
+        directStatus = "Asking \(viewerPeerName) to start direct Wi-Fi…"
         viewer.requestDirectLink()
     }
 
     /// Joins the other computer's hotspot. As the viewer, reconnects to it afterwards; as the host,
     /// the viewer reconnects by itself once this Mac shows up on the hotspot.
     private func joinDirectLink(ssid: String, passphrase: String, asViewer: Bool) {
-        directStatus = "Joining “\(ssid)”. The picture pauses for a few seconds while the Mac switches Wi-Fi."
+        directStatus = "Joining “\(ssid)”. The picture pauses for a moment."
         if asViewer, let fp = viewerFingerprint {
             directReconnect = (fp, viewerPeerName, extendMode, 4)
         }
@@ -301,9 +301,9 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 if let error {
                     self.directReconnect = nil
-                    self.directStatus = "Couldn't join automatically (\(error)). Join “\(ssid)” from the Wi-Fi menu (password \(passphrase)), then connect again."
+                    self.directStatus = "Couldn't join automatically. Join “\(ssid)” from the Wi-Fi menu (password: \(passphrase)), then connect again."
                 } else if !asViewer {
-                    self.directStatus = "On “\(ssid)”, the direct link. The other computer reconnects by itself."
+                    self.directStatus = "On direct Wi-Fi (“\(ssid)”)."
                 } else if self.viewer == nil {
                     self.reconnectDirect()
                 }
@@ -329,7 +329,7 @@ final class AppModel: ObservableObject {
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "Let \(name) control this Mac?"
-            alert.informativeText = "\(name) wants to use this Mac's mouse and keyboard. You can change this any time in Paired Devices."
+            alert.informativeText = "\(name) wants to use this Mac's mouse and keyboard. You can change this in Paired Devices."
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Not Now")
             refreshTrusted()
@@ -367,7 +367,7 @@ final class AppModel: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Pair with “\(req.peerName)”"
-        alert.informativeText = "Enter the 6-digit PIN shown on \(req.peerName).\n\nIts identity code: \(req.fingerprintDisplay)"
+        alert.informativeText = "Enter the PIN shown on \(req.peerName).\n\nIdentity code: \(req.fingerprintDisplay)"
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 160, height: 28))
         field.placeholderString = "123 456"
         field.font = .monospacedDigitSystemFont(ofSize: 18, weight: .medium)
@@ -406,18 +406,18 @@ final class AppModel: ObservableObject {
     static func friendlyReason(_ reason: String, peer: String) -> String {
         switch reason {
         case "extend_not_supported":
-            return "\(peer) can't add an extra display. On Windows it needs the Annex display driver (see Share this PC there). Try Show Its Screen instead."
+            return "\(peer) can't add an extra display. Set up Extend on that computer, or use Show Its Screen."
         case "busy": return "\(peer) is already sharing with 4 computers."
-        case "pairing_failed": return "The PIN didn't match. Try again with the PIN shown on the other computer."
+        case "pairing_failed": return "Wrong PIN. Try again."
         case "pairing_cancelled": return "Pairing was cancelled on the other computer."
-        case "pairing_locked": return "Too many wrong PINs. Pairing is paused for 10 minutes."
+        case "pairing_locked": return "Too many wrong PINs. Try again in 10 minutes."
         case "host_stopped": return "\(peer) stopped sharing."
         case "host_ended_session": return "\(peer) ended the session."
         case "closed", "connection closed": return "Disconnected from \(peer)."
         default:
             let r = reason.lowercased()
             if r.contains("refused") || r.contains("timed out") || r.contains("timeout") {
-                return "Couldn't reach \(peer). Check that it's sharing and on the same network (\(reason))."
+                return "Couldn't reach \(peer). Check that it's sharing and on the same network."
             }
             return reason
         }
