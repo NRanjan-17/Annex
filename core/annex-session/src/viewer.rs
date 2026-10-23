@@ -84,6 +84,11 @@ impl ViewerHandle {
     }
 
     /// Tells the host to join this hotspot (this computer runs it) for a direct link.
+    /// Answers a host's `direct_link_requested` that this computer can't meet.
+    pub fn refuse_direct_link(&self, reason: &str) {
+        let _ = self.cmd.send(Cmd::Control(Control::DirectLinkUnavailable { reason: reason.into() }));
+    }
+
     pub fn offer_direct_link(&self, ssid: &str, passphrase: &str) {
         let _ =
             self.cmd.send(Cmd::Control(Control::DirectLinkOffer { ssid: ssid.into(), passphrase: passphrase.into() }));
@@ -301,6 +306,9 @@ async fn run(
                     }
                     Incoming::Control(Control::DirectLinkUnavailable { reason }) => {
                         events(Event::DirectLinkUnavailable { session_id: 0, reason });
+                    }
+                    Incoming::Control(Control::DirectLinkRequest) => {
+                        events(Event::DirectLinkRequested { session_id: 0 });
                     }
                     Incoming::Control(Control::InputAllowed { allowed }) => {
                         input_allowed.store(allowed, std::sync::atomic::Ordering::Release);

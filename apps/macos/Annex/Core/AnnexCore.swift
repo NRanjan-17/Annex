@@ -177,6 +177,14 @@ final class HostHandle {
         if let raw { annex_host_refuse_direct_link(raw, session, reason) }
     }
 
+    /// Asks a viewer to set up a direct Wi-Fi link (a Windows viewer starts its hotspot and answers
+    /// with directLinkOffer; others with directLinkUnavailable). Returns false if the session is gone.
+    @discardableResult
+    func requestDirectLink(session: UInt64) -> Bool {
+        guard let raw else { return false }
+        return annex_host_request_direct_link(raw, session) == 1
+    }
+
     func endSession(_ session: UInt64) {
         if let raw { annex_host_end_session(raw, session) }
     }
@@ -260,6 +268,11 @@ final class ViewerHandle {
         if let raw { annex_viewer_request_direct_link(raw) }
     }
 
+    /// Answers a host's direct-link request that this Mac can't meet.
+    func refuseDirectLink(reason: String) {
+        if let raw { annex_viewer_refuse_direct_link(raw, reason) }
+    }
+
     func sendKey(macKeyCode: UInt16, down: Bool) {
         if let raw { annex_viewer_send_key(raw, UInt32(macKeyCode), down) }
     }
@@ -284,6 +297,11 @@ final class DiscoveryHandle {
         var out: OpaquePointer?
         try check(annex_discovery_start(core.raw, eventTrampoline, box.context, &out))
         raw = out
+    }
+
+    /// Re-checks every listed computer and asks the network again (the Nearby refresh button).
+    func refresh() {
+        if let raw { annex_discovery_refresh(raw) }
     }
 
     deinit {

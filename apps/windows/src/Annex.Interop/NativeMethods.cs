@@ -130,11 +130,17 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_host_refuse_direct_link(nint host, ulong sessionId, string reason);
 
+    [LibraryImport(Lib)] public static partial int annex_host_request_direct_link(nint host, ulong sessionId);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_viewer_refuse_direct_link(nint viewer, string reason);
+
     [LibraryImport(Lib)] public static partial void annex_viewer_free(nint viewer);
 
     [LibraryImport(Lib)]
     public static partial int annex_discovery_start(nint core, delegate* unmanaged<nint, nint, void> onEvent, nint ctx, out nint discovery);
 
+    [LibraryImport(Lib)] public static partial void annex_discovery_refresh(nint discovery);
     [LibraryImport(Lib)] public static partial void annex_discovery_free(nint discovery);
 
     public static string TakeString(nint p)

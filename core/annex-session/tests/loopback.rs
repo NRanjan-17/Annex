@@ -794,3 +794,40 @@ async fn input_needs_the_host_to_allow_the_device() {
     viewer.disconnect().await;
     host.stop().await;
 }
+
+/// Direct Wi-Fi negotiation works from either side: whoever can run a hotspot offers it, and
+/// either side can ask or decline.
+#[tokio::test(flavor = "multi_thread")]
+async fn direct_link_messages_flow_both_ways() {
+    let (hev, mut hrx) = channel_sink();
+    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
+    let (vev, mut vrx) = channel_sink();
+    let viewer = connect_viewer(viewer_core("V"), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
+    let Event::SessionStarted { session_id: id, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
+    else {
+        unreachable!()
+    };
+    wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+
+    // Viewer asks; host declines.
+    viewer.request_direct_link();
+    wait_for(&mut hrx, |e| matches!(e, Event::DirectLinkRequested { session_id } if *session_id == id)).await;
+    assert!(host.refuse_direct_link(id, "no_hotspot"));
+    wait_for(&mut vrx, |e| matches!(e, Event::DirectLinkUnavailable { reason, .. } if reason == "no_hotspot")).await;
+
+    // Host asks; viewer declines, then offers its hotspot.
+    assert!(host.request_direct_link(id));
+    wait_for(&mut vrx, |e| matches!(e, Event::DirectLinkRequested { .. })).await;
+    viewer.refuse_direct_link("busy");
+    wait_for(&mut hrx, |e| matches!(e, Event::DirectLinkUnavailable { reason, .. } if reason == "busy")).await;
+    viewer.offer_direct_link("Annex-ab12", "0123456789abcdef");
+    wait_for(&mut hrx, |e| matches!(e, Event::DirectLinkOffer { ssid, .. } if ssid == "Annex-ab12")).await;
+
+    // Host offers its own.
+    assert!(host.offer_direct_link(id, "Annex-cd34", "fedcba9876543210"));
+    wait_for(&mut vrx, |e| matches!(e, Event::DirectLinkOffer { ssid, .. } if ssid == "Annex-cd34")).await;
+
+    viewer.disconnect().await;
+    host.stop().await;
+}

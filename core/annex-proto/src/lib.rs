@@ -234,7 +234,8 @@ pub enum Control {
     InputAllowed {
         allowed: bool,
     },
-    /// Viewer → host: please set up a direct Wi-Fi link (one side runs a hotspot).
+    /// Either way: please set up a direct Wi-Fi link (the side that can run a hotspot does, and
+    /// answers with an offer; a Mac can't, so it asks a Windows peer).
     DirectLinkRequest,
     /// Either way: join this Wi-Fi network for a direct link, then reconnect. Sent only inside the
     /// encrypted, mutually authenticated session; the passphrase is random per offer.
@@ -242,7 +243,7 @@ pub enum Control {
         ssid: String,
         passphrase: String,
     },
-    /// Host → viewer: a direct link isn't possible here (e.g. no hotspot support).
+    /// Either way: a direct link isn't possible here (e.g. no hotspot support).
     DirectLinkUnavailable {
         reason: String,
     },

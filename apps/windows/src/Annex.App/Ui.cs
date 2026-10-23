@@ -1,5 +1,6 @@
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -72,6 +73,42 @@ internal static class Ui
         var t = Text(title, "BodyStrongTextBlockStyle");
         t.Margin = new Thickness(1, 20, 0, 6);
         return t;
+    }
+
+    /// <summary>A section heading with a small control (e.g. refresh) at its right end.</summary>
+    public static Grid Section(string title, UIElement action)
+    {
+        var grid = new Grid { Margin = new Thickness(1, 14, 0, 2) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var t = Text(title, "BodyStrongTextBlockStyle");
+        t.VerticalAlignment = VerticalAlignment.Center;
+        grid.Children.Add(t);
+        if (action is FrameworkElement fe)
+        {
+            fe.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(fe, 1);
+            grid.Children.Add(fe);
+        }
+        return grid;
+    }
+
+    /// <summary>A quiet icon-only button (no fill until hovered), with a tooltip.</summary>
+    public static Button IconButton(string glyph, string tooltip, Action click)
+    {
+        var b = new Button
+        {
+            Content = Glyph(glyph, 14),
+            Padding = new Thickness(6),
+            MinWidth = 0,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Foreground = Secondary,
+        };
+        ToolTipService.SetToolTip(b, tooltip);
+        AutomationProperties.SetName(b, tooltip);
+        b.Click += (_, _) => click();
+        return b;
     }
 
     /// <summary>A setting card. <paramref name="control"/> sits on the right, vertically centred.</summary>

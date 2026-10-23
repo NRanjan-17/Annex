@@ -58,7 +58,7 @@ private struct Sidebar: View {
                 item("Connect", "rectangle.connected.to.line.below", .connect, active: model.isViewing)
             }
 
-            Section("Nearby") {
+            Section {
                 if model.discovered.isEmpty {
                     HStack(spacing: 10) {
                         ProgressView().controlSize(.mini).frame(width: 20)
@@ -69,6 +69,12 @@ private struct Sidebar: View {
                 }
                 ForEach(model.discovered) { peer in
                     item(peer.name, "desktopcomputer", .peer(peer.id), active: false, dimmed: !peer.isSharing)
+                }
+            } header: {
+                HStack {
+                    Text("Nearby")
+                    Spacer()
+                    NearbyRefreshButton(model: model)
                 }
             }
 
@@ -327,13 +333,22 @@ private struct SharePage: View {
             if model.isHosting && model.hostStatus.viewerName != nil {
                 let s = model.hostStatus
                 Section("Connected now") {
-                    ForEach(s.mirrorViewers, id: \.self) { name in
-                        Row(symbol: "rectangle.on.rectangle", tint: .green, title: "Showing this screen on \(name)",
-                            subtitle: s.stream.map { "\($0.width)×\($0.height) at \($0.fps) fps" }) { EmptyView() }
+                    ForEach(s.viewers) { v in
+                        Row(symbol: v.extend ? "rectangle.split.2x1" : "rectangle.on.rectangle", tint: .green,
+                            title: v.extend ? "\(v.name) is an extra display" : "Showing this screen on \(v.name)",
+                            subtitle: v.extend ? "Arrange it in System Settings → Displays."
+                                : s.stream.map { "\($0.width)×\($0.height) at \($0.fps) fps" }) {
+                            if model.hostDirectWiFi == nil {
+                                Button("Direct Wi-Fi") { model.switchViewerToDirectWiFi(v) }
+                                    .help("Join \(v.name)'s hotspot for less lag. Works with a Windows PC.")
+                            }
+                        }
                     }
-                    ForEach(s.extendViewers, id: \.self) { name in
-                        Row(symbol: "rectangle.split.2x1", tint: .green, title: "\(name) is an extra display",
-                            subtitle: "Arrange it in System Settings → Displays.") { EmptyView() }
+                    if let ssid = model.hostDirectWiFi {
+                        Row(symbol: "wifi", tint: .blue, title: "On direct Wi-Fi",
+                            subtitle: "Joined “\(ssid)”.") { EmptyView() }
+                    } else if let direct = model.directStatus {
+                        Row(symbol: "wifi", tint: .blue, title: "Direct Wi-Fi", subtitle: direct) { EmptyView() }
                     }
                     ForEach(s.controllingViewers, id: \.self) { name in
                         Row(symbol: "keyboard", tint: .orange, title: "\(name) is controlling this Mac",
@@ -475,7 +490,7 @@ private struct ConnectPage: View {
                  text: "Show another computer's screen here, or be its extra display.",
                  symbol: "rectangle.connected.to.line.below", tint: .indigo)
             ViewerStatusSection(model: model)
-            Section("Nearby") {
+            Section {
                 if model.discovered.isEmpty {
                     Row(symbol: "magnifyingglass", tint: .gray, title: "Looking for computers…",
                         subtitle: "Start sharing on the other computer.") {
@@ -484,6 +499,12 @@ private struct ConnectPage: View {
                 }
                 ForEach(model.discovered) { peer in
                     PeerRow(model: model, peer: peer)
+                }
+            } header: {
+                HStack {
+                    Text("Nearby")
+                    Spacer()
+                    NearbyRefreshButton(model: model)
                 }
             }
             if model.discovered.allSatisfy({ !$0.isSharing }) {
@@ -507,6 +528,28 @@ private struct ConnectPage: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// Re-checks the Nearby list; a small spinner while it runs.
+private struct NearbyRefreshButton: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        Group {
+            if model.refreshingNearby {
+                ProgressView().controlSize(.mini)
+            } else {
+                Button { model.refreshNearby() } label: {
+                    Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help("Refresh")
+                .accessibilityLabel("Refresh Nearby")
+            }
+        }
+        .frame(width: 16, height: 16)
     }
 }
 
@@ -555,7 +598,10 @@ private struct ViewerStatusSection: View {
                     Row(symbol: "keyboard", tint: .orange, title: "You're in control",
                         subtitle: "Press ⌃⌥⇧Q to leave.") { EmptyView() }
                 }
-                if model.isViewing && !model.onDirectWiFi {
+                if model.isViewing && model.onDirectWiFi {
+                    Row(symbol: "wifi", tint: .blue, title: "On direct Wi-Fi",
+                        subtitle: "Connected straight to the PC's hotspot.") { EmptyView() }
+                } else if model.isViewing {
                     Row(symbol: "wifi", tint: .blue, title: "Switch to direct Wi-Fi",
                         subtitle: "Less lag: connect straight to the PC's hotspot.") {
                         Button("Switch") { model.switchToDirectWiFi() }
@@ -601,6 +647,13 @@ private struct PeerPage: View {
                         model.connect(to: peer)
                     }
                     .disabled(model.isViewing || !peer.isSharing || !peer.canExtend)
+                }
+            }
+            Section {
+                Row(symbol: "wifi", tint: .gray, title: "Use direct Wi-Fi",
+                    subtitle: "Connect straight to a Windows PC's hotspot first, then start. Less lag.") {
+                    Toggle("", isOn: $model.useDirectWiFi).toggleStyle(.switch).labelsHidden()
+                        .disabled(model.isViewing)
                 }
             }
             Section("Details") {

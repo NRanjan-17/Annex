@@ -5,10 +5,18 @@ import Foundation
 /// capture of the chosen display; each Extend viewer gets its own virtual display.
 @MainActor
 final class HostController {
+    /// A connected viewer, for per-viewer actions (direct Wi-Fi).
+    struct Viewer: Equatable, Identifiable {
+        let id: UInt64
+        let name: String
+        let extend: Bool
+    }
+
     struct Status: Equatable {
         var listeningPort: Int?
         var mirrorViewers: [String] = []
         var extendViewers: [String] = []
+        var viewers: [Viewer] = []
         var stream: StreamConfig?
         var hardwareEncoder = false
         /// Viewers currently controlling this Mac.
@@ -136,8 +144,20 @@ final class HostController {
         }
         status.mirrorViewers = mirrorSessions.values.sorted()
         status.extendViewers = extendSessions.values.map(\.viewerName).sorted()
+        refreshViewers()
         status.controllingViewers = inputSessions.values.sorted()
         onEvent?(event)
+    }
+
+    private func refreshViewers() {
+        let mirror = mirrorSessions.map { Viewer(id: $0.key, name: $0.value, extend: false) }
+        let extend = extendSessions.map { Viewer(id: $0.key, name: $0.value.viewerName, extend: true) }
+        status.viewers = (mirror + extend).sorted { ($0.name, $0.id) < ($1.name, $1.id) }
+    }
+
+    /// Asks a viewer (a Windows PC) to start its hotspot for a direct link. False if it's gone.
+    func requestDirectLink(session: UInt64) -> Bool {
+        host?.requestDirectLink(session: session) ?? false
     }
 
     /// A Mac can't run a hotspot for the direct link; the Windows side does that.
@@ -178,6 +198,7 @@ final class HostController {
         extendDisplays.update { $0?.removeValue(forKey: id) }
         extendSessions.removeValue(forKey: id)?.stop()
         status.extendViewers = extendSessions.values.map(\.viewerName).sorted()
+        refreshViewers()
         host?.endSession(id)
     }
 

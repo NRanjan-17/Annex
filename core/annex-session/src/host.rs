@@ -240,6 +240,12 @@ impl HostHandle {
     }
 
     /// Answers a direct-link request that can't be met here.
+    /// Asks the viewer to set up a direct Wi-Fi link (a Windows viewer starts its hotspot and
+    /// answers with an offer; others answer "unavailable").
+    pub fn request_direct_link(&self, session_id: SessionId) -> bool {
+        self.send_to(session_id, Control::DirectLinkRequest)
+    }
+
     pub fn refuse_direct_link(&self, session_id: SessionId, reason: &str) -> bool {
         self.send_to(session_id, Control::DirectLinkUnavailable { reason: reason.into() })
     }
@@ -544,6 +550,9 @@ async fn run_session(
                     }
                     Some(Ok(Control::DirectLinkOffer { ssid, passphrase })) => {
                         (shared.events)(Event::DirectLinkOffer { session_id: id, ssid, passphrase });
+                    }
+                    Some(Ok(Control::DirectLinkUnavailable { reason })) => {
+                        (shared.events)(Event::DirectLinkUnavailable { session_id: id, reason });
                     }
                     Some(Ok(Control::Input(event))) => {
                         // Re-checked per event so revoking takes effect immediately.

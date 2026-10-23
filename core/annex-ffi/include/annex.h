@@ -152,12 +152,15 @@ int32_t annex_viewer_offer_direct_link(const AnnexViewer *viewer, const char *ss
 int32_t annex_host_offer_direct_link(const AnnexHost *host, uint64_t session_id, const char *ssid,
                                      const char *passphrase);
 int32_t annex_host_refuse_direct_link(const AnnexHost *host, uint64_t session_id, const char *reason);
+int32_t annex_host_request_direct_link(const AnnexHost *host, uint64_t session_id);
+int32_t annex_viewer_refuse_direct_link(const AnnexViewer *viewer, const char *reason);
 void annex_viewer_free(AnnexViewer *viewer);
 
 /* ---- Discovery -------------------------------------------------------------------- */
 /* Events: {"type":"peer_found",...} and {"type":"peer_lost","instance":...}. */
 int32_t annex_discovery_start(const AnnexCore *core, AnnexEventCallback on_event, void *ctx,
                               AnnexDiscovery **out);
+void annex_discovery_refresh(const AnnexDiscovery *discovery);
 void annex_discovery_free(AnnexDiscovery *discovery);
 
 #ifdef __cplusplus

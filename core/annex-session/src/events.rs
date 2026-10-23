@@ -73,7 +73,7 @@ pub enum Event {
         peer_name: String,
         fingerprint: String,
     },
-    /// Host: the viewer asks for a direct Wi-Fi link. Answer with an offer (start a hotspot) or
+    /// The other side asks for a direct Wi-Fi link. Answer with an offer (start a hotspot) or
     /// "unavailable".
     DirectLinkRequested {
         session_id: u64,
@@ -85,7 +85,7 @@ pub enum Event {
         ssid: String,
         passphrase: String,
     },
-    /// Viewer: the host can't set up a direct link.
+    /// The other side can't set up a direct link.
     DirectLinkUnavailable {
         session_id: u64,
         reason: String,

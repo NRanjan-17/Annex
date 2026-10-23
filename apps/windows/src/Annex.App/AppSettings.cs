@@ -17,6 +17,8 @@ public sealed class AppSettings
     /// sharing computer still decides per device (Paired devices), so asking is harmless.</summary>
     public bool UseMouseAndKeyboard { get; set; } = true;
     public bool ExtendByDefault { get; set; }
+    /// <summary>Viewer: move each new session onto this PC's hotspot right after it connects.</summary>
+    public bool ConnectOverDirectWifi { get; set; }
     /// <summary>Write annex.log for bug reports. Off by default.</summary>
     public bool SaveLog { get; set; }
     /// <summary>Viewer: bitrate ceiling asked of hosts (Fast suits Wi-Fi).</summary>

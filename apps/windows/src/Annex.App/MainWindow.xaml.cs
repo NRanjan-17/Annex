@@ -60,6 +60,10 @@ public sealed partial class MainWindow : Window
     private readonly Hotspot _hotspot = new();
     private (string Fingerprint, string Name, bool Extend, DateTimeOffset Until)? _directPending;
     private string? _directStatus;
+    /// <summary>Identifies the current viewer, so events still queued from a replaced one are ignored.</summary>
+    private object? _viewerToken;
+    /// <summary>Nearby is being re-checked (the refresh button shows progress until then).</summary>
+    private DateTimeOffset _refreshingUntil;
 
     // UI.
     private readonly NavigationView _nav = new();
@@ -242,7 +246,7 @@ public sealed partial class MainWindow : Window
         items.Clear();
         items.Add(NavItem("Share this PC", "", "share"));
         items.Add(NavItem("Connect", "", "connect"));
-        items.Add(new NavigationViewItemHeader { Content = "Nearby" });
+        items.Add(new NavigationViewItemHeader { Content = Ui.Section("Nearby", RefreshControl()) });
         if (_hosts.Count == 0)
             items.Add(new NavigationViewItem { Content = "Searching…", Icon = Ui.Glyph(""), IsEnabled = false, SelectsOnInvoked = false });
         foreach (var h in _hosts)
@@ -314,10 +318,19 @@ public sealed partial class MainWindow : Window
         if (_hostError is not null)
             p.Children.Add(Ui.Info("Sharing problem", _hostError, InfoBarSeverity.Warning));
         ExtendCard(p);
-        if (_hotspot.IsOn)
-            p.Children.Add(Ui.Card("", "Direct Wi-Fi is on",
-                $"Network “{_hotspot.Ssid}”.",
-                Ui.Button("Stop", () => { _ = _hotspot.StopAsync(); RenderIf("share"); })));
+        p.Children.Add(Ui.Card("", "Direct Wi-Fi",
+            _hotspot.IsOn
+                ? $"Network “{_hotspot.Ssid}”, password {_hotspot.Passphrase}. Other computers can join it for less lag."
+                : "Runs a hotspot on this PC so another computer connects straight to it. Less lag.",
+            Ui.Switch(_hotspot.IsOn, on => _ = SetHotspotAsync(on))));
+        if (_sessions.Count > 0)
+        {
+            p.Children.Add(Ui.Section("Connected now"));
+            foreach (var (id, session) in _sessions)
+                p.Children.Add(Ui.Card("", session.Mode == "extend" ? $"{session.Name} is an extra display" : $"Showing this screen on {session.Name}",
+                    session.Input ? "Can use this PC's mouse and keyboard." : null,
+                    Ui.Button("Switch to direct Wi-Fi", () => _ = OfferDirectWifiToViewerAsync(id, session.Name))));
+        }
 
         if (_host is not null)
         {
@@ -426,6 +439,31 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>Refresh button for Nearby, or a small spinner while the list is being re-checked.</summary>
+    private FrameworkElement RefreshControl()
+    {
+        if (DateTimeOffset.UtcNow < _refreshingUntil)
+            return new ProgressRing { IsActive = true, Width = 16, Height = 16, Margin = new Thickness(6) };
+        return Ui.IconButton("\uE72C", "Refresh", RefreshNearby);
+    }
+
+    private void RefreshNearby()
+    {
+        _discovery?.Refresh();
+        _refreshingUntil = DateTimeOffset.UtcNow.AddSeconds(3);
+        BuildNav();
+        RenderIf("connect");
+        var timer = _ui.CreateTimer();
+        timer.Interval = TimeSpan.FromSeconds(3.1);
+        timer.IsRepeating = false;
+        timer.Tick += (_, _) =>
+        {
+            BuildNav();
+            RenderIf("connect");
+        };
+        timer.Start();
+    }
+
     private string ShareStatus()
     {
         if (_host is null) return "Other computers can't see this PC.";
@@ -531,7 +569,7 @@ public sealed partial class MainWindow : Window
             "Show another computer's screen here, or be its extra display."));
         ViewerStatus(p);
 
-        p.Children.Add(Ui.Section("Nearby"));
+        p.Children.Add(Ui.Section("Nearby", RefreshControl()));
         if (_hosts.Count == 0)
             p.Children.Add(Ui.Card("", "Looking for computers…",
                 "Start sharing on the other computer.",
@@ -541,6 +579,7 @@ public sealed partial class MainWindow : Window
                 ConnectButtons(extend => { _extend = extend; ConnectToPeer(h); }, h)));
         if (_hosts.Count == 0 || _hosts.All(h => !h.Sharing))
             NotShowingUp(p);
+        DirectWifiOption(p);
 
         p.Children.Add(Ui.Section("Connect by address"));
         p.Children.Add(Ui.Card("", "Address", "Use this if the computer isn't listed.",
@@ -562,7 +601,9 @@ public sealed partial class MainWindow : Window
             p.Children.Add(Ui.Card("", "You're in control", "Press Ctrl+Alt+Shift+Q to leave."));
         else if (_viewer is not null)
             p.Children.Add(Ui.Card("", "Press Esc to leave the viewer."));
-        if (_viewer is not null && !_onDirectWifi && _directPending is null)
+        if (_viewer is not null && _onDirectWifi)
+            p.Children.Add(Ui.Card("", "On direct Wi-Fi", $"Connected through this PC's hotspot “{_hotspot.Ssid}”."));
+        else if (_viewer is not null && _directPending is null)
             p.Children.Add(Ui.Card("", "Switch to direct Wi-Fi",
                 "Less lag: the other computer joins this PC's hotspot.",
                 Ui.Button("Switch", () => _ = SwitchToDirectWifiAsync())));
@@ -602,10 +643,42 @@ public sealed partial class MainWindow : Window
         timer.Start();
     }
 
-    /// <summary>Discovery found the host on the hotspot: reconnect there.</summary>
+    /// <summary>Connect page: move new sessions onto this PC's hotspot right after they connect.</summary>
+    private void DirectWifiOption(StackPanel p)
+    {
+        p.Children.Add(Ui.Card("", "Connect over direct Wi-Fi",
+            "After connecting, this PC starts a hotspot and the other computer joins it. Less lag.",
+            Ui.Switch(_settings.ConnectOverDirectWifi, on =>
+            {
+                _settings.ConnectOverDirectWifi = on;
+                _settings.Save();
+            })));
+    }
+
+    /// <summary>The Direct Wi-Fi switch on the Share page.</summary>
+    private async Task SetHotspotAsync(bool on)
+    {
+        _hostError = on ? await _hotspot.StartAsync() : null;
+        if (!on) await _hotspot.StopAsync();
+        RenderIf("share");
+    }
+
+    /// <summary>Host: move one viewer onto this PC's hotspot (it joins, then reconnects there).</summary>
+    private async Task OfferDirectWifiToViewerAsync(ulong sessionId, string name)
+    {
+        var error = await _hotspot.StartAsync();
+        if (error is null && _host?.OfferDirectLink(sessionId, _hotspot.Ssid!, _hotspot.Passphrase!) == true)
+            _hostError = null;
+        else
+            _hostError = error ?? $"{name} isn't connected any more.";
+        RenderIf("share");
+    }
+
+    /// <summary>Discovery found the host on the hotspot: reconnect there. The old connection is
+    /// replaced right away instead of waiting for it to time out on the network it left.</summary>
     private void TryDirectReconnect(PeerInfo peer)
     {
-        if (_directPending is not { } d || _viewer is not null || peer.Fingerprint != d.Fingerprint) return;
+        if (_directPending is not { } d || peer.Fingerprint != d.Fingerprint) return;
         var direct = peer.Addresses.FirstOrDefault(a => a.StartsWith("192.168.137.", StringComparison.Ordinal));
         if (direct is null) return;
         _directPending = null;
@@ -1031,9 +1104,12 @@ public sealed partial class MainWindow : Window
     {
         if (_core is null) return;
         Disconnect();
+        var token = new object();
+        _viewerToken = token;
         try
         {
-            _viewer = ViewerHandle.ConnectWindowed(_core, address, pinnedFingerprint, e => _ui.TryEnqueue(() => OnViewerEvent(e)),
+            _viewer = ViewerHandle.ConnectWindowed(_core, address, pinnedFingerprint,
+                e => _ui.TryEnqueue(() => { if (ReferenceEquals(_viewerToken, token)) OnViewerEvent(e); }),
                 extend: _extend, input: _settings.UseMouseAndKeyboard, quality: _settings.Quality);
             _viewingName = title;
             _viewerStatus = $"Connecting to {title}…";
@@ -1065,6 +1141,12 @@ public sealed partial class MainWindow : Window
                 _controlling = s.Input;
                 if (_tray is not null) _tray.Tooltip = $"Annex — viewing {s.PeerName}";
                 RefreshTrusted();
+                if (_settings.ConnectOverDirectWifi && !_onDirectWifi && _directPending is null)
+                    _ = SwitchToDirectWifiAsync();
+                break;
+            case CoreEvent.DirectLinkRequested:
+                // The host (e.g. a Mac, which can't run a hotspot) asks this PC to set up the link.
+                if (_directPending is null && !_onDirectWifi) _ = SwitchToDirectWifiAsync();
                 break;
             case CoreEvent.InputAllowed a:
                 _controlling = a.Allowed;
@@ -1092,6 +1174,9 @@ public sealed partial class MainWindow : Window
                 _controlling = false;
                 if (_tray is not null) _tray.Tooltip = "Annex";
                 Disconnect();
+                // Switching: if the host already shows up on the hotspot, reconnect now.
+                if (_directPending is { } pending && _hosts.FirstOrDefault(h => h.Fingerprint == pending.Fingerprint) is { } back)
+                    TryDirectReconnect(back);
                 break;
             default:
                 return;
@@ -1143,6 +1228,7 @@ public sealed partial class MainWindow : Window
     {
         var v = _viewer;
         _viewer = null;
+        _viewerToken = null;
         v?.Dispose();
     }
 

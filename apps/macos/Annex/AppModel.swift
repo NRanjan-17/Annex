@@ -40,6 +40,17 @@ final class AppModel: ObservableObject {
     @Published private(set) var onDirectWiFi = false
     /// Reconnecting over the hotspot after switching: who, how, and attempts left.
     private var directReconnect: (fingerprint: String, name: String, extend: Bool, attempts: Int)?
+    /// Viewer: connect, then switch to direct Wi-Fi before showing the picture.
+    @Published var useDirectWiFi = false
+    private var switchOnStart = false
+    /// The viewer window waits for the direct link before it shows.
+    private var holdingWindow = false
+    /// Host: the hotspot this Mac joined for its viewers, if any.
+    @Published private(set) var hostDirectWiFi: String?
+    /// Nearby refresh in progress (the button shows a spinner).
+    @Published private(set) var refreshingNearby = false
+    /// Bumped whenever a viewer is replaced, so late events from the old one are ignored.
+    private var viewerGeneration = 0
     private var cancellables: Set<AnyCancellable> = []
 
     private var core: CoreClient?
@@ -171,6 +182,25 @@ final class AppModel: ObservableObject {
         host = nil
         isHosting = false
         hostStatus = HostController.Status()
+        hostDirectWiFi = nil
+    }
+
+    /// Host: ask a viewer (a Windows PC) to start its hotspot; this Mac joins it when it answers.
+    func switchViewerToDirectWiFi(_ viewer: HostController.Viewer) {
+        directStatus = "Asking \(viewer.name) to start direct Wi-Fi…"
+        if host?.requestDirectLink(session: viewer.id) != true {
+            directStatus = "\(viewer.name) is no longer connected."
+        }
+    }
+
+    // MARK: Nearby
+
+    /// Re-checks the Nearby list (computers that went away drop off, new ones appear).
+    func refreshNearby() {
+        guard !refreshingNearby else { return }
+        refreshingNearby = true
+        discovery?.refresh()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshingNearby = false }
     }
 
     // MARK: Viewing
@@ -180,6 +210,7 @@ final class AppModel: ObservableObject {
         // Pin the certificate only for hosts we already trust; unknown hosts get a prompt.
         let pinned = peer.fingerprint.flatMap { fp in trusted.contains { $0.fingerprint == fp } ? fp : nil }
         connect(address: address, title: peer.name, expectedFingerprint: pinned)
+        switchOnStart = useDirectWiFi && viewer != nil
     }
 
     func connectManual() {
@@ -191,13 +222,22 @@ final class AppModel: ObservableObject {
     private func connect(address: String, title: String, expectedFingerprint: String?) {
         guard let core else { return }
         disconnectViewer()
+        switchOnStart = false
+        holdingWindow = false
+        let generation = viewerGeneration
         let window = ViewerWindowController(title: "Annex — \(title)")
         window.onClose = { [weak self] in self?.disconnectViewer() }
         do {
             let v = try ViewerHandle(
                 core: core, address: address, expectedFingerprint: expectedFingerprint, display: Displays.mainDisplayInfo(),
                 extend: extendMode, input: settings.controlWhenViewing, quality: settings.quality,
-                onEvent: { [weak self] e in DispatchQueue.main.async { self?.handleViewerEvent(e) } },
+                onEvent: { [weak self] e in
+                    DispatchQueue.main.async {
+                        // A replaced viewer's last events (its sessionEnded) arrive after the new one started.
+                        guard let self, self.viewerGeneration == generation else { return }
+                        self.handleViewerEvent(e)
+                    }
+                },
                 onFrame: { [weak window] buf, id, _, key in
                     window?.enqueue(Data(buf), frameID: id, keyframe: key)
                 })
@@ -212,6 +252,9 @@ final class AppModel: ObservableObject {
     }
 
     func disconnectViewer() {
+        // This viewer's own sessionEnded is ignored from here on (see viewerGeneration), so reset
+        // what it would have reset.
+        viewerGeneration += 1
         let w = viewerWindow
         viewerWindow = nil
         viewer?.disconnect()
@@ -220,6 +263,9 @@ final class AppModel: ObservableObject {
         w?.close()
         latency = nil
         controllingHost = false
+        viewerStatus = nil
+        onDirectWiFi = false
+        holdingWindow = false
     }
 
     private func handleViewerEvent(_ e: CoreEvent) {
@@ -233,9 +279,16 @@ final class AppModel: ObservableObject {
                 directReconnect = nil
                 directStatus = nil
                 onDirectWiFi = true
+                holdingWindow = false
             }
             viewerWindow?.setStreamSize(width: s.stream.width, height: s.stream.height)
-            viewerWindow?.show(fullScreen: settings.openFullScreen)
+            if switchOnStart {
+                // Set up direct Wi-Fi first; the picture starts once reconnected over it.
+                switchOnStart = false
+                holdingWindow = true
+                switchToDirectWiFi()
+            }
+            if !holdingWindow { viewerWindow?.show(fullScreen: settings.openFullScreen) }
             controllingHost = s.input ?? false
             if settings.controlWhenViewing {
                 viewerWindow?.setControlling(controllingHost, hostName: s.peerName)
@@ -253,6 +306,10 @@ final class AppModel: ObservableObject {
         case .directLinkUnavailable(_, let reason):
             directStatus = reason
             directReconnect = nil
+            showHeldWindow()
+        case .directLinkRequested:
+            // A host asks this Mac to run the hotspot; only Windows can.
+            viewer?.refuseDirectLink(reason: "This Mac can't run a hotspot. Start direct Wi-Fi from the Windows PC.")
         case .sessionEnded(_, let reason):
             if reason == "user" { onDirectWiFi = false }
             // Switching networks drops the old connection on purpose; reconnect instead of reporting it.
@@ -275,9 +332,17 @@ final class AppModel: ObservableObject {
             w?.close()
             latency = nil
             controllingHost = false
+            holdingWindow = false
         default:
             handleSessionEvent(e)
         }
+    }
+
+    /// The direct link didn't happen: show the picture over the current network after all.
+    private func showHeldWindow() {
+        guard holdingWindow else { return }
+        holdingWindow = false
+        viewerWindow?.show(fullScreen: settings.openFullScreen)
     }
 
     // MARK: Direct Wi-Fi
@@ -300,12 +365,17 @@ final class AppModel: ObservableObject {
             let error = DirectWiFi.join(ssid: ssid, passphrase: passphrase)
             DispatchQueue.main.async {
                 guard let self else { return }
-                if let error {
+                if error != nil {
                     self.directReconnect = nil
                     self.directStatus = "Couldn't join automatically. Join “\(ssid)” from the Wi-Fi menu (password: \(passphrase)), then connect again."
+                    self.showHeldWindow()
                 } else if !asViewer {
+                    self.hostDirectWiFi = ssid
                     self.directStatus = "On direct Wi-Fi (“\(ssid)”)."
-                } else if self.viewer == nil {
+                } else if self.directReconnect != nil {
+                    // This Mac left the old network, so the old session is dead: drop it now
+                    // instead of waiting for it to time out, and reconnect over the hotspot.
+                    self.disconnectViewer()
                     self.reconnectDirect()
                 }
             }
@@ -326,6 +396,9 @@ final class AppModel: ObservableObject {
         switch e {
         case .directLinkRequested(let session):
             host?.refuseDirectLink(session: session)
+        case .directLinkUnavailable(_, let reason):
+            // Host: the viewer couldn't start a hotspot.
+            directStatus = reason
         case .inputRequested(_, let name, let fingerprint):
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()

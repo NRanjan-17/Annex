@@ -123,7 +123,16 @@ impl Drop for Advertisement {
 pub struct Browser {
     daemon: ServiceDaemon,
     stop: Arc<AtomicBool>,
+    refresh: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+}
+
+impl Browser {
+    /// Re-checks every listed device (those that don't answer are reported lost) and asks the
+    /// network again, so the list matches what's there now.
+    pub fn refresh(&self) {
+        self.refresh.store(true, Ordering::Release);
+    }
 }
 
 impl Drop for Browser {
@@ -189,16 +198,24 @@ impl Discovery {
         let mut rx = self.daemon.browse(MDNS_SERVICE_TCP)?;
         let daemon = self.daemon.clone();
         let stop = Arc::new(AtomicBool::new(false));
+        let refresh = Arc::new(AtomicBool::new(false));
         let own = self.own_fingerprint.clone();
-        let stop2 = stop.clone();
+        let (stop2, refresh2) = (stop.clone(), refresh.clone());
         let thread = std::thread::Builder::new()
             .name("annex-mdns-browse".into())
             .spawn(move || {
                 let mut requery: Vec<Instant> = Vec::new();
                 let mut next_refresh = Instant::now() + REFRESH_EVERY;
+                let mut listed: Vec<String> = Vec::new();
                 while !stop2.load(Ordering::Acquire) {
                     let now = Instant::now();
-                    let due = requery.iter().any(|t| *t <= now) || now >= next_refresh;
+                    let asked = refresh2.swap(false, Ordering::AcqRel);
+                    if asked {
+                        for instance in &listed {
+                            let _ = daemon.verify(instance.clone(), VERIFY_TIMEOUT);
+                        }
+                    }
+                    let due = asked || requery.iter().any(|t| *t <= now) || now >= next_refresh;
                     if due {
                         requery.retain(|t| *t > now);
                         next_refresh = now + REFRESH_EVERY;
@@ -220,10 +237,14 @@ impl Discovery {
                                 continue;
                             }
                             tracing::info!(name = %peer.name, sharing = peer.sharing, addrs = ?peer.addresses, port = peer.port, "nearby: found");
+                            if !listed.contains(&peer.instance) {
+                                listed.push(peer.instance.clone());
+                            }
                             on_event(DiscoveryEvent::PeerFound(peer));
                         }
                         ServiceEvent::ServiceRemoved(_, fullname) => {
                             tracing::info!(instance = %fullname, "nearby: gone");
+                            listed.retain(|i| *i != fullname);
                             on_event(DiscoveryEvent::PeerLost { instance: fullname });
                             let now = Instant::now();
                             requery.extend(REQUERY_AFTER_REMOVAL.iter().map(|d| now + *d));
@@ -233,12 +254,14 @@ impl Discovery {
                 }
             })
             .expect("spawn browse thread");
-        Ok(Browser { daemon: self.daemon.clone(), stop, thread: Some(thread) })
+        Ok(Browser { daemon: self.daemon.clone(), stop, refresh, thread: Some(thread) })
     }
 }
 
 /// When to ask again after a device's record goes away (it may have just re-announced).
 const REQUERY_AFTER_REMOVAL: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(6)];
+/// How long a refreshed device has to answer before it's reported lost.
+const VERIFY_TIMEOUT: Duration = Duration::from_secs(3);
 /// Periodic re-query so a missed announcement never hides a device for long.
 const REFRESH_EVERY: Duration = Duration::from_secs(30);
 

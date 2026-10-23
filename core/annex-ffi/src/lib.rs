@@ -255,7 +255,7 @@ pub struct AnnexViewer {
 }
 
 pub struct AnnexDiscovery {
-    _browser: Browser,
+    browser: Browser,
     callbacks: Arc<Callbacks>,
 }
 
@@ -1443,6 +1443,26 @@ pub unsafe extern "C" fn annex_host_refuse_direct_link(
     })
 }
 
+/// Viewer: answers a host's `direct_link_requested` event that can't be met (`reason` is shown to the host).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_refuse_direct_link(viewer: *const AnnexViewer, reason: *const c_char) -> i32 {
+    guard(|| {
+        let v = unsafe { viewer.as_ref() }.ok_or_else(|| invalid("viewer is null"))?;
+        v.handle.refuse_direct_link(unsafe { str_arg(reason, "reason") }?);
+        Ok(ANNEX_OK)
+    })
+}
+
+/// Host: asks the viewer of `session_id` to set up a direct Wi-Fi link; answered by a
+/// `direct_link_offer` or `direct_link_unavailable` event. Returns 1 if the request was sent.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_request_direct_link(host: *const AnnexHost, session_id: u64) -> i32 {
+    guard(|| {
+        let h = unsafe { host.as_ref() }.ok_or_else(|| invalid("host is null"))?;
+        Ok(h.handle.request_direct_link(session_id) as i32)
+    })
+}
+
 /// Disconnects (if connected) and frees the viewer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn annex_viewer_free(viewer: *mut AnnexViewer) {
@@ -1487,9 +1507,18 @@ pub unsafe extern "C" fn annex_discovery_start(
                 }
             })
             .map_err(failed)?;
-        unsafe { *out = Box::into_raw(Box::new(AnnexDiscovery { _browser: browser, callbacks })) };
+        unsafe { *out = Box::into_raw(Box::new(AnnexDiscovery { browser, callbacks })) };
         Ok(ANNEX_OK)
     })
+}
+
+/// Re-checks every listed device and asks the network again (the Nearby refresh button).
+/// Devices that don't answer within a few seconds arrive as `peer_lost`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_discovery_refresh(d: *const AnnexDiscovery) {
+    if let Some(d) = unsafe { d.as_ref() } {
+        d.browser.refresh();
+    }
 }
 
 #[unsafe(no_mangle)]

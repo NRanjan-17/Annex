@@ -207,6 +207,10 @@ public sealed unsafe class HostHandle : IDisposable
     public bool RefuseDirectLink(ulong sessionId, string reason) =>
         _raw != 0 && NativeMethods.Check(NativeMethods.annex_host_refuse_direct_link(_raw, sessionId, reason)) == 1;
 
+    /// <summary>Asks a viewer to set up a direct Wi-Fi link (answered by DirectLinkOffer / DirectLinkUnavailable).</summary>
+    public bool RequestDirectLink(ulong sessionId) =>
+        _raw != 0 && NativeMethods.Check(NativeMethods.annex_host_request_direct_link(_raw, sessionId)) == 1;
+
     public void Dispose()
     {
         if (_raw != 0)
@@ -284,6 +288,12 @@ public sealed unsafe class ViewerHandle : IDisposable
         if (_raw != 0) NativeMethods.Check(NativeMethods.annex_viewer_offer_direct_link(_raw, ssid, passphrase));
     }
 
+    /// <summary>Answers the host's DirectLinkRequested that can't be met.</summary>
+    public void RefuseDirectLink(string reason)
+    {
+        if (_raw != 0) NativeMethods.Check(NativeMethods.annex_viewer_refuse_direct_link(_raw, reason));
+    }
+
     public void FramePresented(uint frameId)
     {
         if (_raw != 0) NativeMethods.annex_viewer_frame_presented(_raw, frameId);
@@ -317,6 +327,13 @@ public sealed unsafe class DiscoveryHandle : IDisposable
             _target.Dispose();
             throw NativeMethods.LastError();
         }
+    }
+
+    /// <summary>Re-checks every listed computer and asks the network again; ones that don't answer
+    /// arrive as PeerLost within a few seconds.</summary>
+    public void Refresh()
+    {
+        if (_raw != 0) NativeMethods.annex_discovery_refresh(_raw);
     }
 
     public void Dispose()
