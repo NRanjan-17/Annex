@@ -75,26 +75,26 @@ let tilePath = flat
     : squircle(tile)
 if !flat {
     ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: 10), blur: 22, color: rgb(0x0B0A3A, 0.28))
+    ctx.setShadow(offset: CGSize(width: 0, height: 10), blur: 22, color: rgb(0x000000, 0.30))
     ctx.addPath(tilePath)
-    ctx.setFillColor(rgb(0x2B2A86))
+    ctx.setFillColor(rgb(0x111113))
     ctx.fillPath()
     ctx.restoreGState()
 }
 ctx.saveGState()
 ctx.addPath(tilePath)
 ctx.clip()
-// Deep indigo to blue, top-left to bottom-right, with a soft light from the top.
-ctx.drawLinearGradient(gradient([rgb(0x312E81), rgb(0x4F46E5), rgb(0x2196F3)], [0, 0.5, 1]),
-                       start: CGPoint(x: tile.minX, y: tile.minY), end: CGPoint(x: tile.maxX, y: tile.maxY), options: [])
-ctx.drawRadialGradient(gradient([rgb(0xFFFFFF, 0.22), rgb(0xFFFFFF, 0)], [0, 1]),
+// Black, a touch lighter at the top, with a soft sheen: quiet and monochrome.
+ctx.drawLinearGradient(gradient([rgb(0x2C2C2E), rgb(0x0B0B0C)], [0, 1]),
+                       start: CGPoint(x: tile.midX, y: tile.minY), end: CGPoint(x: tile.midX, y: tile.maxY), options: [])
+ctx.drawRadialGradient(gradient([rgb(0xFFFFFF, 0.10), rgb(0xFFFFFF, 0)], [0, 1]),
                        startCenter: CGPoint(x: tile.midX, y: tile.minY), startRadius: 0,
-                       endCenter: CGPoint(x: tile.midX, y: tile.minY), endRadius: tile.width * 0.8, options: [])
+                       endCenter: CGPoint(x: tile.midX, y: tile.minY), endRadius: tile.width * 0.75, options: [])
 ctx.restoreGState()
 // A fine light edge, like glass.
 ctx.saveGState()
 ctx.addPath(tilePath)
-ctx.setStrokeColor(rgb(0xFFFFFF, 0.16))
+ctx.setStrokeColor(rgb(0xFFFFFF, 0.10))
 ctx.setLineWidth(3)
 ctx.strokePath()
 ctx.restoreGState()
@@ -114,14 +114,14 @@ func rounded(_ r: CGRect, _ rad: CGFloat) -> CGPath {
 /// A display: white bezel with a glowing screen.
 func display(_ r: CGRect, _ top: UInt32, _ bottom: UInt32, shadow: CGFloat) {
     ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: 14 * k), blur: 36 * k, color: rgb(0x0B0A3A, shadow))
+    ctx.setShadow(offset: CGSize(width: 0, height: 14 * k), blur: 36 * k, color: rgb(0x000000, shadow))
     ctx.addPath(rounded(r, 30))
     ctx.setFillColor(rgb(0xFFFFFF))
     ctx.fillPath()
     ctx.restoreGState()
-    let screen = r.insetBy(dx: 16 * k, dy: 16 * k)
+    let screen = r.insetBy(dx: 20 * k, dy: 20 * k)
     ctx.saveGState()
-    ctx.addPath(rounded(screen, 16))
+    ctx.addPath(rounded(screen, 14))
     ctx.clip()
     ctx.drawLinearGradient(gradient([rgb(top), rgb(bottom)], [0, 1]),
                            start: CGPoint(x: screen.minX, y: screen.minY), end: CGPoint(x: screen.maxX, y: screen.maxY), options: [])
@@ -132,28 +132,28 @@ func display(_ r: CGRect, _ top: UInt32, _ bottom: UInt32, shadow: CGFloat) {
 // both: one desktop, two computers.
 let lid = R(92, 286, 344, 222)
 let monitor = R(470, 306, 262, 176)
-display(monitor, 0x6366F1, 0x38BDF8, shadow: 0.30)
+display(monitor, 0x3A3A3C, 0x1C1C1E, shadow: 0.45)
 ctx.addPath(rounded(R(586, 482, 30, 40), 4))
-ctx.setFillColor(rgb(0xE0E7FF))
+ctx.setFillColor(rgb(0xD1D1D6))
 ctx.fillPath()
 ctx.addPath(rounded(R(546, 516, 110, 20), 10))
 ctx.setFillColor(rgb(0xFFFFFF))
 ctx.fillPath()
-display(lid, 0x4338CA, 0x22D3EE, shadow: 0.40)
+display(lid, 0x3A3A3C, 0x1C1C1E, shadow: 0.50)
 // Laptop base: a thin slab, a little wider than the lid, with a finger notch.
 ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: 10 * k), blur: 24 * k, color: rgb(0x0B0A3A, 0.35))
+ctx.setShadow(offset: CGSize(width: 0, height: 10 * k), blur: 24 * k, color: rgb(0x000000, 0.45))
 ctx.addPath(rounded(R(66, 506, 396, 26), 13))
 ctx.setFillColor(rgb(0xFFFFFF))
 ctx.fillPath()
 ctx.restoreGState()
 ctx.addPath(rounded(R(228, 506, 72, 9), 4.5))
-ctx.setFillColor(rgb(0xC7D2FE))
+ctx.setFillColor(rgb(0xC7C7CC))
 ctx.fillPath()
 
 let win = R(324, 330, 236, 122)
 ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: 12 * k), blur: 28 * k, color: rgb(0x0B0A3A, 0.45))
+ctx.setShadow(offset: CGSize(width: 0, height: 12 * k), blur: 28 * k, color: rgb(0x000000, 0.55))
 ctx.addPath(rounded(win, 16))
 ctx.setFillColor(rgb(0xFFFFFF))
 ctx.fillPath()
@@ -161,15 +161,15 @@ ctx.restoreGState()
 ctx.saveGState()
 ctx.addPath(rounded(win, 16))
 ctx.clip()
-ctx.drawLinearGradient(gradient([rgb(0x818CF8), rgb(0x60A5FA)], [0, 1]),
-                       start: CGPoint(x: win.minX, y: win.minY), end: CGPoint(x: win.maxX, y: win.minY), options: [])
+ctx.setFillColor(rgb(0xE5E5EA))
+ctx.fill(CGRect(x: win.minX, y: win.minY, width: win.width, height: 32 * k))
 ctx.setFillColor(rgb(0xFFFFFF))
 ctx.fill(CGRect(x: win.minX, y: win.minY + 32 * k, width: win.width, height: win.height))
 // Two soft content bars, big enough to read as a window at small sizes.
 for (i, w) in [0.62, 0.42].enumerated() {
     ctx.addPath(rounded(CGRect(x: win.minX + 22 * k, y: win.minY + (52 + CGFloat(i) * 26) * k,
                                width: win.width * CGFloat(w), height: 13 * k), 6.5))
-    ctx.setFillColor(rgb(i == 0 ? 0xA5B4FC : 0xDBEAFE))
+    ctx.setFillColor(rgb(i == 0 ? 0xAEAEB2 : 0xD1D1D6))
     ctx.fillPath()
 }
 ctx.restoreGState()
