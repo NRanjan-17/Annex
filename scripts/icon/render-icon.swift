@@ -99,11 +99,8 @@ ctx.setLineWidth(3)
 ctx.strokePath()
 ctx.restoreGState()
 
-// Artwork on an 824-unit grid inside the tile, drawn a little larger than the grid around its centre.
+// Artwork on an 824-unit grid inside the tile.
 let k = tile.width / 824
-ctx.translateBy(x: tile.midX, y: tile.midY + 14 * k)
-ctx.scaleBy(x: 1.06, y: 1.06)
-ctx.translateBy(x: -tile.midX, y: -tile.midY)
 func R(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> CGRect {
     CGRect(x: tile.minX + x * k, y: tile.minY + y * k, width: w * k, height: h * k)
 }
@@ -111,68 +108,32 @@ func rounded(_ r: CGRect, _ rad: CGFloat) -> CGPath {
     CGPath(roundedRect: r, cornerWidth: rad * k, cornerHeight: rad * k, transform: nil)
 }
 
-/// A display: white bezel with a glowing screen.
-func display(_ r: CGRect, _ top: UInt32, _ bottom: UInt32, shadow: CGFloat) {
-    ctx.saveGState()
-    ctx.setShadow(offset: CGSize(width: 0, height: 14 * k), blur: 36 * k, color: rgb(0x000000, shadow))
-    ctx.addPath(rounded(r, 30))
-    ctx.setFillColor(rgb(0xFFFFFF))
-    ctx.fillPath()
-    ctx.restoreGState()
-    let screen = r.insetBy(dx: 20 * k, dy: 20 * k)
-    ctx.saveGState()
-    ctx.addPath(rounded(screen, 14))
-    ctx.clip()
-    ctx.drawLinearGradient(gradient([rgb(top), rgb(bottom)], [0, 1]),
-                           start: CGPoint(x: screen.minX, y: screen.minY), end: CGPoint(x: screen.maxX, y: screen.maxY), options: [])
-    ctx.restoreGState()
-}
-
-// This computer (a laptop) and the display Annex adds next to it, with one window stretched across
-// both: one desktop, two computers.
-let lid = R(92, 286, 344, 222)
-let monitor = R(470, 306, 262, 176)
-display(monitor, 0x3A3A3C, 0x1C1C1E, shadow: 0.45)
-ctx.addPath(rounded(R(586, 482, 30, 40), 4))
-ctx.setFillColor(rgb(0xD1D1D6))
-ctx.fillPath()
-ctx.addPath(rounded(R(546, 516, 110, 20), 10))
-ctx.setFillColor(rgb(0xFFFFFF))
-ctx.fillPath()
-display(lid, 0x3A3A3C, 0x1C1C1E, shadow: 0.50)
-// Laptop base: a thin slab, a little wider than the lid, with a finger notch.
+// Two displays, one in front of the other: this computer and the screen Annex adds. The same
+// shapes as the menu bar glyph, in white on black.
+let white = rgb(0xFFFFFF)
+let back = R(170, 230, 380, 260)
+let front = R(290, 330, 380, 260)
+// The back display is an outline that stops short of the front one.
 ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: 10 * k), blur: 24 * k, color: rgb(0x000000, 0.45))
-ctx.addPath(rounded(R(66, 506, 396, 26), 13))
-ctx.setFillColor(rgb(0xFFFFFF))
-ctx.fillPath()
+ctx.addRect(CGRect(x: 0, y: 0, width: 1024, height: 1024))
+ctx.addPath(rounded(front.insetBy(dx: -26 * k, dy: -26 * k), 58))
+ctx.clip(using: .evenOdd)
+ctx.setStrokeColor(white)
+ctx.setLineWidth(30 * k)
+ctx.addPath(rounded(back, 40))
+ctx.strokePath()
 ctx.restoreGState()
-ctx.addPath(rounded(R(228, 506, 72, 9), 4.5))
-ctx.setFillColor(rgb(0xC7C7CC))
+// The front display: a solid white bezel around a dark screen, on a stand.
+ctx.addPath(rounded(front, 40))
+ctx.setFillColor(white)
 ctx.fillPath()
-
-let win = R(324, 330, 236, 122)
-ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: 12 * k), blur: 28 * k, color: rgb(0x000000, 0.55))
-ctx.addPath(rounded(win, 16))
-ctx.setFillColor(rgb(0xFFFFFF))
+ctx.addPath(rounded(front.insetBy(dx: 26 * k, dy: 26 * k), 20))
+ctx.setFillColor(rgb(0x1C1C1E))
 ctx.fillPath()
-ctx.restoreGState()
-ctx.saveGState()
-ctx.addPath(rounded(win, 16))
-ctx.clip()
-ctx.setFillColor(rgb(0xE5E5EA))
-ctx.fill(CGRect(x: win.minX, y: win.minY, width: win.width, height: 32 * k))
-ctx.setFillColor(rgb(0xFFFFFF))
-ctx.fill(CGRect(x: win.minX, y: win.minY + 32 * k, width: win.width, height: win.height))
-// Two soft content bars, big enough to read as a window at small sizes.
-for (i, w) in [0.62, 0.42].enumerated() {
-    ctx.addPath(rounded(CGRect(x: win.minX + 22 * k, y: win.minY + (52 + CGFloat(i) * 26) * k,
-                               width: win.width * CGFloat(w), height: 13 * k), 6.5))
-    ctx.setFillColor(rgb(i == 0 ? 0xAEAEB2 : 0xD1D1D6))
-    ctx.fillPath()
-}
-ctx.restoreGState()
+ctx.setFillColor(white)
+ctx.fill(R(458, 590, 44, 50))
+ctx.addPath(rounded(R(392, 630, 176, 32), 16))
+ctx.fillPath()
 
 let image = ctx.makeImage()!
 let rep = NSBitmapImageRep(cgImage: image)
