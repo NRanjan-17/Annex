@@ -66,6 +66,15 @@ public sealed class AppSettings
     /// <summary>Passed by the Run key: start quietly in the tray.</summary>
     public const string BackgroundArg = "--background";
 
+    /// <summary>Points "Start with Windows" at this copy of Annex (it may have moved, e.g. after an update).</summary>
+    public static void RefreshStartWithWindows()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
+        var expected = $"\"{Environment.ProcessPath}\" {BackgroundArg}";
+        if (key?.GetValue(RunValue) is string current && !string.Equals(current, expected, StringComparison.OrdinalIgnoreCase))
+            key.SetValue(RunValue, expected);
+    }
+
     public static bool StartWithWindows
     {
         get

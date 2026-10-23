@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Annex.Interop;
+using Microsoft.Win32;
 
 namespace Annex.App;
 
@@ -32,17 +33,28 @@ internal sealed class Updater
     /// <summary>This PC's installer in a release.</summary>
     public static string AssetSuffix => RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "-arm64.exe" : "-x64.exe";
 
-    /// <summary>Installed for all users (Program Files), so the update must be too.</summary>
+    /// <summary>Inno Setup's uninstall registration (see AppId in installer/windows/Annex.iss).</summary>
+    private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F4C2B1E-8A0D-4F57-9B3A-2E7D5C1A9F40}_is1";
+
+    /// <summary>This copy of Annex was installed for all users (wherever it is, e.g. another drive),
+    /// so the update must be too. Read from Setup's own registration, not guessed from the folder.</summary>
     public static bool InstalledForAllUsers
     {
         get
         {
-            var here = AppContext.BaseDirectory;
-            return new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }
-                .Select(Environment.GetFolderPath)
-                .Any(pf => pf.Length > 0 && here.StartsWith(pf, StringComparison.OrdinalIgnoreCase));
+            foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+            {
+                using var hklm = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view);
+                if (SameFolder(hklm.OpenSubKey(UninstallKey)?.GetValue("Inno Setup: App Path") as string, AppContext.BaseDirectory))
+                    return true;
+            }
+            return false;
         }
     }
+
+    private static bool SameFolder(string? a, string b) =>
+        a is not null && string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)), StringComparison.OrdinalIgnoreCase);
 
     public bool Busy => State is Stage.Checking or Stage.Downloading or Stage.Installing;
 
@@ -85,8 +97,10 @@ internal sealed class Updater
             AnnexNative.VerifyUpdate(sums, sig, file, name);
 
             Set(Stage.Installing);
+            // Same install mode and folder as this copy, so Setup updates it in place.
+            var folder = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
             var args = "/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /UPDATE=1 "
-                + (InstalledForAllUsers ? "/ALLUSERS" : "/CURRENTUSER");
+                + (InstalledForAllUsers ? "/ALLUSERS" : "/CURRENTUSER") + $" /DIR=\"{folder}\"";
             Process.Start(new ProcessStartInfo(file, args) { UseShellExecute = true });
             return true;
         }

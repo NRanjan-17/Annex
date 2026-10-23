@@ -129,6 +129,7 @@ public sealed partial class MainWindow : Window
             _extendStatus = TryExtendStatus();
             _ = CheckFirewallAsync();
             StartUpdateChecks();
+            AppSettings.RefreshStartWithWindows();
         }
         catch (Exception ex)
         {
@@ -202,6 +203,10 @@ public sealed partial class MainWindow : Window
         _nav.OpenPaneLength = 300;
         _nav.Content = _page;
         _nav.PaneHeader = DeviceCard();
+        _nav.ItemInvoked += (_, args) =>
+        {
+            if (args.InvokedItemContainer?.Tag as string == RefreshTag) RefreshNearby();
+        };
         _nav.SelectionChanged += (_, args) =>
         {
             if (_buildingNav || args.SelectedItemContainer?.Tag is not string tag) return;
@@ -250,11 +255,22 @@ public sealed partial class MainWindow : Window
         items.Clear();
         items.Add(NavItem("Share this PC", "", "share"));
         items.Add(NavItem("Connect", "", "connect"));
-        items.Add(new NavigationViewItemHeader { Content = Ui.Section("Nearby", RefreshControl()) });
+        // Sidebar headers only show text, so refreshing is an entry at the end of the list.
+        items.Add(new NavigationViewItemHeader { Content = "Nearby" });
         if (_hosts.Count == 0)
             items.Add(new NavigationViewItem { Content = "Searching…", Icon = Ui.Glyph(""), IsEnabled = false, SelectsOnInvoked = false });
         foreach (var h in _hosts)
             items.Add(NavItem(h.Name, "", "peer:" + h.Instance));
+        var refreshing = DateTimeOffset.UtcNow < _refreshingUntil;
+        items.Add(new NavigationViewItem
+        {
+            Content = refreshing ? "Refreshing…" : "Refresh",
+            Icon = Ui.Glyph("\uE72C"),
+            Tag = RefreshTag,
+            SelectsOnInvoked = false,
+            IsEnabled = !refreshing,
+            Foreground = Ui.Secondary,
+        });
         items.Add(new NavigationViewItemHeader { Content = "Settings" });
         items.Add(NavItem("Paired devices", "", "devices"));
         items.Add(NavItem("General", "", "general"));
@@ -443,6 +459,9 @@ public sealed partial class MainWindow : Window
                 break;
         }
     }
+
+    /// <summary>Tag of the sidebar's Refresh entry under Nearby.</summary>
+    private const string RefreshTag = "refresh-nearby";
 
     /// <summary>Refresh button for Nearby, or a small spinner while the list is being re-checked.</summary>
     private FrameworkElement RefreshControl()

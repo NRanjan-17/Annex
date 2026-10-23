@@ -135,6 +135,60 @@ begin
   Result := ExpandConstant('{param:UPDATE|0}') = '1';
 end;
 
+const
+  // Inno Setup's uninstall registration for this AppId (HKLM for all users, HKCU for one user).
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F4C2B1E-8A0D-4F57-9B3A-2E7D5C1A9F40}_is1';
+
+function AllUsersInstallExists: Boolean;
+var
+  Path: String;
+begin
+  Result := RegQueryStringValue(HKLM64, UninstallKey, 'Inno Setup: App Path', Path)
+    or RegQueryStringValue(HKLM32, UninstallKey, 'Inno Setup: App Path', Path);
+end;
+
+// An update must land on the existing install. Annex 0.1.1's updater could start Setup for the
+// current user although Annex is installed for all users (e.g. on another drive), which made a
+// second copy. Hand the update over to an all-users Setup instead.
+function InitializeSetup: Boolean;
+var
+  Params: String;
+  I, ResultCode: Integer;
+begin
+  Result := True;
+  if IsUpdateRun and not IsAdminInstallMode and AllUsersInstallExists then
+  begin
+    Params := '';
+    for I := 1 to ParamCount do
+      if (CompareText(ParamStr(I), '/CURRENTUSER') <> 0) and (CompareText(Copy(ParamStr(I), 1, 5), '/DIR=') <> 0) then
+        Params := Params + ' ' + AddQuotes(ParamStr(I));
+    if ShellExec('runas', ExpandConstant('{srcexe}'), Params + ' /ALLUSERS', '', SW_SHOW, ewNoWait, ResultCode) then
+      Result := False; // the all-users Setup does the update
+  end;
+end;
+
+// After an all-users install, remove a per-user copy of Annex left by that old updater: its
+// program files, shortcuts and registration. Settings, keys and paired devices are shared by both
+// copies and stay.
+procedure RemovePerUserCopy();
+var
+  Dir: String;
+begin
+  if not RegQueryStringValue(HKCU, UninstallKey, 'Inno Setup: App Path', Dir) then exit;
+  if CompareText(RemoveBackslashUnlessRoot(Dir), RemoveBackslashUnlessRoot(ExpandConstant('{app}'))) = 0 then exit;
+  if FileExists(AddBackslash(Dir) + '{#AppExe}') then
+    DelTree(Dir, True, True, True);
+  DeleteFile(ExpandConstant('{userprograms}\{#AppName}.lnk'));
+  DeleteFile(ExpandConstant('{userdesktop}\{#AppName}.lnk'));
+  RegDeleteKeyIncludingSubkeys(HKCU, UninstallKey);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssPostInstall) and IsAdminInstallMode then
+    RemovePerUserCopy();
+end;
+
 // For all-users installs, also remove per-user data of every profile on this PC so no keys or
 // trusted-device lists are left behind.
 procedure RemoveAllProfilesData();
