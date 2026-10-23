@@ -11,7 +11,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::Serialize;
@@ -155,15 +155,33 @@ impl Discovery {
 
     /// Browses for hosts, calling `on_event` from a background thread. Our own
     /// advertisement is filtered out.
+    ///
+    /// A device that stops or starts sharing withdraws its record and re-announces it under the
+    /// same name straight away. The withdrawal expires the record here a second later, which can
+    /// swallow the fresh announcement, so the device would vanish until the next query. The
+    /// browse therefore asks again shortly after any removal, and every 30 s as a safety net.
     pub fn browse(&self, on_event: impl Fn(DiscoveryEvent) + Send + 'static) -> Result<Browser, DiscoveryError> {
-        let rx = self.daemon.browse(MDNS_SERVICE_TCP)?;
+        let mut rx = self.daemon.browse(MDNS_SERVICE_TCP)?;
+        let daemon = self.daemon.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let own = self.own_fingerprint.clone();
         let stop2 = stop.clone();
         let thread = std::thread::Builder::new()
             .name("annex-mdns-browse".into())
             .spawn(move || {
+                let mut requery: Vec<Instant> = Vec::new();
+                let mut next_refresh = Instant::now() + REFRESH_EVERY;
                 while !stop2.load(Ordering::Acquire) {
+                    let now = Instant::now();
+                    let due = requery.iter().any(|t| *t <= now) || now >= next_refresh;
+                    if due {
+                        requery.retain(|t| *t > now);
+                        next_refresh = now + REFRESH_EVERY;
+                        // A new browse of the same type sends fresh queries and replaces the old one.
+                        if let Ok(fresh) = daemon.browse(MDNS_SERVICE_TCP) {
+                            rx = fresh;
+                        }
+                    }
                     let Ok(ev) = rx.recv_timeout(Duration::from_millis(250)) else { continue };
                     match ev {
                         ServiceEvent::ServiceResolved(svc) => {
@@ -176,10 +194,14 @@ impl Discovery {
                             if peer.fingerprint.as_deref() == Some(own.as_str()) {
                                 continue;
                             }
+                            tracing::info!(name = %peer.name, sharing = peer.sharing, addrs = ?peer.addresses, port = peer.port, "nearby: found");
                             on_event(DiscoveryEvent::PeerFound(peer));
                         }
                         ServiceEvent::ServiceRemoved(_, fullname) => {
+                            tracing::info!(instance = %fullname, "nearby: gone");
                             on_event(DiscoveryEvent::PeerLost { instance: fullname });
+                            let now = Instant::now();
+                            requery.extend(REQUERY_AFTER_REMOVAL.iter().map(|d| now + *d));
                         }
                         _ => {}
                     }
@@ -189,6 +211,11 @@ impl Discovery {
         Ok(Browser { daemon: self.daemon.clone(), stop, thread: Some(thread) })
     }
 }
+
+/// When to ask again after a device's record goes away (it may have just re-announced).
+const REQUERY_AFTER_REMOVAL: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(6)];
+/// Periodic re-query so a missed announcement never hides a device for long.
+const REFRESH_EVERY: Duration = Duration::from_secs(30);
 
 impl Drop for Discovery {
     fn drop(&mut self) {
@@ -268,5 +295,37 @@ mod tests {
             }
         }
         panic!("advertisement not discovered");
+    }
+
+    /// Stop/start sharing swaps the record (withdraw + re-announce under the same name); the
+    /// other side must still list the device afterwards. Needs multicast; run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn live_record_swap_keeps_peer_listed() {
+        let host = Discovery::new(&"3".repeat(64)).unwrap();
+        let idle = host.advertise("Swap Test", 47998, false, false).unwrap();
+        let viewer = Discovery::new(&"4".repeat(64)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _b = viewer
+            .browse(move |e| {
+                let _ = tx.send(e);
+            })
+            .unwrap();
+        let mut listed: Option<bool> = None; // Some(sharing) while listed
+        let mut pump = |rx: &std::sync::mpsc::Receiver<DiscoveryEvent>, until: std::time::Instant| {
+            while std::time::Instant::now() < until {
+                match rx.recv_timeout(Duration::from_millis(100)) {
+                    Ok(DiscoveryEvent::PeerFound(p)) if p.port == 47998 => listed = Some(p.sharing),
+                    Ok(DiscoveryEvent::PeerLost { instance }) if instance.starts_with("Swap Test") => listed = None,
+                    _ => {}
+                }
+            }
+            listed
+        };
+        let now = std::time::Instant::now;
+        assert_eq!(pump(&rx, now() + Duration::from_secs(4)), Some(false), "idle record seen");
+        drop(idle);
+        let _sharing = host.advertise("Swap Test", 47998, true, false).unwrap();
+        assert_eq!(pump(&rx, now() + Duration::from_secs(10)), Some(true), "still listed, now sharing");
     }
 }
