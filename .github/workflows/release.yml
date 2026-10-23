@@ -218,7 +218,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          cat > notes.md <<'NOTES'
+          # Hand-written notes for this version, if any, come first.
+          : > notes.md
+          if [[ -f "docs/releases/v$VERSION.md" ]]; then cat "docs/releases/v$VERSION.md" >> notes.md; fi
+          cat >> notes.md <<'NOTES'
           > Built by CI from this tag. Installation steps: see the README.
 
           **Windows Extend-mode driver:** optional in the installer (off by default). The installer signs it on your PC
