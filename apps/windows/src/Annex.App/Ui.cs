@@ -111,41 +111,60 @@ internal static class Ui
         return b;
     }
 
-    /// <summary>A setting card. <paramref name="control"/> sits on the right, vertically centred.</summary>
+    /// <summary>Marks a <see cref="Card"/>; consecutive ones on a page become one group (<see cref="JoinRows"/>).</summary>
+    public const string RowTag = "annex-row";
+
+    /// <summary>A setting row: title and description on the left, the control on the right. Rows carry no
+    /// icon, like the About page; <paramref name="glyph"/> shows only as a status icon, when
+    /// <paramref name="glyphBrush"/> colours it. Consecutive rows on a page are joined into one rounded group.</summary>
     public static Border Card(string glyph, string title, string? description = null, UIElement? control = null, Brush? glyphBrush = null)
     {
-        var grid = new Grid { ColumnSpacing = 16, MinHeight = 44 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-        var icon = Glyph(glyph, 20);
-        icon.VerticalAlignment = VerticalAlignment.Center;
-        if (glyphBrush is not null) icon.Foreground = glyphBrush;
-        grid.Children.Add(icon);
-
-        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 1 };
-        text.Children.Add(Text(title, "BodyTextBlockStyle"));
-        if (!string.IsNullOrEmpty(description)) text.Children.Add(Text(description, "CaptionTextBlockStyle", Secondary));
-        Grid.SetColumn(text, 1);
-        grid.Children.Add(text);
-
-        if (control is FrameworkElement fe)
+        FontIcon? status = null;
+        if (glyphBrush is not null)
         {
-            fe.VerticalAlignment = VerticalAlignment.Center;
-            Grid.SetColumn(fe, 2);
-            Add(grid, fe);
+            status = Glyph(glyph, 18);
+            status.Foreground = glyphBrush;
         }
         return new Border
         {
-            Child = grid,
-            Padding = new Thickness(16, 12, 16, 12),
+            Tag = RowTag,
+            Child = GroupRow(title, description, control, status),
+            Padding = new Thickness(16, 10, 16, 10),
             CornerRadius = new CornerRadius(8),
             Background = Res<Brush>("CardBackgroundFillColorDefaultBrush"),
             BorderBrush = Res<Brush>("CardStrokeColorDefaultBrush"),
             BorderThickness = new Thickness(1),
             Margin = new Thickness(0, 0, 0, 2),
         };
+    }
+
+    /// <summary>Joins each run of consecutive <see cref="Card"/> rows on a page into one <see cref="Group"/>
+    /// with thin dividers, so every page uses the same grouped design as About.</summary>
+    public static void JoinRows(Panel page)
+    {
+        var children = page.Children.ToList();
+        page.Children.Clear();
+        var run = new List<UIElement>();
+        void Flush()
+        {
+            if (run.Count == 0) return;
+            page.Children.Add(Group([.. run]));
+            run.Clear();
+        }
+        foreach (var child in children)
+        {
+            if (child is Border { Tag: RowTag } row && row.Child is { } content)
+            {
+                row.Child = null;
+                run.Add(content);
+            }
+            else
+            {
+                Flush();
+                page.Children.Add(child);
+            }
+        }
+        Flush();
     }
 
     /// <summary>One row of a <see cref="Group"/>: title and description on the left, a control on the right.</summary>

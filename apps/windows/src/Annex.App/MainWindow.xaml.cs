@@ -303,6 +303,7 @@ public sealed partial class MainWindow : Window
                 if (peer is not null) PeerPage(stack, peer); else ConnectPage(stack);
                 break;
         }
+        Ui.JoinRows(stack);
         _page.Content = scroller;
     }
 
@@ -786,15 +787,16 @@ public sealed partial class MainWindow : Window
             p.Children.Add(Ui.Card("", "No paired devices", "Pair by connecting from another computer."));
         foreach (var peer in _trusted)
         {
-            var control = new ToggleSwitch { IsOn = peer.AllowInput, OnContent = "Can control", OffContent = "View only", MinWidth = 0 };
-            control.Toggled += (_, _) =>
-            {
-                _core?.SetAllowInput(peer.Fingerprint, control.IsOn);
-                RefreshTrusted();
-            };
-            var remove = new Button { Content = "Remove" };
+            var remove = new Button { Content = "Remove…" };
             remove.Click += async (_, _) => await ConfirmRemove(peer);
-            p.Children.Add(Ui.Card("", peer.Name, LastSeen(peer), Ui.Row(control, remove)));
+            p.Children.Add(Ui.Card("", peer.Name, LastSeen(peer), remove));
+            p.Children.Add(Ui.Card("", "Can use this PC's mouse and keyboard", null, Ui.Switch(peer.AllowInput, on =>
+            {
+                _core?.SetAllowInput(peer.Fingerprint, on);
+                RefreshTrusted();
+            })));
+            // A gap keeps each device in its own group.
+            p.Children.Add(new Border { Height = 10 });
         }
         if (ShowTech)
             p.Children.Add(Ui.Text($"This PC's identity code: {Fingerprint}", "CaptionTextBlockStyle", Ui.Secondary));
