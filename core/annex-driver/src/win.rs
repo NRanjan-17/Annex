@@ -48,7 +48,8 @@ fn test_monitor(width: u32, height: u32, hz: u32) -> Result<(), String> {
     let driver = annex_media_win::VirtualDisplayDriver::open().map_err(|e| format!("open: {e}"))?;
     println!("opened the driver");
     let connector = driver
-        .add_monitor(0x1234_5678, width, height, hz, 0, 0)
+        // Serial ending in 9 → connector 1: the lookup must not assume connector 0.
+        .add_monitor(0x1234_5679, width, height, hz, 0, 0)
         .map_err(|e| format!("add_monitor {width}x{height}@{hz}: {e}"))?;
     println!("added monitor on connector {connector}");
     let result = driver.wait_for_monitor(connector, Duration::from_secs(10));

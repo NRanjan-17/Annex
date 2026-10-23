@@ -1,6 +1,7 @@
 //! User-mode client for the AnnexIdd driver: creates/removes "Annex Display" monitors and keeps
 //! their lease alive. Monitors disappear on their own if this process dies (driver watchdog).
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -13,9 +14,11 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
 use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME, DISPLAYCONFIG_MODE_INFO,
     DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME,
-    DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QDC_ONLY_ACTIVE_PATHS, QueryDisplayConfig,
+    DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QDC_ALL_PATHS, QueryDisplayConfig, SDC_APPLY,
+    SDC_TOPOLOGY_EXTEND, SetDisplayConfig,
 };
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE};
+use windows::Win32::Graphics::Gdi::DISPLAYCONFIG_PATH_ACTIVE;
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
@@ -45,7 +48,13 @@ pub struct VirtualDisplayDriver {
     owner: u64,
     stop: Arc<AtomicBool>,
     pinger: Mutex<Option<JoinHandle<()>>>,
+    /// Annex targets that already existed when each connector's monitor was added: the new
+    /// monitor is the Annex target not in this list.
+    known: Mutex<HashMap<u32, Vec<TargetKey>>>,
 }
+
+/// A DisplayConfig target: adapter LUID (low, high) and target id.
+type TargetKey = (u32, i32, u32);
 
 fn device_path() -> Option<Vec<u16>> {
     let guid = GUID::from_u128(idd::INTERFACE_GUID);
@@ -121,7 +130,7 @@ impl VirtualDisplayDriver {
                 })
                 .map_err(|e| MediaError::Other(e.to_string()))?
         };
-        Ok(VirtualDisplayDriver { handle, owner, stop, pinger: Mutex::new(Some(pinger)) })
+        Ok(VirtualDisplayDriver { handle, owner, stop, pinger: Mutex::new(Some(pinger)), known: Mutex::default() })
     }
 
     /// Adds a monitor whose preferred mode is `width`×`height`@`refresh_hz`. Returns its connector index.
@@ -145,6 +154,7 @@ impl VirtualDisplayDriver {
             reserved: 0,
             owner: self.owner,
         };
+        let before: Vec<TargetKey> = annex_targets().into_iter().map(|t| t.key).collect();
         let mut out = AddMonitorResult::default();
         ioctl(&self.handle, idd::IOCTL_ADD_MONITOR, &req, Some(&mut out))
             .map_err(|e| MediaError::Other(format!("{e} (an older Annex display driver is still running)")))?;
@@ -155,6 +165,7 @@ impl VirtualDisplayDriver {
                 out.status as u32
             )));
         }
+        self.known.lock().unwrap().insert(out.connector_index, before);
         Ok(out.connector_index)
     }
 
@@ -163,17 +174,33 @@ impl VirtualDisplayDriver {
         ioctl(&self.handle, idd::IOCTL_REMOVE_MONITOR, &req, None::<&mut ()>)
     }
 
-    /// Waits until Windows has activated the monitor and returns it (GDI view of it).
+    /// Waits until Windows has activated the monitor and returns it (GDI view of it). If Windows
+    /// adds the monitor but leaves it off (a saved "one screen only" layout), the desktop is
+    /// switched to Extend once: that's what the user asked for.
     pub fn wait_for_monitor(&self, connector: u32, timeout: Duration) -> Result<Monitor, MediaError> {
-        let deadline = Instant::now() + timeout;
+        let before = self.known.lock().unwrap().get(&connector).cloned().unwrap_or_default();
+        let started = Instant::now();
+        let mut extended = false;
         loop {
-            if let Some(name) = gdi_name_for_connector(connector)
+            let fresh: Vec<AnnexTarget> = annex_targets().into_iter().filter(|t| !before.contains(&t.key)).collect();
+            if let Some(name) = fresh.iter().find_map(|t| t.gdi_name.clone())
                 && let Some(m) = monitors().into_iter().find(|m| m.name.eq_ignore_ascii_case(&name))
             {
                 return Ok(m);
             }
-            if Instant::now() > deadline {
-                return Err(MediaError::Other("the virtual monitor did not become active".into()));
+            if !extended && !fresh.is_empty() && started.elapsed() > Duration::from_millis(1500) {
+                extended = true;
+                // SAFETY: plain call; no buffers.
+                let rc = unsafe { SetDisplayConfig(None, None, SDC_APPLY | SDC_TOPOLOGY_EXTEND) };
+                tracing::info!(connector, rc, "extend: the new monitor was off; switched the desktop to Extend");
+            }
+            if started.elapsed() > timeout {
+                let why = if fresh.is_empty() {
+                    "Windows did not list the virtual monitor"
+                } else {
+                    "Windows listed the virtual monitor but did not turn it on"
+                };
+                return Err(MediaError::Other(format!("the virtual monitor did not become active ({why})")));
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -215,31 +242,48 @@ fn wide_str(buf: &[u16]) -> String {
     String::from_utf16_lossy(&buf[..len])
 }
 
-/// GDI device name (`\\.\DISPLAYn`) of the active Annex monitor on `connector`.
-fn gdi_name_for_connector(connector: u32) -> Option<String> {
+struct AnnexTarget {
+    key: TargetKey,
+    /// `\\.\DISPLAYn` while the monitor is on (part of the desktop).
+    gdi_name: Option<String>,
+}
+
+/// Every "Annex Display" target Windows knows, on or off. (DisplayConfig's connectorInstance
+/// is a per-adapter count, not the driver's connector index, so targets are told apart by key.)
+fn annex_targets() -> Vec<AnnexTarget> {
+    let mut out: Vec<AnnexTarget> = Vec::new();
     unsafe {
         let (mut np, mut nm) = (0u32, 0u32);
-        if GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut np, &mut nm).is_err() {
-            return None;
+        if GetDisplayConfigBufferSizes(QDC_ALL_PATHS, &mut np, &mut nm).is_err() {
+            return out;
         }
         let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); np as usize];
         let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); nm as usize];
-        if QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &mut np, paths.as_mut_ptr(), &mut nm, modes.as_mut_ptr(), None)
-            .is_err()
-        {
-            return None;
+        if QueryDisplayConfig(QDC_ALL_PATHS, &mut np, paths.as_mut_ptr(), &mut nm, modes.as_mut_ptr(), None).is_err() {
+            return out;
         }
         for p in &paths[..np as usize] {
-            let mut target = DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
-            target.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
-            target.header.size = std::mem::size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
-            target.header.adapterId = p.targetInfo.adapterId;
-            target.header.id = p.targetInfo.id;
-            if DisplayConfigGetDeviceInfo(&mut target.header) != 0 {
-                continue;
+            let t = &p.targetInfo;
+            let key = (t.adapterId.LowPart, t.adapterId.HighPart, t.id);
+            let active = p.flags & DISPLAYCONFIG_PATH_ACTIVE != 0;
+            if let Some(existing) = out.iter_mut().find(|x| x.key == key) {
+                if !active || existing.gdi_name.is_some() {
+                    continue;
+                }
+            } else {
+                let mut target = DISPLAYCONFIG_TARGET_DEVICE_NAME::default();
+                target.header.r#type = DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+                target.header.size = std::mem::size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
+                target.header.adapterId = t.adapterId;
+                target.header.id = t.id;
+                if DisplayConfigGetDeviceInfo(&mut target.header) != 0
+                    || wide_str(&target.monitorFriendlyDeviceName) != idd::MONITOR_NAME
+                {
+                    continue;
+                }
+                out.push(AnnexTarget { key, gdi_name: None });
             }
-            if wide_str(&target.monitorFriendlyDeviceName) != idd::MONITOR_NAME || target.connectorInstance != connector
-            {
+            if !active {
                 continue;
             }
             let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME::default();
@@ -247,12 +291,14 @@ fn gdi_name_for_connector(connector: u32) -> Option<String> {
             source.header.size = std::mem::size_of::<DISPLAYCONFIG_SOURCE_DEVICE_NAME>() as u32;
             source.header.adapterId = p.sourceInfo.adapterId;
             source.header.id = p.sourceInfo.id;
-            if DisplayConfigGetDeviceInfo(&mut source.header) == 0 {
-                return Some(wide_str(&source.viewGdiDeviceName));
+            if DisplayConfigGetDeviceInfo(&mut source.header) == 0
+                && let Some(entry) = out.iter_mut().find(|x| x.key == key)
+            {
+                entry.gdi_name = Some(wide_str(&source.viewGdiDeviceName));
             }
         }
-        None
     }
+    out
 }
 
 /// Current pixel size of a monitor by GDI name (follows changes made in Settings).
