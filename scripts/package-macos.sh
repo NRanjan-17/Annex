@@ -44,10 +44,22 @@ echo "==> Creating $DMG"
 rm -rf "$STAGE"
 mkdir -p "$STAGE" "$DIST"
 cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-cp "$ROOT/installer/macos/Uninstall Annex.command" "$STAGE/"
 rm -f "$DMG"
-hdiutil create -volname "Annex $VERSION" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
+# The window's background (1x + 2x in one TIFF) is drawn in code; dmgbuild lays out the window
+# (icon positions, size, no toolbar) without scripting Finder. Its pinned copy lives in a venv.
+swift "$ROOT/scripts/dmg/render-background.swift" "$BUILD/bg.png" 1
+swift "$ROOT/scripts/dmg/render-background.swift" "$BUILD/bg@2x.png" 2
+tiffutil -cathidpicheck "$BUILD/bg.png" "$BUILD/bg@2x.png" -out "$BUILD/background.tiff" >/dev/null
+VENV="$BUILD/dmg-venv"
+[ -x "$VENV/bin/dmgbuild" ] || {
+  python3 -m venv "$VENV"
+  "$VENV/bin/pip" install --quiet --disable-pip-version-check --only-binary=:all: --require-hashes \
+    -r "$ROOT/scripts/dmg/requirements.txt"
+}
+"$VENV/bin/dmgbuild" -s "$ROOT/scripts/dmg/settings.py" -D app="$STAGE/Annex.app" \
+  -D background="$BUILD/background.tiff" \
+  "Annex $VERSION" "$DMG" 2>&1 | grep -v "is deprecated" || true
+[ -f "$DMG" ] || { echo "error: dmgbuild did not create $DMG"; exit 1; }
 
 if [ -n "${DEVELOPER_ID_APPLICATION:-}" ]; then
   codesign --sign "$DEVELOPER_ID_APPLICATION" --timestamp "$DMG"

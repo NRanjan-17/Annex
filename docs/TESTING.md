@@ -110,7 +110,7 @@ streaming (the stream continues, letterboxed), and cover the screen with a fast-
 
 ### 5. Uninstall cleanup (macOS)
 
-Open the DMG and run **Uninstall Annex.command** (right-click → Open the first time). Expected:
+In Annex, open **About** and click **Uninstall…** (it opens in Terminal and asks first). Expected:
 `/Applications/Annex.app` and `~/Library/Application Support/Annex` are removed and Annex no
 longer appears under Privacy & Security → Screen & System Audio Recording.
 

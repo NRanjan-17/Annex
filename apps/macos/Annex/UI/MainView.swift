@@ -779,6 +779,14 @@ private struct ViewingPage: View {
 private struct AboutPage: View {
     @ObservedObject var settings: AppSettings
 
+    /// Opens the bundled uninstaller in Terminal, which asks before removing anything.
+    static func runUninstaller() {
+        guard let script = Bundle.main.url(forResource: "Uninstall Annex", withExtension: "command"),
+              let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")
+        else { return }
+        NSWorkspace.shared.open([script], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
+    }
+
     var body: some View {
         Page(title: "About Annex") {
             Hero(title: "Annex", text: "Version \(Annex.version). Encrypted, local, no accounts.") {
@@ -801,6 +809,10 @@ private struct AboutPage: View {
                         }
                         Toggle("", isOn: $settings.saveLog).toggleStyle(.switch).labelsHidden()
                     }
+                }
+                Row(symbol: "trash", tint: .gray, title: "Uninstall Annex",
+                    subtitle: "Removes Annex, its settings and paired devices from this Mac.") {
+                    Button("Uninstall…") { AboutPage.runUninstaller() }
                 }
             } footer: {
                 Text("MIT License · Copyright © 2026 Nalinish Ranjan").font(.caption).foregroundStyle(.secondary)

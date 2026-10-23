@@ -156,7 +156,7 @@ an extra display for a **Mac**, don't need the driver.
 
 ## Uninstall
 
-- **macOS:** open the DMG again and run **Uninstall Annex.command**. It removes the app, its
+- **macOS:** in Annex, open **About** and click **Uninstall…**. It removes the app, its
   identity key (Keychain), paired devices, settings and permissions.
 - **Windows:** Settings → Apps → Annex → Uninstall. It removes the app, the display driver,
   the firewall rule, *Start with Windows*, and all settings, keys and paired devices.
