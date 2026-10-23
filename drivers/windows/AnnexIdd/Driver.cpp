@@ -167,9 +167,13 @@ static UINT ConnectorFor(uint32_t serial, const std::vector<std::unique_ptr<Moni
 }
 
 NTSTATUS Adapter::AddMonitor(const ANNEX_ADD_MONITOR& in, ANNEX_ADD_MONITOR_RESULT& out) {
+    out.Stage = ANNEX_ADD_STAGE_NOT_READY;
     if (!m_ready) return STATUS_DEVICE_NOT_READY;
+    out.Stage = ANNEX_ADD_STAGE_VERSION;
     if (in.Version != ANNEX_IDD_PROTOCOL_VERSION) return STATUS_REVISION_MISMATCH;
+    out.Stage = ANNEX_ADD_STAGE_SIZE;
     if (in.Width < 640 || in.Height < 480 || in.Width > 8192 || in.Height > 8192) return STATUS_INVALID_PARAMETER;
+    out.Stage = ANNEX_ADD_STAGE_NO_CONNECTOR;
 
     // IddCx calls back into ModesForSerial/ModesForMonitor/AssignSwapChain while it creates and
     // announces the monitor, so the entry is listed first (callbacks see its real size) and the
@@ -206,8 +210,10 @@ NTSTATUS Adapter::AddMonitor(const ANNEX_ADD_MONITOR& in, ANNEX_ADD_MONITOR_RESU
     IDARG_IN_MONITORCREATE create = {};
     create.pMonitorInfo = &info;
     IDARG_OUT_MONITORCREATE created = {};
+    out.Stage = ANNEX_ADD_STAGE_CREATE;
     NTSTATUS status = IddCxMonitorCreate(m_adapter, &create, &created);
     if (NT_SUCCESS(status)) {
+        out.Stage = ANNEX_ADD_STAGE_ARRIVAL;
         {
             std::lock_guard<std::mutex> guard(m_lock);
             entry->monitor = created.MonitorObject;
@@ -224,6 +230,7 @@ NTSTATUS Adapter::AddMonitor(const ANNEX_ADD_MONITOR& in, ANNEX_ADD_MONITOR_RESU
         return status;
     }
     entry->pending = false;
+    out.Stage = ANNEX_ADD_STAGE_OK;
     out.ConnectorIndex = entry->connector;
     bool known = false;
     for (auto& lease : m_leases)
@@ -433,11 +440,16 @@ static VOID AnnexDeviceIoControl(WDFDEVICE device, WDFREQUEST request, size_t ou
             if (NT_SUCCESS(status)) {
                 ANNEX_ADD_MONITOR add = *static_cast<ANNEX_ADD_MONITOR*>(inBuf);
                 ANNEX_ADD_MONITOR_RESULT result = {};
-                status = adapter->AddMonitor(add, result);
-                if (NT_SUCCESS(status)) {
-                    *static_cast<ANNEX_ADD_MONITOR_RESULT*>(outBuf) = result;
-                    info = sizeof(result);
+                try {
+                    result.Status = adapter->AddMonitor(add, result);
+                } catch (...) {
+                    // An exception must never leave a driver callback: it would kill the host process.
+                    result.Status = STATUS_INTERNAL_ERROR;
+                    result.Stage = ANNEX_ADD_STAGE_INTERNAL;
                 }
+                *static_cast<ANNEX_ADD_MONITOR_RESULT*>(outBuf) = result;
+                info = sizeof(result);
+                status = STATUS_SUCCESS;  // the outcome is in result.Status / result.Stage
             }
             break;
         case IOCTL_ANNEX_REMOVE_MONITOR:

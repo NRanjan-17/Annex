@@ -37,6 +37,26 @@ pub struct AddMonitor {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AddMonitorResult {
     pub connector_index: u32,
+    /// NTSTATUS of the step that failed (0 on success).
+    pub status: i32,
+    /// Which step failed; see [`add_stage_name`]. A driver older than this field leaves it 0.
+    pub stage: u32,
+    pub reserved: u32,
+}
+
+/// Human name for `AddMonitorResult::stage` (mirrors `ANNEX_ADD_STAGE_*`).
+pub fn add_stage_name(stage: u32) -> &'static str {
+    match stage {
+        0 => "ok",
+        1 => "driver not ready",
+        2 => "protocol version mismatch",
+        3 => "size out of range",
+        4 => "no free connector",
+        5 => "IddCxMonitorCreate",
+        6 => "IddCxMonitorArrival",
+        7 => "internal error",
+        _ => "unknown step",
+    }
 }
 
 #[repr(C)]
@@ -76,7 +96,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<AddMonitor>(), 40);
         assert_eq!(std::mem::size_of::<RemoveMonitor>(), 16);
         assert_eq!(std::mem::size_of::<Ping>(), 16);
-        assert_eq!(std::mem::size_of::<AddMonitorResult>(), 4);
+        assert_eq!(std::mem::size_of::<AddMonitorResult>(), 16);
     }
 
     #[test]

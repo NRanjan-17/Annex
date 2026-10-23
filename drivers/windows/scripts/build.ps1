@@ -12,6 +12,9 @@ param(
 $ErrorActionPreference = "Stop"
 # Driver versions are numeric (a.b.c.d); drop any pre-release suffix.
 $Version = ($Version -split '[-+]')[0]
+# The fourth field is unique per build (hours since 2026), so Windows always treats a new
+# driver as an update instead of keeping the one it already has loaded.
+$Build = [int][Math]::Floor(((Get-Date).ToUniversalTime() - [datetime]'2026-01-01').TotalHours) % 65535
 $Root = Resolve-Path "$PSScriptRoot\.."
 $Packages = Join-Path $Root "packages"
 nuget restore (Join-Path $Root "packages.config") -PackagesDirectory $Packages -NonInteractive
@@ -20,7 +23,7 @@ if ($LASTEXITCODE) { throw "nuget restore failed" }
 $Wdk = Join-Path $Packages "Microsoft.Windows.WDK.$Platform.10.0.28000.2526\c"
 $Kit = "10.0.28000.0"
 msbuild (Join-Path $Root "AnnexIdd\AnnexIdd.vcxproj") /m /nologo /p:Configuration=$Configuration /p:Platform=$Platform `
-  "/p:StampInfDriverVersion=$Version.0"
+  "/p:StampInfDriverVersion=$Version.$Build"
 if ($LASTEXITCODE) { throw "msbuild failed" }
 
 $Out = Join-Path $Root "AnnexIdd\$Platform\$Configuration"

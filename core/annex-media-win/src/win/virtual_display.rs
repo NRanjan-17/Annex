@@ -146,7 +146,15 @@ impl VirtualDisplayDriver {
             owner: self.owner,
         };
         let mut out = AddMonitorResult::default();
-        ioctl(&self.handle, idd::IOCTL_ADD_MONITOR, &req, Some(&mut out))?;
+        ioctl(&self.handle, idd::IOCTL_ADD_MONITOR, &req, Some(&mut out))
+            .map_err(|e| MediaError::Other(format!("{e} (an older Annex display driver is still running)")))?;
+        if out.status < 0 {
+            return Err(MediaError::Other(format!(
+                "the display driver could not add a {width}x{height}@{refresh_hz} monitor: {} failed (NTSTATUS 0x{:08X})",
+                idd::add_stage_name(out.stage),
+                out.status as u32
+            )));
+        }
         Ok(out.connector_index)
     }
 

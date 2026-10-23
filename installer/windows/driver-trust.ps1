@@ -73,6 +73,13 @@ if ($Action -eq "uninstall") {
 $catalog = Join-Path $Package "AnnexIdd.cat"
 if (-not (Test-Path $catalog)) { Note "no catalog at $catalog"; throw "AnnexIdd.cat missing from $Package" }
 
+$tool = Join-Path (Split-Path $Package) "annex-driver.exe"
+
+# Updating: remove the old device and every old Annex package from the driver store first, so the
+# new driver is what Windows loads (a same-version package could otherwise keep the old one running).
+$output = & $tool uninstall 2>&1
+Note "annex-driver uninstall (exit $LASTEXITCODE): $output"
+
 # A previous install's certificate is replaced, never accumulated.
 Remove-Trust
 
@@ -105,7 +112,6 @@ $check = Get-AuthenticodeSignature -FilePath $catalog
 Note "signed $catalog with $($cert.Thumbprint): $($check.Status) $($check.StatusMessage)"
 
 # Install only now. annex-driver installs non-interactively: a bad signature fails instead of prompting.
-$tool = Join-Path (Split-Path $Package) "annex-driver.exe"
 $inf = Join-Path $Package "AnnexIdd.inf"
 $output = & $tool install $inf 2>&1
 $code = $LASTEXITCODE

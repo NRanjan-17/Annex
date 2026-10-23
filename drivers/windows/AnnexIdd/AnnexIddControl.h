@@ -31,8 +31,22 @@ typedef struct ANNEX_ADD_MONITOR {
     UINT64 Owner;      // random per app instance; see IOCTL_ANNEX_PING
 } ANNEX_ADD_MONITOR;
 
+// Failure details come back in the result (the IOCTL itself then succeeds), because Windows only
+// passes an NTSTATUS to user mode as a Win32 code, and many different failures read the same there.
+#define ANNEX_ADD_STAGE_OK 0
+#define ANNEX_ADD_STAGE_NOT_READY 1
+#define ANNEX_ADD_STAGE_VERSION 2
+#define ANNEX_ADD_STAGE_SIZE 3
+#define ANNEX_ADD_STAGE_NO_CONNECTOR 4
+#define ANNEX_ADD_STAGE_CREATE 5   // IddCxMonitorCreate
+#define ANNEX_ADD_STAGE_ARRIVAL 6  // IddCxMonitorArrival
+#define ANNEX_ADD_STAGE_INTERNAL 7
+
 typedef struct ANNEX_ADD_MONITOR_RESULT {
     UINT32 ConnectorIndex;  // identifies the monitor in REMOVE and in DisplayConfig (connectorInstance)
+    INT32 Status;           // NTSTATUS of the failed step; 0 on success
+    UINT32 Stage;           // ANNEX_ADD_STAGE_*
+    UINT32 Reserved;
 } ANNEX_ADD_MONITOR_RESULT;
 
 typedef struct ANNEX_REMOVE_MONITOR {
