@@ -114,7 +114,7 @@ final class Updater: ObservableObject {
         guard case .available(let info) = state else { return }
         let alert = NSAlert()
         alert.messageText = "Install Annex \(info.version)?"
-        alert.informativeText = "Annex quits, updates and opens again. macOS asks for Screen Recording again afterwards, because this build isn't notarized yet."
+        alert.informativeText = "Annex quits, updates and opens again. Its permissions stay as they are."
         alert.addButton(withTitle: "Install")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)

@@ -252,9 +252,9 @@ jobs:
           **Windows Extend-mode driver:** optional in the installer (off by default). The installer signs it on your PC
           with a one-off certificate whose private key is deleted right away, so it loads without test signing.
 
-          **Signing status** is shown in each job's log. Builds made without signing secrets are
-          ad-hoc (macOS) or unsigned (Windows) and will trigger Gatekeeper / SmartScreen warnings.
-          Verify downloads against `SHA256SUMS.txt`.
+          **Signing:** the Mac app is signed with a Developer ID and notarized by Apple, so it opens without
+          warnings. The Windows installer isn't code-signed yet, so SmartScreen may warn the first time:
+          click **More info → Run anyway**. Annex checks every in-app update against `SHA256SUMS.txt.sig`.
           NOTES
           # Pre-release tags (v1.2.3-pre.1) are published as GitHub pre-releases right away so testers can
           # download them; stable versions stay drafts until checked and published by hand.

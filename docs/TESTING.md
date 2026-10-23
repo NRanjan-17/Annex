@@ -35,11 +35,12 @@ These need two machines (or a Windows VM with network bridging). Put both on the
 ### 1. Install
 
 - **Mac:** open `Annex-<version>-macos-universal.dmg`, drag Annex to Applications, launch it.
-  An unsigned build is blocked by Gatekeeper the first time: right-click Annex → **Open** →
-  Open. A display icon appears in the menu bar.
+  Release builds are notarized and open normally. A build you made yourself (ad hoc signed) is
+  blocked by Gatekeeper the first time: right-click Annex → **Open** → Open. A display icon
+  appears in the menu bar.
 - **Windows:** run `Annex-Setup-<version>-x64.exe`. On the folder page choose any folder,
   for example on `D:\`. Pick "Install for me only" (no admin) or "all users" (adds firewall
-  rules). An unsigned build triggers SmartScreen: **More info → Run anyway**. After install,
+  rules). The installer isn't code-signed yet, so SmartScreen may warn: **More info → Run anyway**. After install,
   Annex starts and an icon appears in the **system tray** (it may be in the overflow ^ area).
 
 ### 2. Mirror the Mac to Windows
