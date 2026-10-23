@@ -27,6 +27,8 @@ final class AppSettings: ObservableObject {
     @Published var betaUpdates: Bool { didSet { defaults.set(betaUpdates, forKey: Keys.beta) } }
     /// The update the user said "Not now" to (its banner stays hidden; a newer one shows again).
     @Published var dismissedUpdateVersion: String? { didSet { defaults.set(dismissedUpdateVersion, forKey: Keys.dismissedUpdate) } }
+    /// When the last update check finished (shown on the About page).
+    @Published var lastUpdateCheck: Date? { didSet { defaults.set(lastUpdateCheck, forKey: Keys.lastCheck) } }
     /// The name other devices see; nil = this Mac's name from System Settings.
     @Published var customDeviceName: String? { didSet { defaults.set(customDeviceName, forKey: Keys.name) } }
     @Published private(set) var launchAtLogin = false
@@ -45,6 +47,7 @@ final class AppSettings: ObservableObject {
         static let updates = "checkForUpdates"
         static let beta = "betaUpdates"
         static let dismissedUpdate = "dismissedUpdateVersion"
+        static let lastCheck = "lastUpdateCheck"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -62,6 +65,7 @@ final class AppSettings: ObservableObject {
         checkForUpdates = defaults.bool(forKey: Keys.updates)
         betaUpdates = defaults.bool(forKey: Keys.beta)
         dismissedUpdateVersion = defaults.string(forKey: Keys.dismissedUpdate)
+        lastUpdateCheck = defaults.object(forKey: Keys.lastCheck) as? Date
         refreshLaunchAtLogin()
     }
 

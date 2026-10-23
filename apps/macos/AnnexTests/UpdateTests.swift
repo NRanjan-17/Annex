@@ -24,7 +24,7 @@ final class UpdateTests: XCTestCase {
         let beta = try XCTUnwrap(AnnexUpdate.pick(json: json, beta: true))
         XCTAssertEqual(beta.version, "99.1.0-pre.1")
         XCTAssertTrue(beta.prerelease)
-        XCTAssertEqual(Updater.headline(beta), "Annex 99.1.0-pre.1 is available. A pre-release.")
+        XCTAssertEqual(Updater.headline(beta), "Annex 99.1.0-pre.1 is available. It's a pre-release.")
     }
 
     func testNothingToOfferAndBadInput() throws {

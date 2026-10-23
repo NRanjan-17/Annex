@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Sidebar pages of the main window.
 enum Pane: Hashable {
-    case share, connect, peer(String), settings
+    case share, connect, peer(String), devices, settings, about
 }
 
 /// The main window: a System Settings-style sidebar and pages.
@@ -37,7 +37,9 @@ struct MainView: View {
             } else {
                 ConnectPage(model: model)
             }
+        case .devices: DevicesPage(model: model, settings: model.settings)
         case .settings: SettingsPage(model: model, settings: model.settings)
+        case .about: AboutPage(model: model, settings: model.settings, updater: model.updater)
         }
     }
 }
@@ -76,7 +78,9 @@ private struct Sidebar: View {
             }
 
             Section {
+                item("Paired Devices", "person.2", .devices, active: false)
                 item("Settings", "gearshape", .settings, active: false)
+                item("About", "info.circle", .about, active: false)
             }
         }
         .listStyle(.sidebar)
@@ -348,7 +352,7 @@ private struct SharePage: View {
                     }
                     ForEach(s.controllingViewers, id: \.self) { name in
                         Row(symbol: "keyboard", tint: .orange, title: "\(name) is controlling this Mac",
-                            subtitle: "Turn it off in Settings → Paired Devices.") { EmptyView() }
+                            subtitle: "Turn it off in Paired Devices.") { EmptyView() }
                     }
                 }
             }
@@ -685,10 +689,7 @@ private struct SettingsPage: View {
             general
             sharing
             viewing
-            pairedDevices
-            updates
             developer
-            about
         }
         // Permission changes in System Settings don't notify apps; look again while this page is open.
         .task {
@@ -765,44 +766,6 @@ private struct SettingsPage: View {
         }
     }
 
-    private var pairedDevices: some View {
-        Section {
-            if model.trusted.contains(where: \.allowInput) && !model.accessibilityTrusted {
-                Row(symbol: "hand.raised.fill", tint: .orange, title: "Accessibility is off",
-                    subtitle: "Needed for remote control. After an update, remove Annex with − and add it again.") {
-                    Button("Open Settings") { InputInjector.openAccessibilitySettings() }
-                }
-            }
-            if model.trusted.isEmpty {
-                Row(symbol: "lock.shield", tint: .gray, title: "No paired devices",
-                    subtitle: "Pair by connecting from another computer.") { EmptyView() }
-            }
-            ForEach(model.trusted) { peer in DeviceRow(model: model, peer: peer) }
-        } header: {
-            Text("Paired Devices")
-        } footer: {
-            Text("Paired devices connect without a PIN."
-                 + (settings.showTechnicalDetails ? " This Mac's identity code: \(model.fingerprintDisplay)" : ""))
-                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-        }
-    }
-
-    private var updates: some View {
-        Section {
-            UpdateStatusRow(updater: model.updater)
-            Row(symbol: "arrow.triangle.2.circlepath", tint: .blue, title: "Check for updates automatically",
-                subtitle: "Once a day, from GitHub. Nothing about you is sent.") {
-                Toggle("", isOn: $settings.checkForUpdates).toggleStyle(.switch).labelsHidden()
-            }
-            Row(symbol: "testtube.2", tint: .gray, title: "Beta updates",
-                subtitle: "Get pre-release versions early. Turn off to go back to the latest normal release.") {
-                Toggle("", isOn: $settings.betaUpdates).toggleStyle(.switch).labelsHidden()
-            }
-        } header: {
-            Text("Updates")
-        }
-    }
-
     private var developer: some View {
         Section {
             Row(symbol: "info.circle", tint: .gray, title: "Show technical details",
@@ -826,40 +789,223 @@ private struct SettingsPage: View {
         }
     }
 
-    private var about: some View {
-        Section {
-            HStack(spacing: 10) {
-                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 26, height: 26)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Annex \(Annex.version)")
-                    Text("Encrypted, local, no accounts.").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .padding(.vertical, 2)
-            Link(destination: URL(string: "https://github.com/NRanjan-17/Annex")!) {
-                Row(symbol: "globe", tint: .blue, title: "Website and source code") { Image(systemName: "arrow.up.right").foregroundStyle(.tertiary) }
-            }
-            Link(destination: URL(string: "https://github.com/NRanjan-17/Annex/issues")!) {
-                Row(symbol: "ladybug.fill", tint: .red, title: "Report an issue") { Image(systemName: "arrow.up.right").foregroundStyle(.tertiary) }
-            }
-            Row(symbol: "trash", tint: .gray, title: "Uninstall Annex",
-                subtitle: "Removes Annex, its settings and paired devices from this Mac.") {
-                Button("Uninstall…") { Self.runUninstaller() }
-            }
-        } header: {
-            Text("About")
-        } footer: {
-            Text("MIT License · Copyright © 2026 Nalinish Ranjan").font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
     /// Opens the bundled uninstaller in Terminal, which asks before removing anything.
     static func runUninstaller() {
         guard let script = Bundle.main.url(forResource: "Uninstall Annex", withExtension: "command"),
               let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")
         else { return }
         NSWorkspace.shared.open([script], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
+    }
+}
+
+// MARK: Paired Devices
+
+private struct DevicesPage: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        Page(title: "Paired Devices") {
+            devices
+        }
+        // Permission changes in System Settings don't notify apps; look again while this page is open.
+        .task {
+            while !Task.isCancelled {
+                model.refreshPermissions()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    private var devices: some View {
+        Section {
+            if model.trusted.contains(where: \.allowInput) && !model.accessibilityTrusted {
+                Row(symbol: "hand.raised.fill", tint: .orange, title: "Accessibility is off",
+                    subtitle: "Needed for remote control. After an update, remove Annex with − and add it again.") {
+                    Button("Open Settings") { InputInjector.openAccessibilitySettings() }
+                }
+            }
+            if model.trusted.isEmpty {
+                Row(symbol: "lock.shield", tint: .gray, title: "No paired devices",
+                    subtitle: "Pair by connecting from another computer.") { EmptyView() }
+            }
+            ForEach(model.trusted) { peer in DeviceRow(model: model, peer: peer) }
+        } footer: {
+            Text("Paired devices connect without a PIN."
+                 + (settings.showTechnicalDetails ? " This Mac's identity code: \(model.fingerprintDisplay)" : ""))
+                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+        }
+    }
+}
+
+// MARK: About
+
+/// A rounded group like System Settings' boxes, for pages built from stacks rather than a Form.
+private struct GroupCard<Content: View>: View {
+    var padding: CGFloat = 0
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(spacing: 0) { content }
+            .padding(padding)
+            .frame(maxWidth: .infinity)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.045)))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
+    }
+}
+
+/// One full-width row of a Card: text on the left, a control on the right, a hairline below.
+private struct CardRow<Trailing: View>: View {
+    let title: String
+    var subtitle: String?
+    var divider = true
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                    if let subtitle {
+                        Text(subtitle).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .layoutPriority(1)
+                Spacer(minLength: 12)
+                trailing.fixedSize()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44)
+            if divider { Divider().padding(.horizontal, 16) }
+        }
+    }
+}
+
+private struct AboutPage: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var settings: AppSettings
+    @ObservedObject var updater: Updater
+
+    private static let repo = URL(string: "https://github.com/NRanjan-17/Annex")!
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 28) {
+                header
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Updates").font(.headline).padding(.leading, 4)
+                    updates
+                }
+                GroupCard {
+                    CardRow(title: "Uninstall Annex", subtitle: "Removes Annex, its settings and paired devices from this Mac.",
+                            divider: false) {
+                        Button("Uninstall…") { SettingsPage.runUninstaller() }
+                    }
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 720)
+            .frame(maxWidth: .infinity)
+        }
+        .navigationTitle("About")
+    }
+
+    private var header: some View {
+        GroupCard(padding: 28) {
+            VStack(spacing: 0) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 96, height: 96)
+                Text("Annex").font(.system(size: 22, weight: .bold)).padding(.top, 10)
+                Text("Version \(Annex.version)").font(.callout).foregroundStyle(.secondary).padding(.top, 2)
+                Text("Use another computer as a second display, or mirror its screen.\nMac and Windows, over your network or a cable, encrypted end to end.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 14)
+                HStack(spacing: 12) {
+                    Button("Release Notes") {
+                        NSWorkspace.shared.open(Self.repo.appendingPathComponent("releases/tag/v\(Annex.version)"))
+                    }
+                    Button("Report an Issue") { NSWorkspace.shared.open(Self.repo.appendingPathComponent("issues")) }
+                    Link("View on GitHub", destination: Self.repo)
+                }
+                .controlSize(.large)
+                .padding(.top, 16)
+                Text("MIT License · © 2026 Nalinish Ranjan")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 16)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private var updates: some View {
+        GroupCard {
+            CardRow(title: "Check for updates automatically", subtitle: "Once a day, from GitHub. Nothing about you is sent.") {
+                Toggle("", isOn: $settings.checkForUpdates).toggleStyle(.switch).labelsHidden()
+            }
+            CardRow(title: "Receive beta updates",
+                    subtitle: "Beta versions include features in development and may contain bugs.") {
+                Toggle("", isOn: $settings.betaUpdates).toggleStyle(.switch).labelsHidden()
+            }
+            status
+            HStack {
+                Button("Check Now") { Task { await updater.check() } }
+                    .disabled(updater.isBusy)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44)
+            Divider().padding(.horizontal, 16)
+            HStack {
+                Text(lastChecked).font(.caption).foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+    }
+
+    /// The updater's state as one row: an icon, a sentence and the action that fits.
+    @ViewBuilder private var status: some View {
+        let (symbol, tint, text): (String?, Color, String) = switch updater.state {
+        case .idle: (nil, .secondary, "Annex \(Annex.version)")
+        case .checking: (nil, .secondary, "Checking for updates…")
+        case .upToDate: ("checkmark.circle.fill", .green, "You're on the latest version.")
+        case .available(let info): ("arrow.down.circle.fill", .blue, Updater.headline(info))
+        case .downloading: (nil, .secondary, "Downloading the update…")
+        case .installing: (nil, .secondary, "Installing… Annex reopens in a moment.")
+        case .failed(let message): ("exclamationmark.triangle.fill", .orange, message)
+        case .manual(let message): ("arrow.down.circle", .blue, message)
+        }
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                if let symbol {
+                    Image(systemName: symbol).foregroundStyle(tint).font(.system(size: 16))
+                } else if updater.isBusy {
+                    ProgressView().controlSize(.small)
+                }
+                Text(text).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 12)
+                if case .available(let info) = updater.state {
+                    if let page = URL(string: info.pageUrl) { Link("What's New", destination: page) }
+                    Button("Install") { updater.confirmAndInstall() }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .frame(minHeight: 44)
+            Divider().padding(.horizontal, 16)
+        }
+    }
+
+    private var lastChecked: String {
+        guard let date = settings.lastUpdateCheck else { return "Not checked yet." }
+        return "Last checked: " + date.formatted(date: .abbreviated, time: .shortened)
     }
 }
 
@@ -900,47 +1046,6 @@ private struct DeviceRow: View {
             parts.append("Last connected " + Date(timeIntervalSince1970: TimeInterval(peer.lastSeen)).formatted(.relative(presentation: .named)))
         }
         return parts.isEmpty ? "Paired" : parts.joined(separator: " · ")
-    }
-}
-
-/// What the updater is doing, with the action that fits.
-private struct UpdateStatusRow: View {
-    @ObservedObject var updater: Updater
-
-    var body: some View {
-        switch updater.state {
-        case .idle:
-            Row(symbol: "info.circle", tint: .gray, title: "Version \(Annex.version)") { checkNow }
-        case .checking:
-            Row(symbol: "info.circle", tint: .gray, title: "Checking…") { ProgressView().controlSize(.small) }
-        case .upToDate:
-            Row(symbol: "checkmark.circle.fill", tint: .green, title: "Annex is up to date.",
-                subtitle: "Version \(Annex.version).") { checkNow }
-        case .available(let info):
-            Row(symbol: "arrow.down.circle.fill", tint: .blue, title: Updater.headline(info),
-                subtitle: "You have \(Annex.version).") {
-                HStack(spacing: 8) {
-                    if let page = URL(string: info.pageUrl) { Link("What's New", destination: page) }
-                    Button("Install") { updater.confirmAndInstall() }
-                }
-            }
-        case .downloading:
-            Row(symbol: "arrow.down.circle", tint: .blue, title: "Downloading…") { ProgressView().controlSize(.small) }
-        case .installing:
-            Row(symbol: "arrow.down.circle", tint: .blue, title: "Installing… Annex restarts in a moment.") {
-                ProgressView().controlSize(.small)
-            }
-        case .failed(let message):
-            Row(symbol: "exclamationmark.triangle.fill", tint: .orange, title: message) {
-                Button("Try Again") { Task { await updater.check() } }
-            }
-        case .manual(let message):
-            Row(symbol: "arrow.down.circle", tint: .blue, title: message) { EmptyView() }
-        }
-    }
-
-    private var checkNow: some View {
-        Button("Check Now") { Task { await updater.check() } }
     }
 }
 

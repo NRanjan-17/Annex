@@ -410,7 +410,7 @@ final class AppModel: ObservableObject {
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "Let \(name) control this Mac?"
-            alert.informativeText = "\(name) wants to use this Mac's mouse and keyboard. You can change this in Settings → Paired Devices."
+            alert.informativeText = "\(name) wants to use this Mac's mouse and keyboard. You can change this in Paired Devices."
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Not Now")
             refreshTrusted()

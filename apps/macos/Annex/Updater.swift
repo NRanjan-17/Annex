@@ -64,13 +64,21 @@ final class Updater: ObservableObject {
         return info
     }
 
+    /// Checking, downloading or installing: the Check Now button waits.
+    var isBusy: Bool {
+        switch state {
+        case .checking, .downloading, .installing: return true
+        default: return false
+        }
+    }
+
     func dismissBanner() {
         if case .available(let info) = state { settings.dismissedUpdateVersion = info.version }
         announced = false
     }
 
     nonisolated static func headline(_ info: UpdateInfo) -> String {
-        "Annex \(info.version) is available." + (info.downgrade ? " The latest normal release." : info.prerelease ? " A pre-release." : "")
+        "Annex \(info.version) is available." + (info.downgrade ? " It's the latest normal release." : info.prerelease ? " It's a pre-release." : "")
     }
 
     func check(automatic: Bool = false) async {
@@ -87,7 +95,9 @@ final class Updater: ObservableObject {
             if let code = (response as? HTTPURLResponse)?.statusCode, code != 200 {
                 throw AnnexError(message: "GitHub answered \(code).")
             }
-            if let info = try AnnexUpdate.pick(json: String(decoding: data, as: UTF8.self), beta: settings.betaUpdates) {
+            let found = try AnnexUpdate.pick(json: String(decoding: data, as: UTF8.self), beta: settings.betaUpdates)
+            settings.lastUpdateCheck = Date()
+            if let info = found {
                 state = .available(info)
                 if automatic { announced = true }
             } else {
