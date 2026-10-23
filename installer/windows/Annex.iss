@@ -59,6 +59,9 @@ UninstallDisplayName={#AppName}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+; Annex artwork in the wizard (made by scripts/icon/build-icons.sh), 100 % and 200 % sizes.
+WizardImageFile=wizard.bmp,wizard-2x.bmp
+WizardSmallImageFile=wizard-small.bmp,wizard-small-2x.bmp
 CloseApplications=force
 RestartApplications=no
 MinVersion=10.0.19041

@@ -3,6 +3,7 @@
 #   assets/icon-<size>.png                         README / docs
 #   apps/macos/Annex/Assets.xcassets/AppIcon...    macOS app icon
 #   apps/windows/src/Annex.App/Assets/Annex.ico    Windows app, tray and installer icon
+#   installer/windows/wizard*.bmp                  Windows installer wizard images
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 RENDER="$ROOT/scripts/icon/render-icon.swift"
@@ -61,6 +62,11 @@ JSON
 
 echo "==> Windows app image"
 "$TMP/render" "$ROOT/apps/windows/src/Annex.App/Assets/Annex.png" 256 --flat
+
+echo "==> Windows installer wizard images"
+"$TMP/render" "$TMP/installer-icon.png" 1024
+"$TMP/render" "$TMP/installer-flat.png" 256 --flat
+swift "$ROOT/scripts/icon/render-installer-art.swift" "$TMP/installer-icon.png" "$TMP/installer-flat.png" "$ROOT/installer/windows"
 
 echo "==> Windows .ico"
 for s in 16 20 24 32 40 48 64 128 256; do
