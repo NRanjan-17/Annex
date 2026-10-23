@@ -273,30 +273,6 @@ impl HardwareEncoder {
     pub fn new(device: &ID3D11Device, cfg: EncoderConfig, output: OutputFn) -> Result<Self, MediaError> {
         unsafe {
             super::mf_startup()?;
-            let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
-            let output_t = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
-            let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
-            let mut count = 0u32;
-            MFTEnumEx(
-                MFT_CATEGORY_VIDEO_ENCODER,
-                MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
-                Some(&input),
-                Some(&output_t),
-                &mut activates,
-                &mut count,
-            )?;
-            let list = std::slice::from_raw_parts_mut(activates, count as usize);
-            let first = list.iter().flatten().next().cloned();
-            for a in list.iter_mut() {
-                drop(a.take());
-            }
-            CoTaskMemFree(Some(activates.cast()));
-            let activate = first.ok_or_else(|| MediaError::Other("no hardware H.264 encoder".into()))?;
-            let mft: IMFTransform = activate.ActivateObject()?;
-            let attrs = mft.GetAttributes()?;
-            attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)?;
-            let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
-
             let mt: ID3D11Multithread = device.cast()?;
             let _ = mt.SetMultithreadProtected(true);
             let mut token = 0u32;
@@ -304,7 +280,29 @@ impl HardwareEncoder {
             MFCreateDXGIDeviceManager(&mut token, &mut manager)?;
             let manager = manager.ok_or_else(|| MediaError::Other("no DXGI device manager".into()))?;
             manager.ResetDevice(device, token)?;
-            mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)?;
+
+            // Encoders on the GPU that captures first (on hybrid laptops the first one listed is
+            // often the other GPU, e.g. NVENC while the Intel GPU drives the screen, and fails
+            // with E_UNEXPECTED). Then any other hardware encoder; the first that accepts our
+            // device wins.
+            let mut candidates = hardware_encoders(Some(adapter_luid(device)?))?;
+            candidates.extend(hardware_encoders(None)?);
+            let mut last = MediaError::Other("no hardware H.264 encoder".into());
+            let mut chosen = None;
+            for activate in candidates {
+                match try_activate(&activate, &manager) {
+                    Ok(mft) => {
+                        chosen = Some(mft);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::info!("hardware encoder candidate rejected: {e}");
+                        let _ = activate.ShutdownObject();
+                        last = e;
+                    }
+                }
+            }
+            let mft = chosen.ok_or(last)?;
 
             configure(&mft, cfg)?;
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
@@ -429,5 +427,53 @@ impl Drop for HardwareEncoder {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+/// The adapter LUID of a D3D11 device, packed the way MFT_ENUM_ADAPTER_LUID expects.
+fn adapter_luid(device: &ID3D11Device) -> Result<u64, MediaError> {
+    unsafe {
+        let dxgi: windows::Win32::Graphics::Dxgi::IDXGIDevice = device.cast()?;
+        let desc = dxgi.GetAdapter()?.GetDesc()?;
+        Ok(((desc.AdapterLuid.HighPart as u32 as u64) << 32) | desc.AdapterLuid.LowPart as u64)
+    }
+}
+
+/// Hardware NV12 → H.264 encoders, optionally only those on one adapter.
+fn hardware_encoders(adapter: Option<u64>) -> Result<Vec<IMFActivate>, MediaError> {
+    unsafe {
+        let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
+        let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
+        let mut attrs = None;
+        if let Some(luid) = adapter {
+            MFCreateAttributes(&mut attrs, 1)?;
+            if let Some(a) = &attrs {
+                a.SetUINT64(&MFT_ENUM_ADAPTER_LUID, luid)?;
+            }
+        }
+        let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
+        let mut count = 0u32;
+        let flags = MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER;
+        if MFTEnum2(MFT_CATEGORY_VIDEO_ENCODER, flags, Some(&input), Some(&output), attrs.as_ref(), &mut activates, &mut count)
+            .is_err()
+        {
+            return Ok(Vec::new());
+        }
+        let list = std::slice::from_raw_parts_mut(activates, count as usize);
+        let out: Vec<IMFActivate> = list.iter_mut().filter_map(|a| a.take()).collect();
+        CoTaskMemFree(Some(activates.cast()));
+        Ok(out)
+    }
+}
+
+/// Activates one encoder and hands it our D3D device; fails if it can't use that GPU.
+fn try_activate(activate: &IMFActivate, manager: &IMFDXGIDeviceManager) -> Result<IMFTransform, MediaError> {
+    unsafe {
+        let mft: IMFTransform = activate.ActivateObject()?;
+        let attrs = mft.GetAttributes()?;
+        attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1)?;
+        let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
+        mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, manager.as_raw() as usize)?;
+        Ok(mft)
     }
 }
