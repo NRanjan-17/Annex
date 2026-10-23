@@ -147,11 +147,20 @@ final class HostController {
 
     private func startExtend(_ s: SessionStarted) {
         guard let host else { return }
+        // Without Screen Recording the extra display would only ever send black, while windows and
+        // the pointer move onto it: refuse instead of stranding them on a screen nobody sees.
+        if ExtendSession.captureEnabled && !CGPreflightScreenCaptureAccess() {
+            status.error = "Allow Annex under Privacy & Security → Screen Recording in System Settings, then try again."
+            host.endSession(s.sessionId)
+            return
+        }
         do {
             let session = try ExtendSession(
                 sessionID: s.sessionId, host: host, viewer: s.viewerDisplay ?? DisplayInfo(widthPx: 1920, heightPx: 1080),
                 viewerFingerprint: s.fingerprint, viewerName: s.peerName, preferHardware: preferHardware)
-            session.onError = { [weak self] message in self?.status.error = message }
+            let id = s.sessionId
+            // Any capture or encoder failure ends the session, which removes the display again.
+            session.onError = { [weak self] message in self?.failExtend(id, message) }
             extendSessions[s.sessionId] = session
             let displayID = session.displayID
             extendDisplays.update { d in
@@ -162,6 +171,14 @@ final class HostController {
             status.error = error.localizedDescription
             host.endSession(s.sessionId)
         }
+    }
+
+    private func failExtend(_ id: UInt64, _ message: String) {
+        status.error = message
+        extendDisplays.update { $0?.removeValue(forKey: id) }
+        extendSessions.removeValue(forKey: id)?.stop()
+        status.extendViewers = extendSessions.values.map(\.viewerName).sorted()
+        host?.endSession(id)
     }
 
     private func applyMirrorBitrate() {

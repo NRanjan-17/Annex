@@ -184,11 +184,25 @@ final class ExtendSession {
             guard gen == generation, !stopped else { return }
             do {
                 try await capturer.start(displayID: displayID, width: size.0, height: size.1, fps: fps)
+                expectFirstFrame(generation: gen)
                 return
             } catch {
                 if attempt == 19 { onError?("Capturing the virtual display failed: \(error.localizedDescription)") }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
+        }
+    }
+}
+
+extension ExtendSession {
+    /// A new capture always delivers a first frame quickly; if none arrives, the viewer would sit
+    /// on a black window while the Mac stays extended, so the session fails instead.
+    fileprivate func expectFirstFrame(generation gen: Int) {
+        lastFrame.value = nil
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 6_000_000_000)
+            guard let self, gen == self.generation, !self.stopped, self.lastFrame.value == nil else { return }
+            self.onError?("The extra display sent no picture. Check Screen Recording for Annex in System Settings.")
         }
     }
 }
