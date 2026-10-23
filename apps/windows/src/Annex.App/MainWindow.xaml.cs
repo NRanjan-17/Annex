@@ -75,8 +75,7 @@ public sealed partial class MainWindow : Window
         HorizontalContentAlignment = HorizontalAlignment.Stretch,
         VerticalContentAlignment = VerticalAlignment.Stretch,
     };
-    private readonly TextBlock _deviceTitle = new() { TextTrimming = TextTrimming.CharacterEllipsis };
-    private readonly TextBlock _deviceSubtitle = new();
+    private NavigationViewItem? _shareItem;
     private string _pane = "share";
     private bool _buildingNav;
     // Text boxes survive page rebuilds so typing isn't interrupted by status updates.
@@ -185,10 +184,11 @@ public sealed partial class MainWindow : Window
 
     private void BuildShell()
     {
-        RootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
+        RootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(40) });
         RootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        var title = Ui.Row(Ui.AppIcon(16), Ui.Text("Annex", "CaptionTextBlockStyle", wrap: false));
+        var title = Ui.Row(Ui.AppIcon(18), Ui.Text("Annex", "CaptionTextBlockStyle", wrap: false));
+        title.Spacing = 10;
         title.Margin = new Thickness(16, 0, 0, 0);
         title.VerticalAlignment = VerticalAlignment.Center;
         var titleBar = new Grid { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
@@ -196,19 +196,15 @@ public sealed partial class MainWindow : Window
         RootGrid.Children.Add(titleBar);
         SetTitleBar(titleBar);
 
-        // One continuous Mica surface, like Settings: no lighter rounded "box" behind the pages.
-        var clear = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        _nav.Resources["NavigationViewContentBackground"] = clear;
-        _nav.Resources["NavigationViewContentGridBorderBrush"] = clear;
-        _nav.Resources["NavigationViewDefaultPaneBackground"] = clear;
-        _nav.Resources["NavigationViewExpandedPaneBackground"] = clear;
+        // WinUI's own two-tone layout, like Windows Settings: the sidebar on Mica, the pages on a
+        // raised layer with a rounded corner; the menu button folds the sidebar to icons.
         _nav.PaneDisplayMode = NavigationViewPaneDisplayMode.Left;
         _nav.IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed;
-        _nav.IsPaneToggleButtonVisible = false;
+        _nav.IsPaneToggleButtonVisible = true;
+        _nav.IsTitleBarAutoPaddingEnabled = false;
         _nav.IsSettingsVisible = true;
-        _nav.OpenPaneLength = 300;
+        _nav.OpenPaneLength = 248;
         _nav.Content = _page;
-        _nav.PaneHeader = DeviceCard();
         _nav.ItemInvoked += (_, args) =>
         {
             if (args.InvokedItemContainer?.Tag as string == RefreshTag) RefreshNearby();
@@ -232,25 +228,10 @@ public sealed partial class MainWindow : Window
         Render();
     }
 
-    private UIElement DeviceCard()
-    {
-        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 0 };
-        _deviceTitle.Style = Ui.Res<Style>("BodyStrongTextBlockStyle");
-        _deviceSubtitle.Style = Ui.Res<Style>("CaptionTextBlockStyle");
-        _deviceSubtitle.Foreground = Ui.Secondary;
-        text.Children.Add(_deviceTitle);
-        text.Children.Add(_deviceSubtitle);
-        var card = Ui.Row(Ui.AppIcon(40), text);
-        card.Spacing = 12;
-        card.Margin = new Thickness(16, 4, 16, 12);
-        UpdateDeviceCard();
-        return card;
-    }
-
+    /// <summary>A dot on "Share this PC" while this PC is sharing.</summary>
     private void UpdateDeviceCard()
     {
-        _deviceTitle.Text = _core?.DeviceName ?? "Annex";
-        _deviceSubtitle.Text = _host is not null ? "Sharing" : "This PC";
+        if (_shareItem is not null) _shareItem.InfoBadge = _host is not null ? new InfoBadge() : null;
     }
 
     private static NavigationViewItem NavItem(string text, string glyph, string tag, string? info = null)
@@ -266,7 +247,7 @@ public sealed partial class MainWindow : Window
         _buildingNav = true;
         var items = _nav.MenuItems;
         items.Clear();
-        items.Add(NavItem("Share this PC", "", "share"));
+        items.Add(_shareItem = NavItem("Share this PC", "", "share"));
         items.Add(NavItem("Connect", "", "connect"));
         // Sidebar headers only show text, so refreshing is an entry at the end of the list.
         items.Add(new NavigationViewItemHeader { Content = "Nearby" });
@@ -292,6 +273,7 @@ public sealed partial class MainWindow : Window
             _pane = "connect";
         _nav.SelectedItem = _pane == "settings" ? _nav.SettingsItem
             : items.Concat(footer).OfType<NavigationViewItem>().FirstOrDefault(i => (string?)i.Tag == _pane);
+        UpdateDeviceCard();
         _buildingNav = false;
     }
 

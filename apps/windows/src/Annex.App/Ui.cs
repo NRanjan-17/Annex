@@ -40,7 +40,7 @@ internal static class Ui
     /// <summary>The page's content column: a scrolling stack with Settings' margins.</summary>
     public static StackPanel Page(out ScrollViewer scroller)
     {
-        var stack = new StackPanel { Spacing = 4, Padding = new Thickness(40, 8, 40, 40), MaxWidth = 1000 };
+        var stack = new StackPanel { Spacing = 4, Padding = new Thickness(40, 28, 40, 40), MaxWidth = 1000 };
         scroller = new ScrollViewer { Content = stack, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         return stack;
     }
