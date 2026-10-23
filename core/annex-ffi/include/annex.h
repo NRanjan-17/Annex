@@ -62,6 +62,8 @@ char *annex_core_device_name(const AnnexCore *core);
 char *annex_core_trusted_peers_json(const AnnexCore *core);
 /* Returns 1 if removed, 0 if not trusted. */
 int32_t annex_core_untrust(const AnnexCore *core, const char *fingerprint);
+/* Writes the core's log to <data_dir>/annex.log while enabled. Off by default. */
+void annex_set_log_enabled(bool enabled);
 /* Lists this device under "Nearby" on other computers while Annex is open (as not sharing until a
  * host starts). Call once at startup and again after a rename. */
 int32_t annex_core_set_presence(const AnnexCore *core, bool visible);

@@ -69,6 +69,9 @@ public static class AnnexNative
     public static string DisplayFingerprint(string fp) => NativeMethods.TakeString(NativeMethods.annex_display_fingerprint(fp));
 
     /// <summary>Windows only: connected monitors, main display first.</summary>
+    /// <summary>Writes the core's log to annex.log in the data folder while on. Off by default.</summary>
+    public static void SetLogEnabled(bool enabled) => NativeMethods.annex_set_log_enabled(enabled);
+
     public static IReadOnlyList<MonitorInfo> Monitors() =>
         AnnexJson.Deserialize<MonitorInfo[]>(NativeMethods.TakeString(NativeMethods.annex_win_monitors_json()));
 

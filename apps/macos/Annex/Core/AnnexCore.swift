@@ -31,6 +31,8 @@ enum Annex {
     static var version: String { String(cString: annex_version()) }
     static func nowMicros() -> Int64 { annex_now_us() }
     static func displayFingerprint(_ fp: String) -> String { takeString(annex_display_fingerprint(fp)) }
+    /// Writes the core's log to annex.log in the data folder while on. Off by default.
+    static func setLogEnabled(_ on: Bool) { annex_set_log_enabled(on) }
     /// macOS virtual key code for a HID usage from an `input` event.
     static func macKeyCode(hid: UInt16) -> CGKeyCode? {
         let c = annex_key_native_from_hid(hid)

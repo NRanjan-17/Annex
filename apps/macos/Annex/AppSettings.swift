@@ -17,6 +17,8 @@ final class AppSettings: ObservableObject {
     @Published var extendByDefault: Bool { didSet { defaults.set(extendByDefault, forKey: Keys.extend) } }
     /// Viewer: bitrate ceiling asked of hosts. 0 best, 1 balanced, 2 fast (Wi-Fi).
     @Published var quality: Int { didSet { defaults.set(quality, forKey: Keys.quality) } }
+    /// Write annex.log for bug reports. Off by default.
+    @Published var saveLog: Bool { didSet { defaults.set(saveLog, forKey: Keys.log); Annex.setLogEnabled(saveLog) } }
     /// The name other devices see; nil = this Mac's name from System Settings.
     @Published var customDeviceName: String? { didSet { defaults.set(customDeviceName, forKey: Keys.name) } }
     @Published private(set) var launchAtLogin = false
@@ -30,6 +32,7 @@ final class AppSettings: ObservableObject {
         static let extend = "extendByDefault"
         static let name = "deviceName"
         static let quality = "quality"
+        static let log = "saveLog"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -42,6 +45,7 @@ final class AppSettings: ObservableObject {
         extendByDefault = defaults.bool(forKey: Keys.extend)
         customDeviceName = defaults.string(forKey: Keys.name)
         quality = defaults.integer(forKey: Keys.quality)
+        saveLog = defaults.bool(forKey: Keys.log)
         refreshLaunchAtLogin()
     }
 

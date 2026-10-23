@@ -242,25 +242,73 @@ pub struct AnnexDiscovery {
     callbacks: Arc<Callbacks>,
 }
 
-/// Writes the core's log to `<data_dir>/annex.log` (once per process). Local only, for the user to
-/// look at or attach to a bug report; restarted when it grows past 5 MB.
+/// The log file: `<data_dir>/annex.log`, written only while enabled (off by default, see
+/// `annex_set_log_enabled`). Local only, for bug reports; a new file starts past 5 MB.
+struct LogFile {
+    enabled: std::sync::atomic::AtomicBool,
+    path: Mutex<Option<PathBuf>>,
+    file: Mutex<Option<std::fs::File>>,
+}
+
+static LOG: LogFile =
+    LogFile { enabled: std::sync::atomic::AtomicBool::new(false), path: Mutex::new(None), file: Mutex::new(None) };
+
+/// Where tracing writes: nowhere unless the user turned logging on.
+struct LogSink;
+
+impl std::io::Write for LogSink {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if !LOG.enabled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(buf.len());
+        }
+        let mut file = LOG.file.lock().unwrap_or_else(|e| e.into_inner());
+        if file.is_none() {
+            let Some(path) = LOG.path.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return Ok(buf.len()) };
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
+                let _ = std::fs::rename(&path, path.with_file_name("annex.old.log"));
+            }
+            *file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+        }
+        match file.as_mut() {
+            Some(f) => f.write(buf),
+            None => Ok(buf.len()),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Points the log at `<data_dir>/annex.log` and installs the logger (once per process).
+/// `ANNEX_LOG=1` turns it on from the start (tests, support).
 fn init_logging(data_dir: &std::path::Path) {
     static ONCE: std::sync::Once = std::sync::Once::new();
+    let _ = std::fs::create_dir_all(data_dir);
+    *LOG.path.lock().unwrap_or_else(|e| e.into_inner()) = Some(data_dir.join("annex.log"));
     ONCE.call_once(|| {
-        let path = data_dir.join("annex.log");
-        if std::fs::metadata(&path).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
-            let _ = std::fs::rename(&path, data_dir.join("annex.old.log"));
+        if std::env::var_os("ANNEX_LOG").is_some_and(|v| v == "1") {
+            LOG.enabled.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        let _ = std::fs::create_dir_all(data_dir);
-        let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else { return };
         let _ = tracing_subscriber::fmt()
-            .with_writer(Mutex::new(file))
+            .with_writer(|| LogSink)
             .with_ansi(false)
             .with_max_level(tracing::Level::INFO)
             .with_target(false)
             .try_init();
         tracing::info!(version = env!("CARGO_PKG_VERSION"), os = std::env::consts::OS, "annex core started");
     });
+}
+
+/// Turns the log file on or off (off by default). Takes effect immediately.
+#[unsafe(no_mangle)]
+pub extern "C" fn annex_set_log_enabled(enabled: bool) {
+    LOG.enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    if enabled {
+        tracing::info!(version = env!("CARGO_PKG_VERSION"), os = std::env::consts::OS, "logging on");
+    } else {
+        *LOG.file.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
 }
 
 fn new_core(core: Arc<Core>, out: *mut *mut AnnexCore) -> Result<i32, (i32, String)> {

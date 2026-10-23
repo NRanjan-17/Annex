@@ -88,6 +88,8 @@ internal static unsafe partial class NativeMethods
     /// <summary>Windows only.</summary>
     [LibraryImport(Lib)] public static partial nint annex_win_monitors_json();
 
+    [LibraryImport(Lib)] public static partial void annex_set_log_enabled([MarshalAs(UnmanagedType.U1)] bool enabled);
+
     /// <summary>Windows only.</summary>
     [LibraryImport(Lib)] public static partial nint annex_win_extend_status_json();
 

@@ -13,4 +13,5 @@ publish.workspace = true
 workspace = true
 
 [target."cfg(windows)".dependencies]
+annex-media-win = { path = "../annex-media-win" }
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Devices_DeviceAndDriverInstallation"] }

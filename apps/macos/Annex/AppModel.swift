@@ -93,6 +93,7 @@ final class AppModel: ObservableObject {
         do {
             let name = settings.customDeviceName ?? Self.systemName
             let core = try CoreClient(dataDirectory: Self.dataDirectory, deviceName: name)
+            Annex.setLogEnabled(settings.saveLog)
             self.core = core
             deviceName = core.deviceName
             // Show up under Nearby on other computers as soon as Annex is open.

@@ -40,7 +40,7 @@ struct MainView: View {
         case .devices: DevicesPage(model: model)
         case .general: GeneralPage(model: model, settings: model.settings)
         case .viewing: ViewingPage(settings: model.settings)
-        case .about: AboutPage()
+        case .about: AboutPage(settings: model.settings)
         }
     }
 }
@@ -777,6 +777,8 @@ private struct ViewingPage: View {
 }
 
 private struct AboutPage: View {
+    @ObservedObject var settings: AppSettings
+
     var body: some View {
         Page(title: "About Annex") {
             Hero(title: "Annex", text: "Version \(Annex.version). Encrypted, local, no accounts.") {
@@ -789,10 +791,15 @@ private struct AboutPage: View {
                 Link(destination: URL(string: "https://github.com/NRanjan-17/Annex/issues")!) {
                     Row(symbol: "ladybug.fill", tint: .red, title: "Report an issue") { Image(systemName: "arrow.up.right").foregroundStyle(.tertiary) }
                 }
-                Row(symbol: "doc.text", tint: .gray, title: "Log file", subtitle: "For bug reports. Stays on this Mac.") {
-                    Button("Show in Finder") {
-                        let log = AppModel.dataDirectory.appendingPathComponent("annex.log")
-                        NSWorkspace.shared.activateFileViewerSelecting([log])
+                Row(symbol: "doc.text", tint: .gray, title: "Save a log file", subtitle: "For bug reports. Stays on this Mac. Off by default.") {
+                    HStack(spacing: 8) {
+                        if settings.saveLog {
+                            Button("Show in Finder") {
+                                let log = AppModel.dataDirectory.appendingPathComponent("annex.log")
+                                NSWorkspace.shared.activateFileViewerSelecting([log])
+                            }
+                        }
+                        Toggle("", isOn: $settings.saveLog).toggleStyle(.switch).labelsHidden()
                     }
                 }
             } footer: {

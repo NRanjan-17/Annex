@@ -60,6 +60,7 @@ dependencies = [
 name = "annex-driver"
 version = "0.1.0"
 dependencies = [
+ "annex-media-win",
  "windows",
 ]
 

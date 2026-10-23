@@ -28,6 +28,7 @@ Get-ChildItem $dir | Select-Object Name, Length | Out-File (Join-Path $OutDir "i
 $started = Get-Date
 # Self-test mode: the app also opens every page twice and leaves a marker file when done.
 $env:ANNEX_SELFTEST = "1"
+$env:ANNEX_LOG = "1"   # the log is off by default; on for the test
 $marker = "$env:LOCALAPPDATA\Annex\selftest-ok"
 Remove-Item $marker -ErrorAction SilentlyContinue
 $app = Start-Process $exe -PassThru
@@ -58,6 +59,8 @@ if ($alive) {
 
 $crash = "$env:LOCALAPPDATA\Annex\crash.log"
 if (Test-Path $crash) { Copy-Item $crash $OutDir; Note "crash.log found" }
+$annexLog = "$env:LOCALAPPDATA\Annex\annex.log"
+if (Test-Path $annexLog) { Copy-Item $annexLog $OutDir }
 Get-ChildItem "$env:LOCALAPPDATA\Annex" -ErrorAction SilentlyContinue | Select-Object Name, Length | Out-File (Join-Path $OutDir "data-dir.txt")
 Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $started.AddMinutes(-1) } -ErrorAction SilentlyContinue |
     Where-Object { $_.LevelDisplayName -in 'Error', 'Critical', 'Warning' } |
@@ -73,6 +76,12 @@ if (Test-Path $extend) {
     Note ("EXTEND: " + $(if ($ex -match '"state":"ready"') { "READY (driver signed on this PC and running)" } else { "NOT READY" }))
 }
 pnputil /enum-devices /class Display 2>&1 | Out-File (Join-Path $OutDir "display-devices.txt")
+# Extend's first step: add a virtual monitor at a Mac's resolution (MacBook Air 13" and 15").
+foreach ($size in @("2560 1664 60", "2940 1912 60", "1920 1080 60")) {
+    $parts = $size.Split(" ")
+    $out = & (Join-Path $dir "annex-driver.exe") test-monitor @parts 2>&1 | Out-String
+    Note ("test-monitor ${size}: exit $LASTEXITCODE`n" + $out.Trim())
+}
 Note "Self-test (every page opened twice): $selftest"
 $ok = $alive -and $responding -and ($window -ne 0) -and $selftest -and -not (Test-Path $crash)
 Note ($ok ? "PASS" : "FAIL")
