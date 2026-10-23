@@ -39,6 +39,10 @@ pub struct Gpu {
 /// Hardware graphics cards, in Windows' order (the first is the default).
 pub fn gpus() -> Vec<Gpu> {
     let mut out: Vec<Gpu> = Vec::new();
+    // Windows can list one physical GPU several times under different LUIDs (virtual display
+    // drivers such as Annex's or Duet's appear as extra adapters reusing the GPU they render on).
+    // Keep the first entry per piece of hardware: it's the real adapter.
+    let mut seen: Vec<(u32, u32, u32, u32)> = Vec::new();
     // SAFETY: plain DXGI enumeration.
     unsafe {
         let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory4>() else { return out };
@@ -50,7 +54,9 @@ pub fn gpus() -> Vec<Gpu> {
             }
             let len = desc.Description.iter().position(|c| *c == 0).unwrap_or(desc.Description.len());
             let luid = ((desc.AdapterLuid.HighPart as u32 as u64) << 32) | desc.AdapterLuid.LowPart as u64;
-            if !out.iter().any(|g| g.luid == luid) {
+            let hardware = (desc.VendorId, desc.DeviceId, desc.SubSysId, desc.Revision);
+            if !seen.contains(&hardware) && !out.iter().any(|g| g.luid == luid) {
+                seen.push(hardware);
                 out.push(Gpu { name: String::from_utf16_lossy(&desc.Description[..len]), luid });
             }
         }
