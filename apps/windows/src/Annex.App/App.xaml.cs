@@ -58,8 +58,24 @@ internal static partial class CrashReport
         if (s_shown) return;
         s_shown = true;
         // A plain Win32 message box: works even when XAML failed to start.
-        MessageBoxW(0, $"Annex ran into a problem and has to close.\n\n{ex.GetType().Name}: {ex.Message}\n\nDetails were saved to:\n{path}",
-            "Annex", 0x10 /* MB_ICONERROR */);
+        var text = BlockedByAppControl(ex)
+            ? "Windows blocked part of Annex.\n\n" +
+              "Smart App Control stopped annex_ffi.dll from loading, because this build of Annex isn't code-signed yet.\n\n" +
+              "To use Annex, turn Smart App Control off in Windows Security → App & browser control → " +
+              "Smart App Control settings. On some versions of Windows it can't be turned back on without resetting Windows.\n\n" +
+              $"Details were saved to:\n{path}"
+            : $"Annex ran into a problem and has to close.\n\n{ex.GetType().Name}: {ex.Message}\n\nDetails were saved to:\n{path}";
+        MessageBoxW(0, text, "Annex", 0x10 /* MB_ICONERROR */);
+    }
+
+    /// <summary>Smart App Control / App Control for Business refused to load one of our DLLs
+    /// (ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION, 0x800711C7). The code appears in the message in every language.</summary>
+    private static bool BlockedByAppControl(Exception ex)
+    {
+        for (Exception? e = ex; e != null; e = e.InnerException)
+            if (e is DllNotFoundException && e.Message.Contains("0x800711C7", StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
     }
 
     [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
