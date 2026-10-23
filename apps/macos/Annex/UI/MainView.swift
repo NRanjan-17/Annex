@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Sidebar pages of the main window.
 enum Pane: Hashable {
-    case share, connect, peer(String), devices, general, viewing, about
+    case share, connect, peer(String), settings
 }
 
 /// The main window: a System Settings-style sidebar and pages.
@@ -37,10 +37,7 @@ struct MainView: View {
             } else {
                 ConnectPage(model: model)
             }
-        case .devices: DevicesPage(model: model)
-        case .general: GeneralPage(model: model, settings: model.settings)
-        case .viewing: ViewingPage(settings: model.settings)
-        case .about: AboutPage(settings: model.settings)
+        case .settings: SettingsPage(model: model, settings: model.settings)
         }
     }
 }
@@ -78,11 +75,8 @@ private struct Sidebar: View {
                 }
             }
 
-            Section("Settings") {
-                item("Paired Devices", "lock.shield", .devices, active: false)
-                item("General", "gearshape", .general, active: false)
-                item("Viewing", "play.rectangle", .viewing, active: false)
-                item("About", "info.circle", .about, active: false)
+            Section {
+                item("Settings", "gearshape", .settings, active: false)
             }
         }
         .listStyle(.sidebar)
@@ -109,7 +103,7 @@ private struct ThisMacFooter: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        Button { model.pane = .general } label: {
+        Button { model.pane = .settings } label: {
             HStack(spacing: 10) {
                 Image(nsImage: NSApp.applicationIconImage)
                     .resizable()
@@ -338,7 +332,8 @@ private struct SharePage: View {
                         Row(symbol: v.extend ? "rectangle.split.2x1" : "rectangle.on.rectangle", tint: .green,
                             title: v.extend ? "\(v.name) is an extra display" : "Showing this screen on \(v.name)",
                             subtitle: v.extend ? "Arrange it in System Settings → Displays."
-                                : s.stream.map { "\($0.width)×\($0.height) at \($0.fps) fps" }) {
+                                : model.settings.showTechnicalDetails
+                                    ? s.stream.map { "\($0.width)×\($0.height) at \($0.fps) fps" } : nil) {
                             if model.hostDirectWiFi == nil {
                                 Button("Direct Wi-Fi") { model.switchViewerToDirectWiFi(v) }
                                     .help("Join \(v.name)'s hotspot for less lag. Works with a Windows PC.")
@@ -353,21 +348,12 @@ private struct SharePage: View {
                     }
                     ForEach(s.controllingViewers, id: \.self) { name in
                         Row(symbol: "keyboard", tint: .orange, title: "\(name) is controlling this Mac",
-                            subtitle: "Turn it off in Paired Devices.") { EmptyView() }
+                            subtitle: "Turn it off in Settings → Paired Devices.") { EmptyView() }
                     }
                 }
             }
             if model.isHosting, let port = model.hostStatus.listeningPort {
                 HowToConnect(model: model, port: port)
-            }
-            Section {
-                Row(symbol: "cpu", tint: .gray, title: "Hardware video encoder",
-                    subtitle: "Recommended. Lowest delay.") {
-                    Toggle("", isOn: $settings.preferHardwareEncoder).toggleStyle(.switch).labelsHidden()
-                        .disabled(model.isHosting)
-                }
-            } header: {
-                Text("Video")
             }
         }
     }
@@ -418,7 +404,8 @@ private struct HowToConnect: View {
         } header: {
             Text("Connect from another computer")
         } footer: {
-            Text(addresses.isEmpty ? "" : "Not listed there? Connect by address. Identity code: \(model.fingerprintDisplay)")
+            Text(addresses.isEmpty ? "" : "Not listed there? Connect by address."
+                 + (model.settings.showTechnicalDetails ? " Identity code: \(model.fingerprintDisplay)" : ""))
                 .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
         }
         .onAppear { addresses = LocalAddresses.current() }
@@ -589,7 +576,9 @@ private struct ViewerStatusSection: View {
             Section {
                 Row(symbol: model.isViewing ? "play.rectangle.fill" : "info.circle", tint: model.isViewing ? .green : .gray,
                     title: status,
-                    subtitle: model.latency.map { String(format: "Latency %.0f ms (p95 %.0f ms) · %.0f fps", $0.p50Ms, $0.p95Ms, $0.fps) }) {
+                    subtitle: model.settings.showTechnicalDetails
+                        ? model.latency.map { String(format: "Latency %.0f ms (p95 %.0f ms) · %.0f fps", $0.p50Ms, $0.p95Ms, $0.fps) }
+                        : nil) {
                     if model.isViewing {
                         Button(role: .destructive) { model.disconnectViewer() } label: {
                             Label("Disconnect", systemImage: "xmark")
@@ -658,47 +647,48 @@ private struct PeerPage: View {
                         .disabled(model.isViewing)
                 }
             }
-            Section("Details") {
-                LabeledContent("Addresses", value: peer.addresses.joined(separator: ", "))
-                LabeledContent("Port", value: "\(peer.port)")
-                if let fp = peer.fingerprint {
-                    LabeledContent("Identity code") {
-                        Text(Annex.displayFingerprint(fp)).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-                    }
+            if model.settings.showTechnicalDetails {
+                PeerDetails(peer: peer)
+            }
+        }
+    }
+}
+
+/// Addresses, port and identity code (Settings → Developer → Show technical details).
+private struct PeerDetails: View {
+    let peer: PeerInfo
+
+    var body: some View {
+        Section("Details") {
+            LabeledContent("Addresses", value: peer.addresses.joined(separator: ", "))
+            LabeledContent("Port", value: "\(peer.port)")
+            if let fp = peer.fingerprint {
+                LabeledContent("Identity code") {
+                    Text(Annex.displayFingerprint(fp)).font(.system(.body, design: .monospaced)).textSelection(.enabled)
                 }
             }
         }
     }
 }
 
-// MARK: Devices
+// MARK: Settings
 
-private struct DevicesPage: View {
+/// Every preference in one place, in sections: General, Sharing, Viewing, Paired Devices, Updates,
+/// Developer and About.
+private struct SettingsPage: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var settings: AppSettings
+    @State private var name = ""
 
     var body: some View {
-        Page(title: "Paired Devices") {
-            Hero(title: "Paired Devices",
-                 text: "Paired devices connect without a PIN.",
-                 symbol: "lock.shield.fill", tint: .green)
-            if model.trusted.contains(where: \.allowInput) && !model.accessibilityTrusted {
-                Section {
-                    Row(symbol: "hand.raised.fill", tint: .orange, title: "Accessibility is off",
-                        subtitle: "Needed for remote control. After an update, remove Annex with − and add it again.") {
-                        Button("Open Settings") { InputInjector.openAccessibilitySettings() }
-                    }
-                }
-            }
-            Section {
-                if model.trusted.isEmpty {
-                    Row(symbol: "lock.shield", tint: .gray, title: "No paired devices",
-                        subtitle: "Pair by connecting from another computer.") { EmptyView() }
-                }
-                ForEach(model.trusted) { peer in DeviceRow(model: model, peer: peer) }
-            } footer: {
-                Text("This Mac's identity code: \(model.fingerprintDisplay)")
-                    .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            }
+        Page(title: "Settings") {
+            general
+            sharing
+            viewing
+            pairedDevices
+            updates
+            developer
+            about
         }
         // Permission changes in System Settings don't notify apps; look again while this page is open.
         .task {
@@ -707,6 +697,169 @@ private struct DevicesPage: View {
                 try? await Task.sleep(for: .seconds(2))
             }
         }
+    }
+
+    private var general: some View {
+        Section {
+            Row(symbol: "laptopcomputer", tint: .blue, title: "Device name",
+                subtitle: "Shown to other computers. Leave empty to use the Mac's own name.") {
+                // Empty = the Mac's own name (shown as the placeholder).
+                InputField(text: $name, placeholder: AppModel.systemName, onSubmit: {
+                    if name.trimmingCharacters(in: .whitespaces) != (settings.customDeviceName ?? "") {
+                        model.rename(name)
+                    }
+                })
+                .frame(width: 220)
+            }
+            .onAppear { name = settings.customDeviceName ?? "" }
+            Row(symbol: "power", tint: .blue, title: "Open at login") {
+                Toggle("", isOn: Binding(get: { settings.launchAtLogin }, set: { settings.setLaunchAtLogin($0) }))
+                    .toggleStyle(.switch).labelsHidden()
+            }
+            if let err = settings.launchAtLoginError {
+                Text(err).font(.caption).foregroundStyle(.red)
+            }
+            Row(symbol: "display.2", tint: .blue, title: "Start sharing when Annex opens") {
+                Toggle("", isOn: $settings.startSharingAtLaunch).toggleStyle(.switch).labelsHidden()
+            }
+        } header: {
+            Text("General")
+        }
+    }
+
+    private var sharing: some View {
+        Section {
+            Row(symbol: "cpu", tint: .gray, title: "Hardware video encoder",
+                subtitle: model.isHosting ? "Stop sharing to change it." : "Recommended. Lowest delay.") {
+                Toggle("", isOn: $settings.preferHardwareEncoder).toggleStyle(.switch).labelsHidden()
+                    .disabled(model.isHosting)
+            }
+        } header: {
+            Text("Sharing")
+        }
+    }
+
+    private var viewing: some View {
+        Section {
+            Row(symbol: "dial.medium", tint: .purple, title: "Quality", subtitle: "Use Fast on Wi-Fi.") {
+                Picker("", selection: $settings.quality) {
+                    Text("Best").tag(0)
+                    Text("Balanced").tag(1)
+                    Text("Fast (Wi-Fi)").tag(2)
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+            Row(symbol: "arrow.up.left.and.arrow.down.right", tint: .purple, title: "Open in full screen") {
+                Toggle("", isOn: $settings.openFullScreen).toggleStyle(.switch).labelsHidden()
+            }
+            Row(symbol: "rectangle.split.2x1", tint: .indigo, title: "Use as an extra display by default") {
+                Toggle("", isOn: $settings.extendByDefault).toggleStyle(.switch).labelsHidden()
+            }
+            Row(symbol: "keyboard", tint: .orange, title: "Control the other computer",
+                subtitle: "When it allows it. Press ⌃⌥⇧Q to leave.") {
+                Toggle("", isOn: $settings.controlWhenViewing).toggleStyle(.switch).labelsHidden()
+            }
+        } header: {
+            Text("Viewing")
+        }
+    }
+
+    private var pairedDevices: some View {
+        Section {
+            if model.trusted.contains(where: \.allowInput) && !model.accessibilityTrusted {
+                Row(symbol: "hand.raised.fill", tint: .orange, title: "Accessibility is off",
+                    subtitle: "Needed for remote control. After an update, remove Annex with − and add it again.") {
+                    Button("Open Settings") { InputInjector.openAccessibilitySettings() }
+                }
+            }
+            if model.trusted.isEmpty {
+                Row(symbol: "lock.shield", tint: .gray, title: "No paired devices",
+                    subtitle: "Pair by connecting from another computer.") { EmptyView() }
+            }
+            ForEach(model.trusted) { peer in DeviceRow(model: model, peer: peer) }
+        } header: {
+            Text("Paired Devices")
+        } footer: {
+            Text("Paired devices connect without a PIN."
+                 + (settings.showTechnicalDetails ? " This Mac's identity code: \(model.fingerprintDisplay)" : ""))
+                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+        }
+    }
+
+    private var updates: some View {
+        Section {
+            UpdateStatusRow(updater: model.updater)
+            Row(symbol: "arrow.triangle.2.circlepath", tint: .blue, title: "Check for updates automatically",
+                subtitle: "Once a day, from GitHub. Nothing about you is sent.") {
+                Toggle("", isOn: $settings.checkForUpdates).toggleStyle(.switch).labelsHidden()
+            }
+            Row(symbol: "testtube.2", tint: .gray, title: "Beta updates",
+                subtitle: "Get pre-release versions early. Turn off to go back to the latest normal release.") {
+                Toggle("", isOn: $settings.betaUpdates).toggleStyle(.switch).labelsHidden()
+            }
+        } header: {
+            Text("Updates")
+        }
+    }
+
+    private var developer: some View {
+        Section {
+            Row(symbol: "info.circle", tint: .gray, title: "Show technical details",
+                subtitle: "Identity codes, addresses and connection details.") {
+                Toggle("", isOn: $settings.showTechnicalDetails).toggleStyle(.switch).labelsHidden()
+            }
+            Row(symbol: "doc.text", tint: .gray, title: "Save a log file",
+                subtitle: "For bug reports. Stays on this Mac. Off by default.") {
+                HStack(spacing: 8) {
+                    if settings.saveLog {
+                        Button("Show in Finder") {
+                            let log = AppModel.dataDirectory.appendingPathComponent("annex.log")
+                            NSWorkspace.shared.activateFileViewerSelecting([log])
+                        }
+                    }
+                    Toggle("", isOn: $settings.saveLog).toggleStyle(.switch).labelsHidden()
+                }
+            }
+        } header: {
+            Text("Developer")
+        }
+    }
+
+    private var about: some View {
+        Section {
+            HStack(spacing: 10) {
+                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 26, height: 26)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Annex \(Annex.version)")
+                    Text("Encrypted, local, no accounts.").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(.vertical, 2)
+            Link(destination: URL(string: "https://github.com/NRanjan-17/Annex")!) {
+                Row(symbol: "globe", tint: .blue, title: "Website and source code") { Image(systemName: "arrow.up.right").foregroundStyle(.tertiary) }
+            }
+            Link(destination: URL(string: "https://github.com/NRanjan-17/Annex/issues")!) {
+                Row(symbol: "ladybug.fill", tint: .red, title: "Report an issue") { Image(systemName: "arrow.up.right").foregroundStyle(.tertiary) }
+            }
+            Row(symbol: "trash", tint: .gray, title: "Uninstall Annex",
+                subtitle: "Removes Annex, its settings and paired devices from this Mac.") {
+                Button("Uninstall…") { Self.runUninstaller() }
+            }
+        } header: {
+            Text("About")
+        } footer: {
+            Text("MIT License · Copyright © 2026 Nalinish Ranjan").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Opens the bundled uninstaller in Terminal, which asks before removing anything.
+    static func runUninstaller() {
+        guard let script = Bundle.main.url(forResource: "Uninstall Annex", withExtension: "command"),
+              let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")
+        else { return }
+        NSWorkspace.shared.open([script], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
     }
 }
 
@@ -747,60 +900,6 @@ private struct DeviceRow: View {
             parts.append("Last connected " + Date(timeIntervalSince1970: TimeInterval(peer.lastSeen)).formatted(.relative(presentation: .named)))
         }
         return parts.isEmpty ? "Paired" : parts.joined(separator: " · ")
-    }
-}
-
-// MARK: Preferences
-
-private struct GeneralPage: View {
-    @ObservedObject var model: AppModel
-    @ObservedObject var settings: AppSettings
-    @State private var name = ""
-
-    var body: some View {
-        Page(title: "General") {
-            Hero(title: "General", text: "Startup and this Mac's name.",
-                 symbol: "gearshape.fill", tint: .gray)
-            Section {
-                Row(symbol: "laptopcomputer", tint: .blue, title: "Device name",
-                    subtitle: "Shown to other computers.") {
-                    // Empty = the Mac's own name (shown as the placeholder).
-                    InputField(text: $name, placeholder: AppModel.systemName) {
-                        if name.trimmingCharacters(in: .whitespaces) != (settings.customDeviceName ?? "") {
-                            model.rename(name)
-                        }
-                    }
-                    .frame(width: 220)
-                }
-            } footer: {
-                Text("Leave empty to use the Mac's own name.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            .onAppear { name = settings.customDeviceName ?? "" }
-            Section {
-                Row(symbol: "power", tint: .blue, title: "Open at login") {
-                    Toggle("", isOn: Binding(get: { settings.launchAtLogin }, set: { settings.setLaunchAtLogin($0) }))
-                        .toggleStyle(.switch).labelsHidden()
-                }
-                if let err = settings.launchAtLoginError {
-                    Text(err).font(.caption).foregroundStyle(.red)
-                }
-                Row(symbol: "display.2", tint: .blue, title: "Start sharing when Annex opens") {
-                    Toggle("", isOn: $settings.startSharingAtLaunch).toggleStyle(.switch).labelsHidden()
-                }
-            }
-            Section("Updates") {
-                Row(symbol: "arrow.triangle.2.circlepath", tint: .blue, title: "Check for updates automatically",
-                    subtitle: "Once a day, from GitHub. Nothing about you is sent.") {
-                    Toggle("", isOn: $settings.checkForUpdates).toggleStyle(.switch).labelsHidden()
-                }
-                Row(symbol: "testtube.2", tint: .gray, title: "Beta updates",
-                    subtitle: "Get pre-release versions early. Turn off to go back to the latest normal release.") {
-                    Toggle("", isOn: $settings.betaUpdates).toggleStyle(.switch).labelsHidden()
-                }
-                UpdateStatusRow(updater: model.updater)
-            }
-        }
     }
 }
 
@@ -858,89 +957,6 @@ private struct UpdateBanner: View {
                         Button("Install") { updater.confirmAndInstall() }
                     }
                 }
-            }
-        }
-    }
-}
-
-private struct ViewingPage: View {
-    @ObservedObject var settings: AppSettings
-
-    var body: some View {
-        Page(title: "Viewing") {
-            Hero(title: "Viewing", text: "How other computers appear here.", symbol: "play.rectangle.fill", tint: .purple)
-            Section {
-                Row(symbol: "dial.medium", tint: .purple, title: "Quality",
-                    subtitle: "Use Fast on Wi-Fi.") {
-                    Picker("", selection: $settings.quality) {
-                        Text("Best").tag(0)
-                        Text("Balanced").tag(1)
-                        Text("Fast (Wi-Fi)").tag(2)
-                    }
-                    .labelsHidden()
-                    .fixedSize()
-                }
-            }
-            Section {
-                Row(symbol: "arrow.up.left.and.arrow.down.right", tint: .purple, title: "Open in full screen") {
-                    Toggle("", isOn: $settings.openFullScreen).toggleStyle(.switch).labelsHidden()
-                }
-                Row(symbol: "rectangle.split.2x1", tint: .indigo, title: "Use as an extra display by default") {
-                    Toggle("", isOn: $settings.extendByDefault).toggleStyle(.switch).labelsHidden()
-                }
-            }
-            Section {
-                Row(symbol: "keyboard", tint: .orange, title: "Control the other computer",
-                    subtitle: "When it allows it.") {
-                    Toggle("", isOn: $settings.controlWhenViewing).toggleStyle(.switch).labelsHidden()
-                }
-            } footer: {
-                Text("Press ⌃⌥⇧Q to leave.").font(.caption).foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-private struct AboutPage: View {
-    @ObservedObject var settings: AppSettings
-
-    /// Opens the bundled uninstaller in Terminal, which asks before removing anything.
-    static func runUninstaller() {
-        guard let script = Bundle.main.url(forResource: "Uninstall Annex", withExtension: "command"),
-              let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")
-        else { return }
-        NSWorkspace.shared.open([script], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
-    }
-
-    var body: some View {
-        Page(title: "About Annex") {
-            Hero(title: "Annex", text: "Version \(Annex.version). Encrypted, local, no accounts.") {
-                Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 88, height: 88)
-            }
-            Section {
-                Link(destination: URL(string: "https://github.com/NRanjan-17/Annex")!) {
-                    Row(symbol: "globe", tint: .blue, title: "Website and source code") { Image(systemName: "arrow.up.right").foregroundStyle(.tertiary) }
-                }
-                Link(destination: URL(string: "https://github.com/NRanjan-17/Annex/issues")!) {
-                    Row(symbol: "ladybug.fill", tint: .red, title: "Report an issue") { Image(systemName: "arrow.up.right").foregroundStyle(.tertiary) }
-                }
-                Row(symbol: "doc.text", tint: .gray, title: "Save a log file", subtitle: "For bug reports. Stays on this Mac. Off by default.") {
-                    HStack(spacing: 8) {
-                        if settings.saveLog {
-                            Button("Show in Finder") {
-                                let log = AppModel.dataDirectory.appendingPathComponent("annex.log")
-                                NSWorkspace.shared.activateFileViewerSelecting([log])
-                            }
-                        }
-                        Toggle("", isOn: $settings.saveLog).toggleStyle(.switch).labelsHidden()
-                    }
-                }
-                Row(symbol: "trash", tint: .gray, title: "Uninstall Annex",
-                    subtitle: "Removes Annex, its settings and paired devices from this Mac.") {
-                    Button("Uninstall…") { AboutPage.runUninstaller() }
-                }
-            } footer: {
-                Text("MIT License · Copyright © 2026 Nalinish Ranjan").font(.caption).foregroundStyle(.secondary)
             }
         }
     }

@@ -111,7 +111,7 @@ private struct SettingsCommand: View {
 
     var body: some View {
         Button("Settings…") {
-            model.pane = .general
+            model.pane = .settings
             openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)
         }

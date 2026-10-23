@@ -19,6 +19,8 @@ public sealed class AppSettings
     public bool ExtendByDefault { get; set; }
     /// <summary>Viewer: move each new session onto this PC's hotspot right after it connects.</summary>
     public bool ConnectOverDirectWifi { get; set; }
+    /// <summary>Show identity codes, addresses and connection figures (Settings → Developer).</summary>
+    public bool ShowTechnicalDetails { get; set; }
     /// <summary>Look for updates at launch and once a day.</summary>
     public bool CheckForUpdates { get; set; } = true;
     /// <summary>Include pre-releases; off goes back to the latest normal release.</summary>

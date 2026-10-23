@@ -17,6 +17,8 @@ final class AppSettings: ObservableObject {
     @Published var extendByDefault: Bool { didSet { defaults.set(extendByDefault, forKey: Keys.extend) } }
     /// Viewer: bitrate ceiling asked of hosts. 0 best, 1 balanced, 2 fast (Wi-Fi).
     @Published var quality: Int { didSet { defaults.set(quality, forKey: Keys.quality) } }
+    /// Show identity codes, addresses, stream sizes and latency in the UI. Off by default.
+    @Published var showTechnicalDetails: Bool { didSet { defaults.set(showTechnicalDetails, forKey: Keys.technical) } }
     /// Write annex.log for bug reports. Off by default.
     @Published var saveLog: Bool { didSet { defaults.set(saveLog, forKey: Keys.log); Annex.setLogEnabled(saveLog) } }
     /// Look for a new version on GitHub once a day.
@@ -39,6 +41,7 @@ final class AppSettings: ObservableObject {
         static let name = "deviceName"
         static let quality = "quality"
         static let log = "saveLog"
+        static let technical = "showTechnicalDetails"
         static let updates = "checkForUpdates"
         static let beta = "betaUpdates"
         static let dismissedUpdate = "dismissedUpdateVersion"
@@ -55,6 +58,7 @@ final class AppSettings: ObservableObject {
         customDeviceName = defaults.string(forKey: Keys.name)
         quality = defaults.integer(forKey: Keys.quality)
         saveLog = defaults.bool(forKey: Keys.log)
+        showTechnicalDetails = defaults.bool(forKey: Keys.technical)
         checkForUpdates = defaults.bool(forKey: Keys.updates)
         betaUpdates = defaults.bool(forKey: Keys.beta)
         dismissedUpdateVersion = defaults.string(forKey: Keys.dismissedUpdate)

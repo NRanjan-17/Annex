@@ -410,7 +410,7 @@ final class AppModel: ObservableObject {
             NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "Let \(name) control this Mac?"
-            alert.informativeText = "\(name) wants to use this Mac's mouse and keyboard. You can change this in Paired Devices."
+            alert.informativeText = "\(name) wants to use this Mac's mouse and keyboard. You can change this in Settings → Paired Devices."
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Not Now")
             refreshTrusted()
@@ -423,7 +423,8 @@ final class AppModel: ObservableObject {
             joinDirectLink(ssid: ssid, passphrase: passphrase, asViewer: false)
         case .pairingPin(let p):
             // Host: show the PIN until pairing finishes or the user cancels.
-            let panel = PinPanel(pin: p.pin, peerName: p.peerName, fingerprint: p.fingerprintDisplay) { [weak self] in
+            let panel = PinPanel(pin: p.pin, peerName: p.peerName,
+                                 fingerprint: settings.showTechnicalDetails ? p.fingerprintDisplay : nil) { [weak self] in
                 self?.core?.cancelRequest(p.requestId)
             }
             pinPanels[p.requestId] = panel
@@ -448,7 +449,8 @@ final class AppModel: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Pair with “\(req.peerName)”"
-        alert.informativeText = "Enter the PIN shown on \(req.peerName).\n\nIdentity code: \(req.fingerprintDisplay)"
+        alert.informativeText = "Enter the PIN shown on \(req.peerName)."
+            + (settings.showTechnicalDetails ? "\n\nIdentity code: \(req.fingerprintDisplay)" : "")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 160, height: 28))
         field.placeholderString = "123 456"
         field.font = .monospacedDigitSystemFont(ofSize: 18, weight: .medium)

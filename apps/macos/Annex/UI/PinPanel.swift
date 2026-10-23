@@ -7,7 +7,8 @@ import SwiftUI
 final class PinPanel {
     private let panel: NSPanel
 
-    init(pin: String, peerName: String, fingerprint: String, onCancel: @escaping () -> Void) {
+    /// `fingerprint`: shown only with Settings → Developer → Show technical details.
+    init(pin: String, peerName: String, fingerprint: String?, onCancel: @escaping () -> Void) {
         panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 220),
                         styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.title = "Pair with \(peerName)"
@@ -35,7 +36,7 @@ final class PinPanel {
 private struct PinView: View {
     let pin: String
     let peerName: String
-    let fingerprint: String
+    let fingerprint: String?
     let cancel: () -> Void
 
     var body: some View {
@@ -46,7 +47,9 @@ private struct PinView: View {
                 .font(.system(size: 40, weight: .semibold, design: .monospaced))
                 .textSelection(.enabled)
                 .accessibilityLabel("PIN \(pin.map(String.init).joined(separator: " "))")
-            Text("Its identity code: \(fingerprint)").font(.caption).foregroundStyle(.secondary)
+            if let fingerprint {
+                Text("Its identity code: \(fingerprint)").font(.caption).foregroundStyle(.secondary)
+            }
             Button("Don’t Allow", role: .cancel, action: cancel).keyboardShortcut(.cancelAction)
         }
         .padding(20)

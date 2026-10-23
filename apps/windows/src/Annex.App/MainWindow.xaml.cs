@@ -146,8 +146,14 @@ public sealed partial class MainWindow : Window
     /// writes selftest-ok to the data folder. Any exception lands in crash.log instead.</summary>
     private void SelfTest()
     {
-        foreach (var pane in new[] { "share", "connect", "devices", "general", "viewing", "about", "connect", "general", "share" })
+        foreach (var pane in new[] { "share", "connect", "settings", "connect", "settings", "share" })
             Go(pane);
+        // Settings again with technical details flipped, then back as it was.
+        var tech = _settings.ShowTechnicalDetails;
+        _settings.ShowTechnicalDetails = !tech;
+        Go("settings");
+        _settings.ShowTechnicalDetails = tech;
+        Go("share");
         ShowTrayMenu();
         _trayMenu?.Hide();
         var x = TryExtendStatus();
@@ -199,7 +205,7 @@ public sealed partial class MainWindow : Window
         _nav.PaneDisplayMode = NavigationViewPaneDisplayMode.Left;
         _nav.IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed;
         _nav.IsPaneToggleButtonVisible = false;
-        _nav.IsSettingsVisible = false;
+        _nav.IsSettingsVisible = true;
         _nav.OpenPaneLength = 300;
         _nav.Content = _page;
         _nav.PaneHeader = DeviceCard();
@@ -209,7 +215,14 @@ public sealed partial class MainWindow : Window
         };
         _nav.SelectionChanged += (_, args) =>
         {
-            if (_buildingNav || args.SelectedItemContainer?.Tag is not string tag) return;
+            if (_buildingNav) return;
+            if (args.IsSettingsSelected)
+            {
+                _pane = "settings";
+                Render();
+                return;
+            }
+            if (args.SelectedItemContainer?.Tag is not string tag) return;
             _pane = tag;
             Render();
         };
@@ -271,14 +284,10 @@ public sealed partial class MainWindow : Window
             IsEnabled = !refreshing,
             Foreground = Ui.Secondary,
         });
-        items.Add(new NavigationViewItemHeader { Content = "Settings" });
-        items.Add(NavItem("Paired devices", "", "devices"));
-        items.Add(NavItem("General", "", "general"));
-        items.Add(NavItem("Viewing", "", "viewing"));
-        items.Add(NavItem("About", "", "about"));
         if (_pane.StartsWith("peer:", StringComparison.Ordinal) && !_hosts.Any(h => "peer:" + h.Instance == _pane))
             _pane = "connect";
-        _nav.SelectedItem = items.OfType<NavigationViewItem>().FirstOrDefault(i => (string?)i.Tag == _pane);
+        _nav.SelectedItem = _pane == "settings" ? _nav.SettingsItem
+            : items.OfType<NavigationViewItem>().FirstOrDefault(i => (string?)i.Tag == _pane);
         _buildingNav = false;
     }
 
@@ -300,10 +309,7 @@ public sealed partial class MainWindow : Window
         {
             case "share": SharePage(stack); break;
             case "connect": ConnectPage(stack); break;
-            case "devices": DevicesPage(stack); break;
-            case "general": GeneralPage(stack); break;
-            case "viewing": ViewingPage(stack); break;
-            case "about": AboutPage(stack); break;
+            case "settings": SettingsPage(stack); break;
             default:
                 var peer = _hosts.FirstOrDefault(h => "peer:" + h.Instance == _pane);
                 if (peer is not null) PeerPage(stack, peer); else ConnectPage(stack);
@@ -344,21 +350,13 @@ public sealed partial class MainWindow : Window
                 ? $"Network “{_hotspot.Ssid}”, password {_hotspot.Passphrase}. Other computers can join it for less lag."
                 : "Runs a hotspot on this PC so another computer connects straight to it. Less lag.",
             Ui.Switch(_hotspot.IsOn, on => _ = SetHotspotAsync(on))));
-        if (_sessions.Count > 0)
-        {
-            p.Children.Add(Ui.Section("Connected now"));
-            foreach (var (id, session) in _sessions)
-                p.Children.Add(Ui.Card("", session.Mode == "extend" ? $"{session.Name} is an extra display" : $"Showing this screen on {session.Name}",
-                    session.Input ? "Can use this PC's mouse and keyboard." : null,
-                    Ui.Button("Switch to direct Wi-Fi", () => _ = OfferDirectWifiToViewerAsync(id, session.Name))));
-        }
 
         if (_host is not null)
         {
             p.Children.Add(Ui.Section("Connect from another computer"));
             p.Children.Add(Ui.Card("", $"1. Open Annex on the other computer and choose “{_core?.DeviceName}”."));
             p.Children.Add(Ui.Card("", "2. Pick Show its screen or Be its extra display."));
-            p.Children.Add(Ui.Card("", "3. Enter the PIN shown here (first time only).", $"Identity code: {Fingerprint}"));
+            p.Children.Add(Ui.Card("", "3. Enter the PIN shown here (first time only).", ShowTech ? $"Identity code: {Fingerprint}" : null));
             var addresses = LocalAddresses();
             p.Children.Add(Ui.Card("", addresses.Count == 0 ? "This PC isn't on a network." : "Not listed there? Connect by address:",
                 addresses.Count == 0 ? "Connect it to Wi-Fi, Ethernet or a cable." : null));
@@ -386,35 +384,16 @@ public sealed partial class MainWindow : Window
         if (_sessions.Count > 0)
         {
             p.Children.Add(Ui.Section("Connected now"));
-            foreach (var (_, s) in _sessions)
+            foreach (var (id, s) in _sessions)
             {
                 var title = s.Mode == "extend" ? $"{s.Name} is an extra display for this PC" : $"{s.Name} is showing this screen";
                 var detail = s.Mode == "extend" ? "Arrange it in Settings → System → Display" :
-                    _hostStream is { } st ? $"{st.Width}×{st.Height} at {st.Fps} fps" : null;
+                    ShowTech && _hostStream is { } st ? $"{st.Width}×{st.Height} at {st.Fps} fps" : null;
                 if (s.Input) detail = (detail is null ? "" : detail + " · ") + "using your mouse and keyboard";
-                p.Children.Add(Ui.Card(s.Mode == "extend" ? "" : "", title, detail));
+                p.Children.Add(Ui.Card(s.Mode == "extend" ? "" : "", title, detail, Ui.Button("Switch to direct Wi-Fi", () => _ = OfferDirectWifiToViewerAsync(id, s.Name))));
             }
         }
 
-        p.Children.Add(Ui.Section("Video"));
-        var gpus = TryGpus();
-        if (gpus.Count > 1)
-        {
-            var names = new List<string> { "Automatic" };
-            names.AddRange(gpus.Select(g => g.Name));
-            var selected = gpus.FindIndex(g => g.Luid == _settings.GpuLuid) + 1;
-            var gpuBox = new ComboBox { ItemsSource = names, SelectedIndex = selected, MinWidth = 220, IsEnabled = _host is null };
-            gpuBox.SelectionChanged += (_, _) =>
-            {
-                _settings.GpuLuid = gpuBox.SelectedIndex <= 0 ? 0 : gpus[gpuBox.SelectedIndex - 1].Luid;
-                _settings.Save();
-            };
-            p.Children.Add(Ui.Card("", "Graphics card",
-                _host is null ? "Automatic uses the one driving this screen." : "Stop sharing to change this.", gpuBox));
-        }
-        p.Children.Add(Ui.Card("", "Hardware video encoder",
-            _host is null ? "Recommended. Lowest delay." : "Stop sharing to change this.",
-            Ui.Switch(_settings.PreferHardwareEncoder, on => { _settings.PreferHardwareEncoder = on; _settings.Save(); }, enabled: _host is null)));
     }
 
     private static List<GpuInfo> TryGpus()
@@ -604,7 +583,6 @@ public sealed partial class MainWindow : Window
                 ConnectButtons(extend => { _extend = extend; ConnectToPeer(h); }, h)));
         if (_hosts.Count == 0 || _hosts.All(h => !h.Sharing))
             NotShowingUp(p);
-        DirectWifiOption(p);
 
         p.Children.Add(Ui.Section("Connect by address"));
         p.Children.Add(Ui.Card("", "Address", "Use this if the computer isn't listed.",
@@ -620,7 +598,7 @@ public sealed partial class MainWindow : Window
         if (_directStatus is not null)
             p.Children.Add(Ui.Card("", "Direct Wi-Fi", _directStatus));
         if (_viewerStatus is null) return;
-        p.Children.Add(Ui.Card(_viewer is not null ? "" : "", _viewerStatus, _latency,
+        p.Children.Add(Ui.Card(_viewer is not null ? "" : "", _viewerStatus, ShowTech ? _latency : null,
             _viewer is not null ? Ui.Button("Disconnect", Disconnect) : null));
         if (_viewer is not null && _controlling)
             p.Children.Add(Ui.Card("", "You're in control", "Press Ctrl+Alt+Shift+Q to leave."));
@@ -727,16 +705,92 @@ public sealed partial class MainWindow : Window
         extend.IsEnabled = _viewer is null && peer.Sharing && peer.Extend != false;
         p.Children.Add(Ui.Card("", "Show its screen here", $"Use {peer.Name}'s screen on this PC.", show));
         p.Children.Add(Ui.Card("", "Be its extra display", $"This PC becomes a second screen for {peer.Name}.", extend));
+        if (!ShowTech) return;
         p.Children.Add(Ui.Section("Details"));
         p.Children.Add(Ui.Card("", "Addresses", $"{string.Join(", ", peer.Addresses)} · port {peer.Port}"));
         if (peer.Fingerprint is { } fp)
             p.Children.Add(Ui.Card("", "Identity code", AnnexNative.DisplayFingerprint(fp)));
     }
 
-    private void DevicesPage(StackPanel p)
+    private void SettingsPage(StackPanel p)
     {
-        p.Children.Add(Ui.Hero("", "Paired devices",
-            "Paired devices connect without a PIN."));
+        p.Children.Add(Ui.Hero("\uE713", "Settings", "How Annex starts, shares, shows other computers and updates."));
+        p.Children.Add(Ui.Section("General"));
+        GeneralSection(p);
+        p.Children.Add(Ui.Section("Sharing"));
+        SharingSection(p);
+        p.Children.Add(Ui.Section("Viewing"));
+        ViewingSection(p);
+        p.Children.Add(Ui.Section("Paired devices"));
+        DevicesSection(p);
+        p.Children.Add(Ui.Section("Updates"));
+        UpdatesSection(p);
+        p.Children.Add(Ui.Section("Developer"));
+        DeveloperSection(p);
+        p.Children.Add(Ui.Section("About"));
+        AboutSection(p);
+    }
+
+    /// <summary>Identity codes, addresses, stream and latency figures (Settings → Developer).</summary>
+    private bool ShowTech => _settings.ShowTechnicalDetails;
+
+    private void GeneralSection(StackPanel p)
+    {
+        p.Children.Add(Ui.Card("", "Device name",
+            "Shown to other computers. Leave empty to use this PC's name.", Ui.Reuse(_nameBox)));
+        p.Children.Add(Ui.Card("", "Start with Windows", "Opens in the tray when you sign in.",
+            Ui.Switch(AppSettings.StartWithWindows, on => AppSettings.StartWithWindows = on)));
+        p.Children.Add(Ui.Card("", "Start sharing when Annex opens", null,
+            Ui.Switch(_settings.StartSharingAtLaunch, on => { _settings.StartSharingAtLaunch = on; _settings.Save(); })));
+    }
+
+    private void SharingSection(StackPanel p)
+    {
+        var gpus = TryGpus();
+        if (gpus.Count > 1)
+        {
+            var names = new List<string> { "Automatic" };
+            names.AddRange(gpus.Select(g => g.Name));
+            var selected = gpus.FindIndex(g => g.Luid == _settings.GpuLuid) + 1;
+            var gpuBox = new ComboBox { ItemsSource = names, SelectedIndex = selected, MinWidth = 220, IsEnabled = _host is null };
+            gpuBox.SelectionChanged += (_, _) =>
+            {
+                _settings.GpuLuid = gpuBox.SelectedIndex <= 0 ? 0 : gpus[gpuBox.SelectedIndex - 1].Luid;
+                _settings.Save();
+            };
+            p.Children.Add(Ui.Card("", "Graphics card",
+                _host is null ? "Automatic uses the one driving this screen." : "Stop sharing to change this.", gpuBox));
+        }
+        p.Children.Add(Ui.Card("", "Hardware video encoder",
+            _host is null ? "Recommended. Lowest delay." : "Stop sharing to change this.",
+            Ui.Switch(_settings.PreferHardwareEncoder, on => { _settings.PreferHardwareEncoder = on; _settings.Save(); }, enabled: _host is null)));
+    }
+
+    private void ViewingSection(StackPanel p)
+    {
+        var quality = new ComboBox
+        {
+            ItemsSource = new[] { "Best", "Balanced", "Fast (Wi-Fi)" },
+            SelectedIndex = (int)_settings.Quality,
+            MinWidth = 220,
+        };
+        quality.SelectionChanged += (_, _) =>
+        {
+            _settings.Quality = (Quality)Math.Max(0, quality.SelectedIndex);
+            _settings.Save();
+        };
+        p.Children.Add(Ui.Card("", "Quality",
+            "Use Fast on Wi-Fi.", quality));
+        p.Children.Add(Ui.Card("", "Use as an extra display by default", null,
+            Ui.Switch(_settings.ExtendByDefault, on => { _settings.ExtendByDefault = on; _extend = on; _settings.Save(); })));
+        p.Children.Add(Ui.Card("", "Control the other computer",
+            "When it allows it. Press Ctrl+Alt+Shift+Q to leave.",
+            Ui.Switch(_settings.UseMouseAndKeyboard, on => { _settings.UseMouseAndKeyboard = on; _settings.Save(); })));
+        DirectWifiOption(p);
+    }
+
+    private void DevicesSection(StackPanel p)
+    {
         if (_trusted.Any(t => t.AllowInput))
             p.Children.Add(Ui.Info("Note", "Remote control can't type into administrator windows or UAC prompts.",
                 InfoBarSeverity.Informational));
@@ -754,21 +808,12 @@ public sealed partial class MainWindow : Window
             remove.Click += async (_, _) => await ConfirmRemove(peer);
             p.Children.Add(Ui.Card("", peer.Name, LastSeen(peer), Ui.Row(control, remove)));
         }
-        p.Children.Add(Ui.Text($"This PC's identity code: {Fingerprint}", "CaptionTextBlockStyle", Ui.Secondary));
+        if (ShowTech)
+            p.Children.Add(Ui.Text($"This PC's identity code: {Fingerprint}", "CaptionTextBlockStyle", Ui.Secondary));
     }
 
-    private void GeneralPage(StackPanel p)
+    private void UpdatesSection(StackPanel p)
     {
-        p.Children.Add(Ui.Hero("", "General",
-            "Startup, updates and this PC's name."));
-        p.Children.Add(Ui.Card("", "Device name",
-            "Shown to other computers. Leave empty to use this PC's name.", Ui.Reuse(_nameBox)));
-        p.Children.Add(Ui.Card("", "Start with Windows", "Opens in the tray when you sign in.",
-            Ui.Switch(AppSettings.StartWithWindows, on => AppSettings.StartWithWindows = on)));
-        p.Children.Add(Ui.Card("", "Start sharing when Annex opens", null,
-            Ui.Switch(_settings.StartSharingAtLaunch, on => { _settings.StartSharingAtLaunch = on; _settings.Save(); })));
-
-        p.Children.Add(Ui.Section("Updates"));
         p.Children.Add(UpdateStatusCard());
         p.Children.Add(Ui.Card("\uE895", "Check for updates automatically", "Once a day, from GitHub. Nothing about you is sent.",
             Ui.Switch(_settings.CheckForUpdates, on => { _settings.CheckForUpdates = on; _settings.Save(); })));
@@ -781,11 +826,32 @@ public sealed partial class MainWindow : Window
             })));
     }
 
+    private void DeveloperSection(StackPanel p)
+    {
+        p.Children.Add(Ui.Card("\uEC7A", "Show technical details", "Identity codes, addresses and connection details.",
+            Ui.Switch(_settings.ShowTechnicalDetails, on => { _settings.ShowTechnicalDetails = on; _settings.Save(); Render(); })));
+        p.Children.Add(Ui.Card("", "Save a log file", "For bug reports. Stays on this PC. Off by default.",
+            Ui.Switch(_settings.SaveLog, on => { _settings.SaveLog = on; _settings.Save(); AnnexNative.SetLogEnabled(on); })));
+        if (_settings.SaveLog)
+            p.Children.Add(Ui.Card("", "Log folder", null,
+                Ui.Button("Open", () => System.Diagnostics.Process.Start("explorer.exe", DataDirectory))));
+    }
+
+    private void AboutSection(StackPanel p)
+    {
+        p.Children.Add(Ui.Card("\uE946", $"Annex {AnnexNative.Version}", "Encrypted, local, no accounts.", Ui.AppIcon(32)));
+        p.Children.Add(Ui.Card("", "Website and source code", "github.com/NRanjan-17/Annex",
+            new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex") }));
+        p.Children.Add(Ui.Card("", "Report an issue", null,
+            new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex/issues") }));
+        p.Children.Add(Ui.Text("MIT License · Copyright © 2026 Nalinish Ranjan", "CaptionTextBlockStyle", Ui.Secondary));
+    }
+
     // ---- Updates ----------------------------------------------------------------------
 
     private void StartUpdateChecks()
     {
-        _updater.Changed += () => _ui.TryEnqueue(() => RenderIf("general", "share", "connect"));
+        _updater.Changed += () => _ui.TryEnqueue(() => RenderIf("settings", "share", "connect"));
         // Shortly after launch, then once a day while Annex runs.
         var timer = _ui.CreateTimer();
         timer.Interval = TimeSpan.FromSeconds(10);
@@ -869,45 +935,6 @@ public sealed partial class MainWindow : Window
             // Setup is running: get out of its way (it starts Annex again when done).
             Quit();
         }
-    }
-
-    private void ViewingPage(StackPanel p)
-    {
-        p.Children.Add(Ui.Hero("", "Viewing", "How other computers appear here."));
-        var quality = new ComboBox
-        {
-            ItemsSource = new[] { "Best", "Balanced", "Fast (Wi-Fi)" },
-            SelectedIndex = (int)_settings.Quality,
-            MinWidth = 220,
-        };
-        quality.SelectionChanged += (_, _) =>
-        {
-            _settings.Quality = (Quality)Math.Max(0, quality.SelectedIndex);
-            _settings.Save();
-        };
-        p.Children.Add(Ui.Card("", "Quality",
-            "Use Fast on Wi-Fi.", quality));
-        p.Children.Add(Ui.Card("", "Use as an extra display by default", null,
-            Ui.Switch(_settings.ExtendByDefault, on => { _settings.ExtendByDefault = on; _extend = on; _settings.Save(); })));
-        p.Children.Add(Ui.Card("", "Control the other computer",
-            "When it allows it. Press Ctrl+Alt+Shift+Q to leave.",
-            Ui.Switch(_settings.UseMouseAndKeyboard, on => { _settings.UseMouseAndKeyboard = on; _settings.Save(); })));
-    }
-
-    private void AboutPage(StackPanel p)
-    {
-        p.Children.Add(Ui.Hero("", "Annex", $"Version {AnnexNative.Version}. Encrypted, local, no accounts.",
-            Ui.AppIcon(64)));
-        p.Children.Add(Ui.Card("", "Website and source code", "github.com/NRanjan-17/Annex",
-            new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex") }));
-        p.Children.Add(Ui.Card("", "Report an issue", null,
-            new HyperlinkButton { Content = "Open", NavigateUri = new Uri("https://github.com/NRanjan-17/Annex/issues") }));
-        p.Children.Add(Ui.Card("", "Save a log file", "For bug reports. Stays on this PC. Off by default.",
-            Ui.Switch(_settings.SaveLog, on => { _settings.SaveLog = on; _settings.Save(); AnnexNative.SetLogEnabled(on); })));
-        if (_settings.SaveLog)
-            p.Children.Add(Ui.Card("", "Log folder", null,
-                Ui.Button("Open", () => System.Diagnostics.Process.Start("explorer.exe", DataDirectory))));
-        p.Children.Add(Ui.Text("MIT License · Copyright © 2026 Nalinish Ranjan", "CaptionTextBlockStyle", Ui.Secondary));
     }
 
     // ---- Helpers ----------------------------------------------------------------------
@@ -1010,7 +1037,7 @@ public sealed partial class MainWindow : Window
                 Connect: (peer, extend) => { _extend = extend; ConnectToPeer(peer); },
                 Disconnect: Disconnect,
                 Open: ShowFromTray,
-                OpenSettings: () => { ShowFromTray(); Go("general"); },
+                OpenSettings: () => { ShowFromTray(); Go("settings"); },
                 Quit: Quit));
     }
 
@@ -1117,7 +1144,7 @@ public sealed partial class MainWindow : Window
                 {
                     XamlRoot = Content.XamlRoot,
                     Title = $"Let {ask.PeerName} control this PC?",
-                    Content = $"{ask.PeerName} wants to use this PC's mouse and keyboard. You can change this in Paired devices.",
+                    Content = $"{ask.PeerName} wants to use this PC's mouse and keyboard. You can change this in Settings → Paired devices.",
                     PrimaryButtonText = "Allow",
                     CloseButtonText = "Not now",
                     DefaultButton = ContentDialogButton.Primary,
@@ -1164,7 +1191,8 @@ public sealed partial class MainWindow : Window
         code.HorizontalAlignment = HorizontalAlignment.Center;
         code.IsTextSelectionEnabled = true;
         panel.Children.Add(code);
-        panel.Children.Add(Ui.Text($"Its identity code: {pin.FingerprintDisplay}", "CaptionTextBlockStyle", Ui.Secondary));
+        if (ShowTech)
+            panel.Children.Add(Ui.Text($"Its identity code: {pin.FingerprintDisplay}", "CaptionTextBlockStyle", Ui.Secondary));
         _pinDialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
@@ -1326,7 +1354,8 @@ public sealed partial class MainWindow : Window
         var panel = new StackPanel { Spacing = 12 };
         panel.Children.Add(Ui.Text($"Enter the 6-digit PIN shown on {req.PeerName}."));
         panel.Children.Add(box);
-        panel.Children.Add(Ui.Text($"Its identity code: {req.FingerprintDisplay}", "CaptionTextBlockStyle", Ui.Secondary));
+        if (ShowTech)
+            panel.Children.Add(Ui.Text($"Its identity code: {req.FingerprintDisplay}", "CaptionTextBlockStyle", Ui.Secondary));
         var dialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
@@ -1348,7 +1377,7 @@ public sealed partial class MainWindow : Window
     {
         if (_core is null) return;
         _trusted = [.. _core.TrustedPeers];
-        RenderIf("devices", "connect", "peer", "share");
+        RenderIf("settings", "connect", "peer", "share");
     }
 
     private void Disconnect()

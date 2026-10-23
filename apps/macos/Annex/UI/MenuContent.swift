@@ -27,15 +27,19 @@ struct MenuContent: View {
                 Text(model.deviceName.isEmpty ? "Annex" : model.deviceName)
                     .font(.headline)
                     .lineLimit(1)
-                Text(model.fingerprintDisplay)
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .help("This Mac's identity code. Compare it with what the other device shows when pairing.")
+                if model.settings.showTechnicalDetails {
+                    Text(model.fingerprintDisplay)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .help("This Mac's identity code. Compare it with what the other device shows when pairing.")
+                } else {
+                    Text(model.isHosting ? "Sharing" : "This Mac").font(.caption).foregroundStyle(.secondary)
+                }
             }
             Spacer()
             Button {
-                model.pane = .general
+                model.pane = .settings
                 openWindow(id: "main")
                 // A menu bar app isn't frontmost; bring the settings window forward.
                 NSApp.activate(ignoringOtherApps: true)
@@ -47,7 +51,7 @@ struct MenuContent: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Open Annex")
+            .help("Settings")
             .keyboardShortcut(",")
         }
     }
@@ -103,7 +107,9 @@ private struct ShareCard: View {
                 if !s.mirrorViewers.isEmpty, let st = s.stream {
                     StatusRow(systemImage: "rectangle.on.rectangle", tint: .green,
                               text: "Mirroring to \(s.mirrorViewers.joined(separator: ", "))",
-                              detail: "\(st.width)×\(st.height) · \(st.fps) fps · \(s.hardwareEncoder ? "hardware" : "software") encoder")
+                              detail: model.settings.showTechnicalDetails
+                                ? "\(st.width)×\(st.height) · \(st.fps) fps · \(s.hardwareEncoder ? "hardware" : "software") encoder"
+                                : nil)
                 }
                 if !s.extendViewers.isEmpty {
                     StatusRow(systemImage: "rectangle.split.2x1", tint: .green,
@@ -209,9 +215,11 @@ private struct ConnectCard: View {
             if let s = model.viewerStatus {
                 StatusRow(systemImage: model.isViewing ? "play.rectangle.fill" : "info.circle",
                           tint: model.isViewing ? .green : .secondary, text: s,
-                          detail: model.latency.map {
-                              String(format: "Latency %.0f ms (p95 %.0f) · %.0f fps", $0.p50Ms, $0.p95Ms, $0.fps)
-                          })
+                          detail: model.settings.showTechnicalDetails
+                            ? model.latency.map {
+                                String(format: "Latency %.0f ms (p95 %.0f) · %.0f fps", $0.p50Ms, $0.p95Ms, $0.fps)
+                            }
+                            : nil)
                 if model.isViewing {
                     HStack {
                         if model.controllingHost {
