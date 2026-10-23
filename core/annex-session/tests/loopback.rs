@@ -12,7 +12,15 @@ fn stream() -> StreamConfig {
 }
 
 fn display() -> DisplayInfo {
-    DisplayInfo { width_px: 1920, height_px: 1080, width_mm: 527, height_mm: 296, refresh_hz: 60, scale_percent: 100, refresh_rates: vec![] }
+    DisplayInfo {
+        width_px: 1920,
+        height_px: 1080,
+        width_mm: 527,
+        height_mm: 296,
+        refresh_hz: 60,
+        scale_percent: 100,
+        refresh_rates: vec![],
+    }
 }
 
 fn viewer_cfg(port: u16) -> ViewerConfig {

@@ -1,15 +1,23 @@
 use annex_proto::DisplayInfo;
 use windows::Win32::Foundation::{LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
-    DEVMODEW, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE, EnumDisplayMonitors, EnumDisplaySettingsW, GetDC, GetDeviceCaps, GetMonitorInfoW,
-    HDC, HMONITOR, HORZSIZE, LOGPIXELSX, MONITORINFO, MONITORINFOEXW, ReleaseDC, VERTSIZE,
+    DEVMODEW, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE, EnumDisplayMonitors, EnumDisplaySettingsW, GetDC,
+    GetDeviceCaps, GetMonitorInfoW, HDC, HMONITOR, HORZSIZE, LOGPIXELSX, MONITORINFO, MONITORINFOEXW, ReleaseDC,
+    VERTSIZE,
 };
 use windows::core::{BOOL, PCWSTR};
 
 /// Physical properties of the primary display (pixels are physical, not DPI-scaled).
 pub fn primary_display_info() -> DisplayInfo {
-    let mut info =
-        DisplayInfo { width_px: 1920, height_px: 1080, width_mm: 0, height_mm: 0, refresh_hz: 60, scale_percent: 100, refresh_rates: vec![] };
+    let mut info = DisplayInfo {
+        width_px: 1920,
+        height_px: 1080,
+        width_mm: 0,
+        height_mm: 0,
+        refresh_hz: 60,
+        scale_percent: 100,
+        refresh_rates: vec![],
+    };
     unsafe {
         let mut dm = DEVMODEW { dmSize: std::mem::size_of::<DEVMODEW>() as u16, ..Default::default() };
         if EnumDisplaySettingsW(None, ENUM_CURRENT_SETTINGS, &mut dm).as_bool() {
