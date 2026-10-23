@@ -705,7 +705,9 @@ pub unsafe extern "C" fn annex_host_free(host: *mut AnnexHost) {
     drop(h);
     // Back to "open, not sharing" on other computers' Nearby lists: the presence record takes
     // over the host's (same name, updated in place).
-    if advert.is_some() && let Some(c) = unsafe { core.as_ref() } {
+    if advert.is_some()
+        && let Some(c) = unsafe { core.as_ref() }
+    {
         c.end_hosting(advert);
     }
 }
