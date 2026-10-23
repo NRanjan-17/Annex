@@ -19,6 +19,12 @@ public sealed class AppSettings
     public bool ExtendByDefault { get; set; }
     /// <summary>Viewer: move each new session onto this PC's hotspot right after it connects.</summary>
     public bool ConnectOverDirectWifi { get; set; }
+    /// <summary>Look for updates at launch and once a day.</summary>
+    public bool CheckForUpdates { get; set; } = true;
+    /// <summary>Include pre-releases; off goes back to the latest normal release.</summary>
+    public bool BetaUpdates { get; set; }
+    /// <summary>The update the user chose "Not now" for (the banner returns for a newer one).</summary>
+    public string? DismissedUpdate { get; set; }
     /// <summary>Write annex.log for bug reports. Off by default.</summary>
     public bool SaveLog { get; set; }
     /// <summary>Viewer: bitrate ceiling asked of hosts (Fast suits Wi-Fi).</summary>

@@ -1,0 +1,117 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using Annex.Interop;
+
+namespace Annex.App;
+
+/// <summary>
+/// In-app updates from this project's GitHub releases. The core picks the release and checks the
+/// download against the release's signed checksums; nothing is installed unless that passes.
+/// Only GitHub is contacted, and nothing about this PC is sent.
+/// </summary>
+internal sealed class Updater
+{
+    public enum Stage { Idle, Checking, UpToDate, Available, Downloading, Installing, Failed }
+
+    public Stage State { get; private set; } = Stage.Idle;
+    public UpdateInfo? Available { get; private set; }
+    public string? Error { get; private set; }
+
+    /// <summary>Raised on any change (possibly off the UI thread).</summary>
+    public event Action? Changed;
+
+    private static readonly HttpClient s_http = CreateClient();
+
+    private static HttpClient CreateClient()
+    {
+        var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd($"Annex/{AnnexNative.Version}");
+        return http;
+    }
+
+    /// <summary>This PC's installer in a release.</summary>
+    public static string AssetSuffix => RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "-arm64.exe" : "-x64.exe";
+
+    /// <summary>Installed for all users (Program Files), so the update must be too.</summary>
+    public static bool InstalledForAllUsers
+    {
+        get
+        {
+            var here = AppContext.BaseDirectory;
+            return new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }
+                .Select(Environment.GetFolderPath)
+                .Any(pf => pf.Length > 0 && here.StartsWith(pf, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    public bool Busy => State is Stage.Checking or Stage.Downloading or Stage.Installing;
+
+    public async Task CheckAsync(bool beta)
+    {
+        if (Busy) return;
+        Set(Stage.Checking);
+        try
+        {
+            var json = await s_http.GetStringAsync(AnnexNative.UpdateReleasesUrl).ConfigureAwait(false);
+            Available = AnnexNative.PickUpdate(json, beta, AssetSuffix);
+            Error = null;
+            Set(Available is null ? Stage.UpToDate : Stage.Available);
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or AnnexException)
+        {
+            Error = "Couldn't check for updates. Check the internet connection and try again.";
+            Set(Stage.Failed);
+        }
+    }
+
+    /// <summary>Downloads and verifies the update, then starts Setup silently. Setup closes Annex and
+    /// starts it again when it's done (see /UPDATE in Annex.iss). Returns true once Setup is running.</summary>
+    public async Task<bool> InstallAsync()
+    {
+        if (Available is not { } u || Busy) return false;
+        Set(Stage.Downloading);
+        var dir = Path.Combine(Path.GetTempPath(), "Annex-Update-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            // The name comes from GitHub; it must be a plain file name (and it's checked against the
+            // signed checksums below).
+            var name = Path.GetFileName(u.AssetName);
+            if (name != u.AssetName || name.Length == 0) throw new AnnexException("The update's file name isn't valid.");
+            Directory.CreateDirectory(dir);
+            var file = Path.Combine(dir, name);
+            var sums = Path.Combine(dir, "SHA256SUMS.txt");
+            var sig = Path.Combine(dir, "SHA256SUMS.txt.sig");
+            await Task.WhenAll(Download(u.AssetUrl, file), Download(u.SumsUrl, sums), Download(u.SigUrl, sig)).ConfigureAwait(false);
+            AnnexNative.VerifyUpdate(sums, sig, file, name);
+
+            Set(Stage.Installing);
+            var args = "/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /UPDATE=1 "
+                + (InstalledForAllUsers ? "/ALLUSERS" : "/CURRENTUSER");
+            Process.Start(new ProcessStartInfo(file, args) { UseShellExecute = true });
+            return true;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException or AnnexException
+                                      or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        {
+            Error = e is AnnexException ? e.Message : $"The update couldn't be installed: {e.Message}";
+            Set(Stage.Failed);
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            return false;
+        }
+    }
+
+    private static async Task Download(string url, string path)
+    {
+        using var response = await s_http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        await using var source = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+        await using var target = File.Create(path);
+        await source.CopyToAsync(target).ConfigureAwait(false);
+    }
+
+    private void Set(Stage stage)
+    {
+        State = stage;
+        Changed?.Invoke();
+    }
+}

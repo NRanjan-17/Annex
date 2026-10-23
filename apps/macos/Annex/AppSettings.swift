@@ -19,6 +19,12 @@ final class AppSettings: ObservableObject {
     @Published var quality: Int { didSet { defaults.set(quality, forKey: Keys.quality) } }
     /// Write annex.log for bug reports. Off by default.
     @Published var saveLog: Bool { didSet { defaults.set(saveLog, forKey: Keys.log); Annex.setLogEnabled(saveLog) } }
+    /// Look for a new version on GitHub once a day.
+    @Published var checkForUpdates: Bool { didSet { defaults.set(checkForUpdates, forKey: Keys.updates) } }
+    /// Offer pre-releases too. Turning it off offers the newest normal release.
+    @Published var betaUpdates: Bool { didSet { defaults.set(betaUpdates, forKey: Keys.beta) } }
+    /// The update the user said "Not now" to (its banner stays hidden; a newer one shows again).
+    @Published var dismissedUpdateVersion: String? { didSet { defaults.set(dismissedUpdateVersion, forKey: Keys.dismissedUpdate) } }
     /// The name other devices see; nil = this Mac's name from System Settings.
     @Published var customDeviceName: String? { didSet { defaults.set(customDeviceName, forKey: Keys.name) } }
     @Published private(set) var launchAtLogin = false
@@ -33,11 +39,14 @@ final class AppSettings: ObservableObject {
         static let name = "deviceName"
         static let quality = "quality"
         static let log = "saveLog"
+        static let updates = "checkForUpdates"
+        static let beta = "betaUpdates"
+        static let dismissedUpdate = "dismissedUpdateVersion"
     }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true])
+        defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true, Keys.updates: true])
         preferHardwareEncoder = defaults.bool(forKey: Keys.hardware)
         startSharingAtLaunch = defaults.bool(forKey: Keys.autoShare)
         controlWhenViewing = defaults.bool(forKey: Keys.control)
@@ -46,6 +55,9 @@ final class AppSettings: ObservableObject {
         customDeviceName = defaults.string(forKey: Keys.name)
         quality = defaults.integer(forKey: Keys.quality)
         saveLog = defaults.bool(forKey: Keys.log)
+        checkForUpdates = defaults.bool(forKey: Keys.updates)
+        betaUpdates = defaults.bool(forKey: Keys.beta)
+        dismissedUpdateVersion = defaults.string(forKey: Keys.dismissedUpdate)
         refreshLaunchAtLogin()
     }
 

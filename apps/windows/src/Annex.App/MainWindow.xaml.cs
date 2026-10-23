@@ -65,6 +65,9 @@ public sealed partial class MainWindow : Window
     /// <summary>Nearby is being re-checked (the refresh button shows progress until then).</summary>
     private DateTimeOffset _refreshingUntil;
 
+    // Updates.
+    private readonly Updater _updater = new();
+
     // UI.
     private readonly NavigationView _nav = new();
     private readonly ContentControl _page = new()
@@ -125,6 +128,7 @@ public sealed partial class MainWindow : Window
             _core.SetPresence(true);
             _extendStatus = TryExtendStatus();
             _ = CheckFirewallAsync();
+            StartUpdateChecks();
         }
         catch (Exception ex)
         {
@@ -304,6 +308,7 @@ public sealed partial class MainWindow : Window
     {
         p.Children.Add(Ui.Hero("", "Share this PC",
             "Let another computer show this screen or use it as an extra display."));
+        UpdateBanner(p);
         var action = _host is null
             ? Ui.Button("Start sharing", () => SetHosting(true), accent: true)
             : Ui.Button("Stop sharing", () => SetHosting(false));
@@ -567,6 +572,7 @@ public sealed partial class MainWindow : Window
     {
         p.Children.Add(Ui.Hero("", "Connect",
             "Show another computer's screen here, or be its extra display."));
+        UpdateBanner(p);
         ViewerStatus(p);
 
         p.Children.Add(Ui.Section("Nearby", RefreshControl()));
@@ -735,13 +741,115 @@ public sealed partial class MainWindow : Window
     private void GeneralPage(StackPanel p)
     {
         p.Children.Add(Ui.Hero("", "General",
-            "Startup and this PC's name."));
+            "Startup, updates and this PC's name."));
         p.Children.Add(Ui.Card("", "Device name",
             "Shown to other computers. Leave empty to use this PC's name.", Ui.Reuse(_nameBox)));
         p.Children.Add(Ui.Card("", "Start with Windows", "Opens in the tray when you sign in.",
             Ui.Switch(AppSettings.StartWithWindows, on => AppSettings.StartWithWindows = on)));
         p.Children.Add(Ui.Card("", "Start sharing when Annex opens", null,
             Ui.Switch(_settings.StartSharingAtLaunch, on => { _settings.StartSharingAtLaunch = on; _settings.Save(); })));
+
+        p.Children.Add(Ui.Section("Updates"));
+        p.Children.Add(UpdateStatusCard());
+        p.Children.Add(Ui.Card("\uE895", "Check for updates automatically", "Once a day, from GitHub. Nothing about you is sent.",
+            Ui.Switch(_settings.CheckForUpdates, on => { _settings.CheckForUpdates = on; _settings.Save(); })));
+        p.Children.Add(Ui.Card("\uE9D5", "Beta updates", "Get pre-release versions early. Turn off to go back to the latest normal release.",
+            Ui.Switch(_settings.BetaUpdates, on =>
+            {
+                _settings.BetaUpdates = on;
+                _settings.Save();
+                _ = _updater.CheckAsync(on);
+            })));
+    }
+
+    // ---- Updates ----------------------------------------------------------------------
+
+    private void StartUpdateChecks()
+    {
+        _updater.Changed += () => _ui.TryEnqueue(() => RenderIf("general", "share", "connect"));
+        // Shortly after launch, then once a day while Annex runs.
+        var timer = _ui.CreateTimer();
+        timer.Interval = TimeSpan.FromSeconds(10);
+        timer.Tick += (_, _) =>
+        {
+            timer.Interval = TimeSpan.FromHours(24);
+            if (_settings.CheckForUpdates) _ = _updater.CheckAsync(_settings.BetaUpdates);
+        };
+        timer.Start();
+    }
+
+    private string UpdateText() => _updater.Available is { } u
+        ? $"Annex {u.Version} is available." + (u.Downgrade ? " It's the latest normal release." : u.Prerelease ? " It's a pre-release." : "")
+        : "";
+
+    private static ProgressRing Spinner() => new() { IsActive = true, Width = 20, Height = 20 };
+
+    /// <summary>The status line on the General page: up to date, checking, or an update to install.</summary>
+    private Border UpdateStatusCard()
+    {
+        var (title, detail, control) = _updater.State switch
+        {
+            Updater.Stage.Checking => ("Checking for updates…", (string?)null, (UIElement)Spinner()),
+            Updater.Stage.Available => (UpdateText(), "Annex closes and opens again when it's done.", UpdateButtons()),
+            Updater.Stage.Downloading => ("Downloading the update…", null, Spinner()),
+            Updater.Stage.Installing => ("Installing… Annex opens again in a moment.", null, Spinner()),
+            Updater.Stage.UpToDate => ("Annex is up to date.", $"Version {AnnexNative.Version}.", CheckNowButton()),
+            Updater.Stage.Failed => (_updater.Error ?? "Couldn't check for updates.", null, CheckNowButton()),
+            _ => ($"Version {AnnexNative.Version}", null, CheckNowButton()),
+        };
+        return Ui.Card("\uE777", title, detail, control);
+    }
+
+    private Button CheckNowButton() => Ui.Button("Check now", () => _ = _updater.CheckAsync(_settings.BetaUpdates));
+
+    private StackPanel UpdateButtons()
+    {
+        var install = Ui.Button("Install", () => _ = InstallUpdateAsync(), accent: true);
+        if (_updater.Available is not { } u) return Ui.Row(install);
+        return Ui.Row(new HyperlinkButton { Content = "What's new", NavigateUri = new Uri(u.PageUrl) }, install);
+    }
+
+    /// <summary>Top of Share and Connect: an automatic check found an update.</summary>
+    private void UpdateBanner(StackPanel p)
+    {
+        if (_updater.State != Updater.Stage.Available || _updater.Available is not { } u || u.Version == _settings.DismissedUpdate) return;
+        var notNow = Ui.Button("Not now", () =>
+        {
+            _settings.DismissedUpdate = u.Version;
+            _settings.Save();
+            RenderIf("share", "connect");
+        });
+        p.Children.Add(Ui.Card("\uE777", UpdateText(), "Annex closes and opens again when it's done.",
+            Ui.Row(notNow, Ui.Button("Install", () => _ = InstallUpdateAsync(), accent: true))));
+    }
+
+    private async Task InstallUpdateAsync()
+    {
+        if (_viewer is not null || _sessions.Count > 0)
+        {
+            var dialog = new ContentDialog
+            {
+                XamlRoot = Content.XamlRoot,
+                Title = "Install the update now?",
+                Content = "Annex closes to update, which ends the current session.",
+                PrimaryButtonText = "Install",
+                CloseButtonText = "Cancel",
+                DefaultButton = ContentDialogButton.Close,
+            };
+            try
+            {
+                if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+            }
+            catch (Exception)
+            {
+                return; // another dialog is open
+            }
+        }
+        if (await _updater.InstallAsync())
+        {
+            // Setup is running: get out of its way (it starts Annex again when done).
+            Quit();
+        }
     }
 
     private void ViewingPage(StackPanel p)

@@ -156,6 +156,16 @@ int32_t annex_host_request_direct_link(const AnnexHost *host, uint64_t session_i
 int32_t annex_viewer_refuse_direct_link(const AnnexViewer *viewer, const char *reason);
 void annex_viewer_free(AnnexViewer *viewer);
 
+/* ---- Updates ------------------------------------------------------------------------ */
+/* The app fetches annex_update_releases_url() (GitHub API, send a User-Agent), asks the core which
+ * release to offer, downloads the asset plus SHA256SUMS.txt and SHA256SUMS.txt.sig, and installs
+ * only if annex_update_verify() returns ANNEX_OK. */
+const char *annex_update_releases_url(void);
+/* *out: JSON, `null` if current. asset_suffix: "-macos-universal.dmg", "-x64.exe", "-arm64.exe". */
+int32_t annex_update_pick(const char *releases_json, bool beta, const char *asset_suffix, char **out);
+int32_t annex_update_verify(const char *sums_path, const char *sig_path, const char *file_path,
+                            const char *asset_name);
+
 /* ---- Discovery -------------------------------------------------------------------- */
 /* Events: {"type":"peer_found",...} and {"type":"peer_lost","instance":...}. */
 int32_t annex_discovery_start(const AnnexCore *core, AnnexEventCallback on_event, void *ctx,

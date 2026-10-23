@@ -277,6 +277,7 @@ private struct SharePage: View {
             Hero(title: "Share This Mac",
                  text: "Let another computer show this screen or use it as an extra display.",
                  symbol: "display.2", tint: .blue)
+            UpdateBanner(updater: model.updater)
             Section {
                 HStack(spacing: 12) {
                     IconTile(symbol: model.isHosting ? "dot.radiowaves.left.and.right" : "pause.fill",
@@ -489,6 +490,7 @@ private struct ConnectPage: View {
             Hero(title: "Connect",
                  text: "Show another computer's screen here, or be its extra display.",
                  symbol: "rectangle.connected.to.line.below", tint: .indigo)
+            UpdateBanner(updater: model.updater)
             ViewerStatusSection(model: model)
             Section {
                 if model.discovered.isEmpty {
@@ -785,6 +787,76 @@ private struct GeneralPage: View {
                 }
                 Row(symbol: "display.2", tint: .blue, title: "Start sharing when Annex opens") {
                     Toggle("", isOn: $settings.startSharingAtLaunch).toggleStyle(.switch).labelsHidden()
+                }
+            }
+            Section("Updates") {
+                Row(symbol: "arrow.triangle.2.circlepath", tint: .blue, title: "Check for updates automatically",
+                    subtitle: "Once a day, from GitHub. Nothing about you is sent.") {
+                    Toggle("", isOn: $settings.checkForUpdates).toggleStyle(.switch).labelsHidden()
+                }
+                Row(symbol: "testtube.2", tint: .gray, title: "Beta updates",
+                    subtitle: "Get pre-release versions early. Turn off to go back to the latest normal release.") {
+                    Toggle("", isOn: $settings.betaUpdates).toggleStyle(.switch).labelsHidden()
+                }
+                UpdateStatusRow(updater: model.updater)
+            }
+        }
+    }
+}
+
+/// What the updater is doing, with the action that fits.
+private struct UpdateStatusRow: View {
+    @ObservedObject var updater: Updater
+
+    var body: some View {
+        switch updater.state {
+        case .idle:
+            Row(symbol: "info.circle", tint: .gray, title: "Version \(Annex.version)") { checkNow }
+        case .checking:
+            Row(symbol: "info.circle", tint: .gray, title: "Checking…") { ProgressView().controlSize(.small) }
+        case .upToDate:
+            Row(symbol: "checkmark.circle.fill", tint: .green, title: "Annex is up to date.",
+                subtitle: "Version \(Annex.version).") { checkNow }
+        case .available(let info):
+            Row(symbol: "arrow.down.circle.fill", tint: .blue, title: Updater.headline(info),
+                subtitle: "You have \(Annex.version).") {
+                HStack(spacing: 8) {
+                    if let page = URL(string: info.pageUrl) { Link("What's New", destination: page) }
+                    Button("Install") { updater.confirmAndInstall() }
+                }
+            }
+        case .downloading:
+            Row(symbol: "arrow.down.circle", tint: .blue, title: "Downloading…") { ProgressView().controlSize(.small) }
+        case .installing:
+            Row(symbol: "arrow.down.circle", tint: .blue, title: "Installing… Annex restarts in a moment.") {
+                ProgressView().controlSize(.small)
+            }
+        case .failed(let message):
+            Row(symbol: "exclamationmark.triangle.fill", tint: .orange, title: message) {
+                Button("Try Again") { Task { await updater.check() } }
+            }
+        case .manual(let message):
+            Row(symbol: "arrow.down.circle", tint: .blue, title: message) { EmptyView() }
+        }
+    }
+
+    private var checkNow: some View {
+        Button("Check Now") { Task { await updater.check() } }
+    }
+}
+
+/// Shown at the top of Share and Connect when an automatic check found an update.
+private struct UpdateBanner: View {
+    @ObservedObject var updater: Updater
+
+    var body: some View {
+        if let info = updater.bannerUpdate {
+            Section {
+                Row(symbol: "arrow.down.circle.fill", tint: .blue, title: Updater.headline(info)) {
+                    HStack(spacing: 8) {
+                        Button("Not Now") { updater.dismissBanner() }
+                        Button("Install") { updater.confirmAndInstall() }
+                    }
                 }
             }
         }

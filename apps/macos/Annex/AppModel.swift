@@ -10,6 +10,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var startupError: String?
 
     let settings = AppSettings()
+    /// In-app updates from GitHub releases.
+    lazy var updater = Updater(settings: settings)
     /// The main window's selected page.
     @Published var pane: Pane = .share
 
@@ -80,6 +82,8 @@ final class AppModel: ObservableObject {
             .sink { [weak self] _ in self?.refreshPermissions() }
             .store(in: &cancellables)
         if settings.startSharingAtLaunch { startHosting() }
+        updater.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &cancellables)
+        updater.startAutomaticChecks()
     }
 
     var isViewing: Bool { viewer != nil }

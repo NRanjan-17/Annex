@@ -9,6 +9,7 @@ members = [
     "annex-ffi",
     "annex-cli",
     "annex-bench", "annex-driver",
+    "annex-update",
 ]
 
 [workspace.package]

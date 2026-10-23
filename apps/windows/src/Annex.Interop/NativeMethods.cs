@@ -141,6 +141,14 @@ internal static unsafe partial class NativeMethods
     public static partial int annex_discovery_start(nint core, delegate* unmanaged<nint, nint, void> onEvent, nint ctx, out nint discovery);
 
     [LibraryImport(Lib)] public static partial void annex_discovery_refresh(nint discovery);
+
+    [LibraryImport(Lib)] public static partial nint annex_update_releases_url();
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_update_pick(string releasesJson, [MarshalAs(UnmanagedType.U1)] bool beta, string assetSuffix, out nint json);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_update_verify(string sumsPath, string sigPath, string filePath, string assetName);
     [LibraryImport(Lib)] public static partial void annex_discovery_free(nint discovery);
 
     public static string TakeString(nint p)

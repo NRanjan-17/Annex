@@ -357,6 +357,66 @@ pub extern "C" fn annex_version() -> *const c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
 }
 
+// ---------------------------------------------------------------------------------------
+// Updates (the apps download; the core decides what to offer and checks signatures)
+// ---------------------------------------------------------------------------------------
+
+/// URL of the releases list the apps fetch (GitHub's API; send a User-Agent header).
+#[unsafe(no_mangle)]
+pub extern "C" fn annex_update_releases_url() -> *const c_char {
+    annex_update::RELEASES_URL.as_ptr()
+}
+
+/// Picks the release to offer from the releases list. On success `*out` is JSON to free with
+/// annex_string_free: `null` when this version is current, else `{version, prerelease, downgrade,
+/// notes, page_url, asset_name, asset_url, sums_url, sig_url}`. `asset_suffix` names this
+/// platform's file: `-macos-universal.dmg`, `-x64.exe` or `-arm64.exe`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_update_pick(
+    releases_json: *const c_char,
+    beta: bool,
+    asset_suffix: *const c_char,
+    out: *mut *mut c_char,
+) -> i32 {
+    guard(|| {
+        if out.is_null() {
+            return Err(invalid("out is null"));
+        }
+        let (json, suffix) =
+            unsafe { (str_arg(releases_json, "releases_json")?, str_arg(asset_suffix, "asset_suffix")?) };
+        let update = annex_update::pick(json, env!("CARGO_PKG_VERSION"), beta, suffix).map_err(failed)?;
+        let text = serde_json::to_string(&update).map_err(failed)?;
+        unsafe { *out = out_string(&text) };
+        Ok(ANNEX_OK)
+    })
+}
+
+/// Checks a downloaded update against its release's signed checksums (all three files already
+/// downloaded). ANNEX_OK only if the signature is genuine and the file's SHA-256 is listed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_update_verify(
+    sums_path: *const c_char,
+    sig_path: *const c_char,
+    file_path: *const c_char,
+    asset_name: *const c_char,
+) -> i32 {
+    guard(|| {
+        let (sums, sig, file, name) = unsafe {
+            (
+                str_arg(sums_path, "sums_path")?,
+                str_arg(sig_path, "sig_path")?,
+                str_arg(file_path, "file_path")?,
+                str_arg(asset_name, "asset_name")?,
+            )
+        };
+        let sums = std::fs::read(sums).map_err(failed)?;
+        let sig = std::fs::read(sig).map_err(failed)?;
+        annex_update::verify(&sums, &sig, std::path::Path::new(file), name).map_err(failed)?;
+        tracing::info!(asset = name, "update verified");
+        Ok(ANNEX_OK)
+    })
+}
+
 /// Message for the last error on this thread. Valid until the next failing call on this thread.
 #[unsafe(no_mangle)]
 pub extern "C" fn annex_last_error() -> *const c_char {

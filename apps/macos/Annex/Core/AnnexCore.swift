@@ -40,6 +40,42 @@ enum Annex {
     }
 }
 
+/// A release worth offering (from the core's update picker).
+struct UpdateInfo: Codable, Equatable {
+    let version: String
+    let prerelease: Bool
+    /// Going back from a pre-release to an older normal release.
+    let downgrade: Bool
+    let notes: String
+    let pageUrl: String
+    let assetName: String
+    let assetUrl: String
+    let sumsUrl: String
+    let sigUrl: String
+}
+
+/// In-app updates: the app downloads, the core decides what to offer and checks signatures.
+enum AnnexUpdate {
+    static let assetSuffix = "-macos-universal.dmg"
+
+    static var releasesURL: URL { URL(string: String(cString: annex_update_releases_url()))! }
+
+    /// The release to offer from GitHub's releases JSON, or nil if this version is current.
+    static func pick(json: String, beta: Bool) throws -> UpdateInfo? {
+        var out: UnsafeMutablePointer<CChar>?
+        try check(annex_update_pick(json, beta, assetSuffix, &out))
+        let text = takeString(out)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(UpdateInfo?.self, from: Data(text.utf8))
+    }
+
+    /// Throws unless the download matches its release's signed checksums.
+    static func verify(sums: URL, sig: URL, file: URL, assetName: String) throws {
+        try check(annex_update_verify(sums.path, sig.path, file.path, assetName))
+    }
+}
+
 /// Holds the Swift closures a C callback dispatches to. Its lifetime is tied to the handle.
 final class CallbackBox {
     let onEvent: (CoreEvent) -> Void

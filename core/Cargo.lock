@@ -73,6 +73,7 @@ dependencies = [
  "annex-media-win",
  "annex-proto",
  "annex-session",
+ "annex-update",
  "serde_json",
  "tempfile",
  "tokio",
@@ -117,6 +118,18 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+]
+
+[[package]]
+name = "annex-update"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "ring",
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

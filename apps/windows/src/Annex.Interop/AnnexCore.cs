@@ -73,6 +73,21 @@ public static class AnnexNative
     public static IReadOnlyList<GpuInfo> Gpus() =>
         AnnexJson.Deserialize<GpuInfo[]>(NativeMethods.TakeString(NativeMethods.annex_win_gpus_json()));
 
+    /// <summary>The releases list to fetch for updates (GitHub's API; send a User-Agent).</summary>
+    public static string UpdateReleasesUrl => Marshal.PtrToStringUTF8(NativeMethods.annex_update_releases_url()) ?? "";
+
+    /// <summary>The release to offer from the releases list, or null if this version is current.</summary>
+    public static UpdateInfo? PickUpdate(string releasesJson, bool beta, string assetSuffix)
+    {
+        NativeMethods.Check(NativeMethods.annex_update_pick(releasesJson, beta, assetSuffix, out var json));
+        var text = NativeMethods.TakeString(json);
+        return text == "null" ? null : AnnexJson.Deserialize<UpdateInfo>(text);
+    }
+
+    /// <summary>Throws unless the file matches the release's signed checksums. Never install without it.</summary>
+    public static void VerifyUpdate(string sumsPath, string sigPath, string filePath, string assetName) =>
+        NativeMethods.Check(NativeMethods.annex_update_verify(sumsPath, sigPath, filePath, assetName));
+
     /// <summary>Writes the core's log to annex.log in the data folder while on. Off by default.</summary>
     public static void SetLogEnabled(bool enabled) => NativeMethods.annex_set_log_enabled(enabled);
 

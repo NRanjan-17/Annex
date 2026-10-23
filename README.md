@@ -121,11 +121,16 @@ empty to use the computer's own name).
 - **Quality** (Viewing page): *Fast (Wi-Fi)* lowers the bitrate so the picture keeps up on a
   busy network; *Best* is for a cable or a fast network. Annex also lowers quality by itself as
   soon as the network delay starts creeping up.
-- **Switch to direct Wi-Fi** (shown while connected, Mac ↔ Windows): the Windows PC starts its
-  own hotspot with a random password, hands it to the Mac inside the encrypted session, the Mac
-  joins it and Annex reconnects. Video then goes straight between the two, one Wi-Fi hop instead
-  of two through the router. When you disconnect, the hotspot stops and the Mac rejoins its usual
-  network. Needs a PC whose Wi-Fi can run Mobile hotspot.
+- **Direct Wi-Fi** (Mac ↔ Windows, or between PCs): the Windows PC runs its own hotspot with a
+  random password and hands it over inside the encrypted session; the other computer joins it and
+  Annex reconnects. Video then goes straight between the two, one Wi-Fi hop instead of two through
+  the router. Use it either way:
+  - **Before you start:** turn on *Connect over direct Wi-Fi* (Windows: Connect page; Mac: the
+    computer's page). Each session moves onto the hotspot right after it connects.
+  - **During a session:** *Switch to direct Wi-Fi* on the viewing computer, or next to the viewer
+    on the sharing computer.
+  On Windows, *Share this PC → Direct Wi-Fi* also runs the hotspot on its own and shows its name
+  and password. Needs a PC whose Wi-Fi can run Mobile hotspot.
 - On Windows, Annex puts Wi-Fi in *media streaming mode* (no background scans, no power saving)
   while a session runs.
 
@@ -154,6 +159,14 @@ Uninstalling removes the driver and the certificate.
 **Share this PC** shows whether extra displays are ready. Mirroring, and using a Windows PC as
 an extra display for a **Mac**, don't need the driver.
 
+### Updates
+
+Annex checks GitHub for a new version at launch and once a day, and offers to install it
+(**Settings → General**). Turn on **Beta updates** to get pre-releases early; turn it off to go
+back to the latest normal release. Every update is checked against a signature made when the
+release is built, so a modified download is never installed. Turn off *Check for updates
+automatically* if you'd rather check by hand.
+
 ## Uninstall
 
 - **macOS:** in Annex, open **About** and click **Uninstall…**. It removes the app, its
@@ -163,7 +176,8 @@ an extra display for a **Mac**, don't need the driver.
 
 ## Privacy and security
 
-- Everything stays on your network. There are no Annex servers, accounts or analytics.
+- Everything stays on your network. There are no Annex servers, accounts or analytics. The only
+  internet traffic is the update check to GitHub, which you can turn off.
 - Connections use **TLS 1.3** (over QUIC) with **mutual authentication**. Devices pair once
   with a PIN (SPAKE2), then pin each other's keys, so nobody can impersonate a paired device.
 - Identity keys live in the Mac Keychain or Windows DPAPI.

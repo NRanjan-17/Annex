@@ -179,6 +179,8 @@ jobs:
     name: Checksums, SBOM, release
     needs: [version, macos, windows]
     runs-on: ubuntu-latest
+    # The update-signing key lives in the protected environment.
+    environment: release
     permissions:
       contents: write
     steps:
@@ -208,6 +210,29 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Sign checksums for in-app updates
+        working-directory: dist
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          # Annex installs an update only if this Ed25519 signature verifies against the public key
+          # built into the app (core/annex-update). The key is written to a private temp file and
+          # deleted; it is never printed.
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then
+            echo "::warning::UPDATE_SIGNING_KEY isn't set: in-app updates won't offer this release."
+            exit 0
+          fi
+          umask 077
+          key="$(mktemp)"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          expected="$(sed -n 's/.*hex_key("\([0-9a-f]\{64\}\)").*/\1/p' "$GITHUB_WORKSPACE/core/annex-update/src/lib.rs")"
+          actual="$(openssl pkey -in "$key" -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d " \n")"
+          [ -n "$expected" ] && [ "$expected" = "$actual" ] || { echo "::error::UPDATE_SIGNING_KEY doesn't match the public key in the app"; exit 1; }
+          openssl pkeyutl -sign -inkey "$key" -rawin -in SHA256SUMS.txt -out SHA256SUMS.txt.sig
+          openssl pkey -in "$key" -pubout -out pub.pem
+          openssl pkeyutl -verify -pubin -inkey pub.pem -rawin -in SHA256SUMS.txt -sigfile SHA256SUMS.txt.sig
+          rm -f pub.pem
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-bundle

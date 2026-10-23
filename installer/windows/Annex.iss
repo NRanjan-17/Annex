@@ -109,6 +109,8 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile
 ; per-user installs get the standard Windows prompt on first use instead.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""Annex"" dir=in action=allow program=""{app}\{#AppExe}"" profile=private,domain enable=yes"; Flags: runhidden; Check: IsAdminInstallMode; StatusMsg: "Adding firewall rule..."
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; In-app updates run Setup silently with /UPDATE=1: start Annex again afterwards, as the signed-in user.
+Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: IsUpdateRun
 
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#AppExe}"; Flags: runhidden; RunOnceId: "KillAnnex"
@@ -127,6 +129,12 @@ Type: filesandordirs; Name: "{userappdata}\Annex"
 Type: filesandordirs; Name: "{app}"
 
 [Code]
+// Annex's in-app updater passes /UPDATE=1 (with /SILENT).
+function IsUpdateRun: Boolean;
+begin
+  Result := ExpandConstant('{param:UPDATE|0}') = '1';
+end;
+
 // For all-users installs, also remove per-user data of every profile on this PC so no keys or
 // trusted-device lists are left behind.
 procedure RemoveAllProfilesData();
