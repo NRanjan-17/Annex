@@ -214,7 +214,7 @@ async fn host(o: &mut Opts) {
     let events = event_printer(core.clone());
     let handle = start_host(
         core.clone(),
-        HostConfig { port, stream: StreamConfig { codec, width: w, height: h, fps }, extend: false },
+        HostConfig { port, stream: StreamConfig { codec, width: w, height: h, fps }, extend: false, udp: None },
         events,
     )
     .await
@@ -307,6 +307,7 @@ async fn viewer(o: &mut Opts) {
         input: false,
         quality: annex_session::Quality::Best,
         latency_csv,
+        internet: None,
     };
     let v = Arc::new(connect_viewer(core, cfg, events, frames));
     let presenter = {

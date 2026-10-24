@@ -10,8 +10,11 @@ mod core;
 mod events;
 mod host;
 mod pairing;
+mod punch;
 pub mod rate;
 pub mod stats;
+#[doc(hidden)]
+pub mod stun;
 mod transport;
 mod viewer;
 
@@ -22,7 +25,7 @@ pub use host::{
 };
 pub use stats::LatencyStats;
 pub use transport::is_link_local;
-pub use viewer::{ViewerConfig, ViewerHandle, connect_viewer};
+pub use viewer::{InternetSocket, ViewerConfig, ViewerHandle, connect_viewer};
 
 pub use annex_crypto::KeyStorage;
 pub use annex_proto::{Codec, DEFAULT_PORT, DisplayInfo, InputEvent, Mode, MouseButton, Quality, StreamConfig, keys};

@@ -33,11 +33,12 @@ fn viewer_cfg(port: u16) -> ViewerConfig {
         input: false,
         quality: annex_session::Quality::Best,
         latency_csv: None,
+        internet: None,
     }
 }
 
 fn host_cfg() -> HostConfig {
-    HostConfig { port: 0, stream: stream(), extend: true }
+    HostConfig { port: 0, stream: stream(), extend: true, udp: None }
 }
 
 fn channel_sink() -> (EventSink, mpsc::UnboundedReceiver<Event>) {

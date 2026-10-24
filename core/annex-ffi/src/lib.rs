@@ -663,7 +663,7 @@ pub unsafe extern "C" fn annex_host_start(
             return Err(invalid("width, height and fps must be non-zero"));
         }
         let callbacks = Callbacks::new(on_event, None, ctx);
-        let cfg = HostConfig { port, stream: StreamConfig { codec, width, height, fps }, extend };
+        let cfg = HostConfig { port, stream: StreamConfig { codec, width, height, fps }, extend, udp: None };
         let handle =
             c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, callbacks.event_sink())).map_err(failed)?;
         let advert = if advertise {
@@ -1331,6 +1331,7 @@ unsafe fn viewer_config(
             _ => Quality::Best,
         },
         latency_csv: std::env::var_os("ANNEX_LATENCY_CSV").map(PathBuf::from),
+        internet: None,
     })
 }
 

@@ -110,6 +110,7 @@ dependencies = [
  "annex-crypto",
  "annex-proto",
  "quinn",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

@@ -17,8 +17,9 @@ use crate::conn::{Incoming, Reader, Writer, check_hello, hello};
 use crate::events::LinkKind;
 use crate::events::{Event, EventSink, FrameOut, FrameSink};
 use crate::pairing::{PairContext, pair_as_viewer};
+use crate::punch::PunchSocket;
 use crate::stats::LatencyWindow;
-use crate::transport::{Established, connect_quic, connect_tcp, is_link_local};
+use crate::transport::{Established, connect_quic, connect_quic_on, connect_tcp, is_link_local};
 use crate::{Core, SessionError};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -43,6 +44,62 @@ pub struct ViewerConfig {
     pub quality: Quality,
     /// Optional per-frame latency log: `frame_id,capture_local_us,present_us,latency_us`.
     pub latency_csv: Option<PathBuf>,
+    /// Connect across the internet from this socket: `address` then lists the host's candidates
+    /// from the rendezvous server. QUIC only.
+    pub internet: Option<Arc<InternetSocket>>,
+}
+
+/// The viewer's side of an internet connection. It's bound before connecting, so its public
+/// address can go to the host (through the rendezvous server) and the host can open its router
+/// towards it; then the session runs on this same socket.
+#[derive(Debug)]
+pub struct InternetSocket {
+    udp: Arc<PunchSocket>,
+    /// QUIC on the socket from the start: its driver is what reads the socket, STUN answers included.
+    endpoint: quinn::Endpoint,
+}
+
+impl InternetSocket {
+    /// A new UDP socket on any port (IPv6 and IPv4 where the system allows both).
+    pub fn bind() -> std::io::Result<Arc<Self>> {
+        let dual = || -> std::io::Result<std::net::UdpSocket> {
+            let s = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+            s.set_only_v6(false)?;
+            s.bind(&std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)).into())?;
+            Ok(s.into())
+        };
+        let s = match dual() {
+            Ok(s) => s,
+            Err(_) => std::net::UdpSocket::bind("0.0.0.0:0")?,
+        };
+        s.set_nonblocking(true)?;
+        Self::on(PunchSocket::from_std(s)?)
+    }
+
+    fn on(udp: Arc<PunchSocket>) -> std::io::Result<Arc<Self>> {
+        let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime for QUIC"))?;
+        let endpoint =
+            quinn::Endpoint::new_with_abstract_socket(quinn::EndpointConfig::default(), None, udp.clone(), runtime)?;
+        Ok(Arc::new(Self { udp, endpoint }))
+    }
+
+    /// On a given socket. Tests use it for a simulated network.
+    #[doc(hidden)]
+    pub fn with_socket(socket: Arc<dyn quinn::AsyncUdpSocket>) -> std::io::Result<Arc<Self>> {
+        Self::on(PunchSocket::new(socket))
+    }
+
+    /// Where the host can reach this socket: its public address (asked of `stun_server`), plus
+    /// this computer's LAN and IPv6 addresses.
+    pub async fn candidates(
+        &self,
+        stun_server: std::net::SocketAddr,
+    ) -> Result<Vec<std::net::SocketAddr>, SessionError> {
+        let mut out = vec![self.udp.public_address(stun_server).await?];
+        out.extend(crate::punch::own_addresses(self.udp.local_addr()?.port()));
+        out.dedup();
+        Ok(out)
+    }
 }
 
 enum Cmd {
@@ -156,7 +213,13 @@ async fn run(
     if fp == core.fingerprint() {
         return Err(SessionError::Violation("host uses our own identity".into()));
     }
-    let link = if is_link_local(&remote) { LinkKind::Direct } else { LinkKind::Network };
+    let link = if cfg.internet.is_some() {
+        LinkKind::Internet
+    } else if is_link_local(&remote) {
+        LinkKind::Direct
+    } else {
+        LinkKind::Network
+    };
     tracing::info!(%remote, ?kind, ?link, "connected");
     let mut reader = Reader::new(reader);
     let mut writer = Writer::new(writer);
@@ -428,6 +491,9 @@ async fn connect_best(core: &Arc<Core>, cfg: &ViewerConfig) -> Result<Establishe
     }
     addrs.sort_by_key(|a| !is_link_local(a));
     addrs.dedup();
+    if let Some(net) = &cfg.internet {
+        return connect_internet(core, cfg, net, addrs).await;
+    }
     let mut last_err = None;
     for quic in [true, false] {
         let mut tries = tokio::task::JoinSet::new();
@@ -464,6 +530,43 @@ async fn connect_best(core: &Arc<Core>, cfg: &ViewerConfig) -> Result<Establishe
         }
         if quic {
             tracing::warn!("QUIC did not connect; trying TCP (video over TCP stalls when packets are lost)");
+        }
+    }
+    Err(last_err.unwrap_or(SessionError::Timeout("connect")))
+}
+
+/// An internet connection: QUIC to each of the host's candidates from the one socket whose public
+/// address the host punched towards. The host's router may drop the first packets until its punch
+/// arrives; QUIC resends the handshake, so the wait is the whole handshake timeout.
+async fn connect_internet(
+    core: &Arc<Core>,
+    cfg: &ViewerConfig,
+    net: &InternetSocket,
+    addrs: Vec<std::net::SocketAddr>,
+) -> Result<Established, SessionError> {
+    let endpoint = &net.endpoint;
+    // Also open this side's router towards the host, in case its first packets beat ours.
+    net.udp.punch(addrs.clone());
+    let mut tries = tokio::task::JoinSet::new();
+    for (i, addr) in addrs.into_iter().enumerate() {
+        let (core, endpoint, expected) = (core.clone(), endpoint.clone(), cfg.expected_fingerprint.clone());
+        tries.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100 * i as u64)).await;
+            connect_quic_on(&core, &endpoint, addr, expected).await
+        });
+    }
+    let mut last_err = None;
+    while let Some(r) = tries.join_next().await {
+        match r {
+            Ok(Ok(est)) => {
+                tries.abort_all();
+                return Ok(est);
+            }
+            Ok(Err(e)) => {
+                tracing::info!("internet connect attempt failed: {e}");
+                last_err = Some(e);
+            }
+            Err(_) => {}
         }
     }
     Err(last_err.unwrap_or(SessionError::Timeout("connect")))

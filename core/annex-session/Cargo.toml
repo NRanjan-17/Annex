@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 annex-crypto = { path = "../annex-crypto" }
 annex-proto = { path = "../annex-proto" }
+ring = "0.17.14"
 quinn = { version = "0.11.12", default-features = false, features = ["rustls-ring", "runtime-tokio", "log"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0.229", features = ["derive"] }

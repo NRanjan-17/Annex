@@ -12,6 +12,8 @@ pub use crate::transport::TransportKind;
 pub enum LinkKind {
     Direct,
     Network,
+    /// "internet": across the internet, found through the rendezvous server.
+    Internet,
 }
 
 use crate::LatencyStats;
