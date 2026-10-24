@@ -15,6 +15,10 @@ final class H264Encoder {
 
     /// Called on a VideoToolbox thread: (Annex B access unit, keyframe, capture time µs).
     var onEncoded: ((Data, Bool, Int64) -> Void)?
+    /// Called once, on any thread, when frames keep failing to encode (a second's worth in a row),
+    /// so the session can end with a reason instead of showing a black screen.
+    var onFailure: ((OSStatus) -> Void)?
+    private var failures = 0
 
     /// Creating a session can take from ~0.3 s to many seconds; never call this on the main thread.
     init(width: Int, height: Int, fps: Int, bitrate: Int, preferHardware: Bool) throws {
@@ -116,11 +120,28 @@ final class H264Encoder {
         let pts = CMTime(value: captureMicros, timescale: 1_000_000)
         let status = VTCompressionSessionEncodeFrame(session, imageBuffer: pixelBuffer, presentationTimeStamp: pts,
                                                      duration: .invalid, frameProperties: props, infoFlagsOut: nil) { [weak self] status, _, sample in
-            guard status == noErr, let sample, let (data, isKey) = AnnexB.fromSampleBuffer(sample) else { return }
+            guard status == noErr else { self?.failed(status); return }
+            self?.succeeded()
+            guard let sample, let (data, isKey) = AnnexB.fromSampleBuffer(sample) else { return }
             self?.onEncoded?(data, isKey, captureMicros)
         }
-        if status != noErr, key {
-            requestKeyframe()
+        if status != noErr {
+            failed(status)
+            if key { requestKeyframe() }
         }
+    }
+
+    private func succeeded() {
+        lock.lock()
+        failures = 0
+        lock.unlock()
+    }
+
+    private func failed(_ status: OSStatus) {
+        lock.lock()
+        failures += 1
+        let report = failures == 60
+        lock.unlock()
+        if report { onFailure?(status) }
     }
 }

@@ -272,13 +272,18 @@ impl HostHandle {
     }
 }
 
-/// Initial stream for an Extend session: the viewer's native resolution (even) and refresh rate
-/// (≤ 240 Hz), like a monitor plugged into the host.
+/// The largest picture H.264 can carry (level 5.1/5.2). Encoders reject bigger frames.
+pub const MAX_H264: (u32, u32) = (4096, 2304);
+
+/// Initial stream for an Extend session: the viewer's native resolution (even, scaled down to fit
+/// [`MAX_H264`]) and refresh rate (≤ 240 Hz), like a monitor plugged into the host.
 pub fn extend_stream_for(display: &DisplayInfo) -> StreamConfig {
+    let (w, h) = (display.width_px.max(2), display.height_px.max(2));
+    let k = (MAX_H264.0 as f64 / w as f64).min(MAX_H264.1 as f64 / h as f64).min(1.0);
     StreamConfig {
         codec: Codec::H264,
-        width: display.width_px.max(2) & !1,
-        height: display.height_px.max(2) & !1,
+        width: ((w as f64 * k).round() as u32).max(2) & !1,
+        height: ((h as f64 * k).round() as u32).max(2) & !1,
         fps: if display.refresh_hz == 0 { 60 } else { display.refresh_hz.clamp(24, 240) },
     }
 }
@@ -601,5 +606,30 @@ async fn run_session(
     tokio::select! {
         r = main => r,
         _ = reader_fut => unreachable!("reader future never completes"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn display(width_px: u32, height_px: u32) -> DisplayInfo {
+        DisplayInfo {
+            width_px,
+            height_px,
+            width_mm: 0,
+            height_mm: 0,
+            refresh_hz: 60,
+            scale_percent: 200,
+            refresh_rates: vec![],
+        }
+    }
+
+    #[test]
+    fn extend_stream_fits_h264() {
+        let s = extend_stream_for(&display(4480, 2520));
+        assert_eq!((s.width, s.height), (4096, 2304), "a 4.5K iMac is scaled down to what H.264 carries");
+        let s = extend_stream_for(&display(2880, 1801));
+        assert_eq!((s.width, s.height), (2880, 1800), "smaller screens keep their size");
     }
 }

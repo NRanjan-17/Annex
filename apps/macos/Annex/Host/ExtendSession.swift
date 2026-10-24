@@ -121,11 +121,17 @@ final class ExtendSession {
         return Plan(modes: modes, maxPixels: maxPixels, millimeters: mm, viewerPixels: (w, h), rates: rates)
     }
 
-    /// What to stream for a display mode: its pixels, scaled down to fit the viewer's screen.
+    /// The largest picture H.264 can carry (level 5.1/5.2): VideoToolbox rejects every frame of
+    /// a bigger one, such as a 4.5K iMac's 4480×2520.
+    nonisolated static let maxEncodeSize = (4096, 2304)
+
+    /// What to stream for a display mode: its pixels, scaled down to fit the viewer's screen and
+    /// what H.264 can carry.
     nonisolated static func streamSize(pixels: (Int, Int), viewer: (Int, Int)) -> (Int, Int) {
         let (pw, ph) = (max(pixels.0, 2), max(pixels.1, 2))
-        guard pw > viewer.0 || ph > viewer.1 else { return (pw & ~1, ph & ~1) }
-        let k = min(Double(viewer.0) / Double(pw), Double(viewer.1) / Double(ph))
+        let box = (min(viewer.0, maxEncodeSize.0), min(viewer.1, maxEncodeSize.1))
+        guard pw > box.0 || ph > box.1 else { return (pw & ~1, ph & ~1) }
+        let k = min(Double(box.0) / Double(pw), Double(box.1) / Double(ph))
         return (Int((Double(pw) * k).rounded()) & ~1, Int((Double(ph) * k).rounded()) & ~1)
     }
 
@@ -213,6 +219,12 @@ final class ExtendSession {
         if bitrateScale != 100 { enc.setBitrate(baseBitrate * bitrateScale / 100) }
         let (host, session) = (self.host, sessionID)
         enc.onEncoded = { data, key, ts in host.submit(data, session: session, captureMicros: ts, keyframe: key) }
+        enc.onFailure = { [weak self] status in
+            Task { @MainActor in
+                guard let self, gen == self.generation, !self.stopped else { return }
+                self.onError?("The video encoder couldn't encode the extended display (error \(status)).")
+            }
+        }
         encoder = enc
         let lastFrame = self.lastFrame
         capturer.onFrame = { [weak enc] pb in

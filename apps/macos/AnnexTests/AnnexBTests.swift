@@ -61,6 +61,8 @@ final class AnnexBTests: XCTestCase {
         // A scaled mode is drawn bigger than the viewer's screen and streamed at its size.
         XCTAssertTrue(ExtendSession.streamSize(pixels: (3072, 1728), viewer: (1920, 1080)) == (1920, 1080))
         XCTAssertTrue(ExtendSession.streamSize(pixels: (1280, 720), viewer: (1920, 1080)) == (1280, 720))
+        // A 4.5K iMac at 2x: more than H.264 can carry, so it's streamed at 4096×2304.
+        XCTAssertTrue(ExtendSession.streamSize(pixels: (4480, 2520), viewer: (4480, 2520)) == (4096, 2304))
         XCTAssertEqual(ExtendSession.serial(for: "deadbeef00"), 0xDEADBEEF)
         XCTAssertEqual(ExtendSession.serial(for: "zz"), 1)
     }

@@ -879,7 +879,7 @@ mod win_host {
         EncodedFrame, HostPipeline, HostPipelineConfig, Injector, Monitor, VirtualDisplayDriver, idd, monitor_size,
         stream_size,
     };
-    use annex_session::{Codec, DisplayInfo, Event, EventSink, HostConfig, HostHandle, Mode, StreamConfig};
+    use annex_session::{Codec, DisplayInfo, Event, EventSink, HostConfig, HostHandle, MAX_H264, Mode, StreamConfig};
 
     use crate::AnnexCore;
 
@@ -1001,7 +1001,9 @@ mod win_host {
             let gpu = self.mirror_cfg.gpu;
             let start = move |m: &Monitor| -> Option<(u32, u32)> {
                 let host = weak_host.upgrade()?;
-                let (w, h) = (m.width & !1, m.height & !1);
+                // The virtual monitor's size, within what H.264 can carry (a 4.5K or 5K viewer
+                // screen is bigger: the encoder would reject every frame).
+                let (w, h) = stream_size(m.width, m.height, MAX_H264.0, MAX_H264.1);
                 host.set_session_stream(id, StreamConfig { codec: Codec::H264, width: w, height: h, fps: hz });
                 let weak = weak_host.clone();
                 let output = Arc::new(move |f: EncodedFrame| {
