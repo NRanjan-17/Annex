@@ -1901,7 +1901,7 @@ public sealed partial class MainWindow : Window
         ShowFromTray(); // the dialog needs a visible window
         var box = new TextBox
         {
-            PlaceholderText = "123 456",
+            PlaceholderText = "******",
             MaxLength = 7,
             FontSize = 24,
             TextAlignment = TextAlignment.Center,

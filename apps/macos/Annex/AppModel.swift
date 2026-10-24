@@ -626,7 +626,7 @@ final class AppModel: ObservableObject {
         alert.informativeText = "Enter the PIN shown on \(req.peerName)."
             + (settings.showTechnicalDetails ? "\n\nIdentity code: \(req.fingerprintDisplay)" : "")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 160, height: 28))
-        field.placeholderString = "123 456"
+        field.placeholderString = "******"
         field.font = .monospacedDigitSystemFont(ofSize: 18, weight: .medium)
         field.alignment = .center
         alert.accessoryView = field
