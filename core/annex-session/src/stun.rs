@@ -101,6 +101,11 @@ impl<const N: usize> MapIndex<N> for [u8; N] {
 /// A Binding Success response reporting `addr` (what a STUN server sends; tests use it to stand in
 /// for one).
 pub fn binding_success(id: &TransactionId, addr: SocketAddr) -> Vec<u8> {
+    Message::new(BINDING_SUCCESS, *id).attr(ATTR_XOR_MAPPED_ADDRESS, xor_address(id, addr)).encode()
+}
+
+/// XOR-MAPPED-ADDRESS / XOR-PEER-ADDRESS / XOR-RELAYED-ADDRESS value.
+fn xor_address(id: &TransactionId, addr: SocketAddr) -> Vec<u8> {
     let (family, ip): (u8, Vec<u8>) = match addr.ip().to_canonical() {
         IpAddr::V4(ip) => (0x01, ip.octets().to_vec()),
         IpAddr::V6(ip) => (0x02, ip.octets().to_vec()),
@@ -110,11 +115,144 @@ pub fn binding_success(id: &TransactionId, addr: SocketAddr) -> Vec<u8> {
     let mut value = vec![0, family];
     value.extend(addr.port().to_be_bytes().iter().zip(&key).map(|(b, k)| b ^ k));
     value.extend(ip.iter().zip(&key).map(|(b, k)| b ^ k));
-    let mut m = header(BINDING_SUCCESS, 4 + value.len() as u16, id);
-    m.extend_from_slice(&ATTR_XOR_MAPPED_ADDRESS.to_be_bytes());
-    m.extend_from_slice(&(value.len() as u16).to_be_bytes());
-    m.extend_from_slice(&value);
-    m
+    value
+}
+
+// ---- TURN (RFC 8656): the little a relay client needs ------------------------------------------
+
+pub const ALLOCATE_REQUEST: u16 = 0x0003;
+pub const ALLOCATE_SUCCESS: u16 = 0x0103;
+pub const REFRESH_REQUEST: u16 = 0x0004;
+pub const CREATE_PERMISSION_REQUEST: u16 = 0x0008;
+pub const SEND_INDICATION: u16 = 0x0016;
+pub const DATA_INDICATION: u16 = 0x0017;
+/// The error-response class bits: a request's type | 0x0110.
+pub const ERROR_CLASS: u16 = 0x0110;
+
+pub const ATTR_USERNAME: u16 = 0x0006;
+pub const ATTR_MESSAGE_INTEGRITY: u16 = 0x0008;
+pub const ATTR_ERROR_CODE: u16 = 0x0009;
+pub const ATTR_LIFETIME: u16 = 0x000D;
+pub const ATTR_XOR_PEER_ADDRESS: u16 = 0x0012;
+pub const ATTR_DATA: u16 = 0x0013;
+pub const ATTR_REALM: u16 = 0x0014;
+pub const ATTR_NONCE: u16 = 0x0015;
+pub const ATTR_XOR_RELAYED_ADDRESS: u16 = 0x0016;
+pub const ATTR_REQUESTED_TRANSPORT: u16 = 0x0019;
+
+/// A STUN/TURN message being built.
+pub struct Message {
+    kind: u16,
+    id: TransactionId,
+    attrs: Vec<u8>,
+}
+
+impl Message {
+    pub fn new(kind: u16, id: TransactionId) -> Self {
+        Self { kind, id, attrs: Vec::new() }
+    }
+
+    pub fn attr(mut self, kind: u16, value: impl AsRef<[u8]>) -> Self {
+        let value = value.as_ref();
+        self.attrs.extend_from_slice(&kind.to_be_bytes());
+        self.attrs.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        self.attrs.extend_from_slice(value);
+        self.attrs.resize(self.attrs.len().next_multiple_of(4), 0);
+        self
+    }
+
+    pub fn peer(self, kind: u16, addr: SocketAddr) -> Self {
+        let id = self.id;
+        self.attr(kind, xor_address(&id, addr))
+    }
+
+    pub fn encode(self) -> Vec<u8> {
+        let mut m = header(self.kind, self.attrs.len() as u16, &self.id);
+        m.extend_from_slice(&self.attrs);
+        m
+    }
+
+    /// Ends with MESSAGE-INTEGRITY: HMAC-SHA1 under `key`, over the message up to that attribute
+    /// with the length already counting it (RFC 8489 §14.5).
+    pub fn encode_signed(self, key: &[u8; 16]) -> Vec<u8> {
+        let mut m = header(self.kind, (self.attrs.len() + 24) as u16, &self.id);
+        m.extend_from_slice(&self.attrs);
+        let tag = ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, key), &m);
+        m.extend_from_slice(&ATTR_MESSAGE_INTEGRITY.to_be_bytes());
+        m.extend_from_slice(&20u16.to_be_bytes());
+        m.extend_from_slice(tag.as_ref());
+        m
+    }
+}
+
+/// The long-term credential key: MD5(username ":" realm ":" password).
+pub fn long_term_key(username: &str, realm: &str, password: &str) -> [u8; 16] {
+    use md5::Digest;
+    md5::Md5::digest(format!("{username}:{realm}:{password}")).into()
+}
+
+/// Whether `packet` carries a MESSAGE-INTEGRITY that checks out under `key`.
+pub fn integrity_ok(packet: &[u8], key: &[u8; 16]) -> bool {
+    let Some(at) = attr_offset(packet, ATTR_MESSAGE_INTEGRITY) else { return false };
+    let mut signed = packet[..at].to_vec();
+    signed[2..4].copy_from_slice(&((at + 24 - HEADER) as u16).to_be_bytes());
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, key);
+    ring::hmac::verify(&key, &signed, &packet[at + 4..at + 24]).is_ok()
+}
+
+pub fn message_type(packet: &[u8]) -> Option<u16> {
+    is_stun(packet).then(|| u16::from_be_bytes([packet[0], packet[1]]))
+}
+
+fn attr_offset(packet: &[u8], want: u16) -> Option<usize> {
+    if !is_stun(packet) {
+        return None;
+    }
+    let mut at = HEADER;
+    while at + 4 <= packet.len() {
+        let kind = u16::from_be_bytes([packet[at], packet[at + 1]]);
+        let len = usize::from(u16::from_be_bytes([packet[at + 2], packet[at + 3]]));
+        packet.get(at + 4..at + 4 + len)?;
+        if kind == want {
+            return Some(at);
+        }
+        at += 4 + len.next_multiple_of(4);
+    }
+    None
+}
+
+/// An attribute's value.
+pub fn attribute(packet: &[u8], want: u16) -> Option<&[u8]> {
+    let at = attr_offset(packet, want)?;
+    let len = usize::from(u16::from_be_bytes([packet[at + 2], packet[at + 3]]));
+    packet.get(at + 4..at + 4 + len)
+}
+
+/// An XOR-…-ADDRESS attribute.
+pub fn xor_address_attr(packet: &[u8], want: u16) -> Option<SocketAddr> {
+    let a = decode_address(attribute(packet, want)?, Some(&packet[4..20]))?;
+    Some(SocketAddr::new(a.ip().to_canonical(), a.port()))
+}
+
+/// An error response's code (e.g. 401, 438).
+pub fn error_code(packet: &[u8]) -> Option<u16> {
+    let v = attribute(packet, ATTR_ERROR_CODE)?;
+    Some(u16::from(*v.get(2)? & 0x07) * 100 + u16::from(*v.get(3)?))
+}
+
+pub fn lifetime(packet: &[u8]) -> Option<u32> {
+    Some(u32::from_be_bytes(attribute(packet, ATTR_LIFETIME)?.try_into().ok()?))
+}
+
+/// A Data indication from the relay: who sent it, and what.
+pub fn data_indication(packet: &[u8]) -> Option<(SocketAddr, &[u8])> {
+    (message_type(packet)? == DATA_INDICATION)
+        .then(|| Some((xor_address_attr(packet, ATTR_XOR_PEER_ADDRESS)?, attribute(packet, ATTR_DATA)?)))?
+}
+
+/// A Send indication: `data` for the relay to pass to `peer`.
+pub fn send_indication(id: TransactionId, peer: SocketAddr, data: &[u8]) -> Vec<u8> {
+    Message::new(SEND_INDICATION, id).peer(ATTR_XOR_PEER_ADDRESS, peer).attr(ATTR_DATA, data).encode()
 }
 
 #[cfg(test)]
@@ -145,6 +283,58 @@ mod tests {
         // A v4 address seen on a dual-stack socket is reported as plain IPv4.
         let mapped: SocketAddr = "[::ffff:198.51.100.7]:9".parse().unwrap();
         assert_eq!(mapped_address(&binding_success(&ID, mapped)), Some("198.51.100.7:9".parse().unwrap()));
+    }
+
+    fn unhex(hex: &str) -> Vec<u8> {
+        let hex: String = hex.split_whitespace().collect();
+        (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn rfc5769_long_term_integrity() {
+        // RFC 5769 §2.4: a request with long-term authentication. Username "マトリックス",
+        // password "TheMatrIX" (after SASLprep), realm "example.org".
+        let msg = unhex(
+            "00010060 2112a442 78ad3433 c6ad72c0 29da412e
+             00060012 e3839ee3 8388e383 aae38383 e382afe3 82b90000
+             0015001c 662f2f34 39396b39 35346436 4f4c3334 6f4c3946 53547679 36347341
+             0014000b 6578616d 706c652e 6f726700
+             00080014 f6702465 6dd64a3e 02b8e071 2e85c9a2 8ca89666",
+        );
+        let key = long_term_key("マトリックス", "example.org", "TheMatrIX");
+        assert!(integrity_ok(&msg, &key));
+        assert!(!integrity_ok(&msg, &long_term_key("マトリックス", "example.org", "wrong")));
+        assert_eq!(attribute(&msg, ATTR_REALM), Some(&b"example.org"[..]));
+        // Rebuilding the same request gives the same bytes, signature included.
+        let id: TransactionId = msg[8..20].try_into().unwrap();
+        let rebuilt = Message::new(0x0001, id)
+            .attr(ATTR_USERNAME, "マトリックス")
+            .attr(ATTR_NONCE, "f//499k954d6OL34oL9FSTvy64sA")
+            .attr(ATTR_REALM, "example.org")
+            .encode_signed(&key);
+        assert_eq!(rebuilt, msg);
+    }
+
+    #[test]
+    fn turn_messages_round_trip() {
+        let peer: SocketAddr = "198.51.100.20:51234".parse().unwrap();
+        let send = send_indication(ID, peer, b"quic bytes");
+        assert_eq!(message_type(&send), Some(SEND_INDICATION));
+        assert_eq!(xor_address_attr(&send, ATTR_XOR_PEER_ADDRESS), Some(peer));
+        assert_eq!(attribute(&send, ATTR_DATA), Some(&b"quic bytes"[..]));
+        // The relay's Data indication carries the same attributes.
+        let mut data = send.clone();
+        data[1] = 0x17;
+        assert_eq!(data_indication(&data), Some((peer, &b"quic bytes"[..])));
+        assert_eq!(data_indication(&send), None);
+        let err = Message::new(ALLOCATE_REQUEST | ERROR_CLASS, ID).attr(ATTR_ERROR_CODE, [0, 0, 4, 1]).encode();
+        assert_eq!(error_code(&err), Some(401));
+        let ok = Message::new(ALLOCATE_SUCCESS, ID)
+            .peer(ATTR_XOR_RELAYED_ADDRESS, "[2001:db8::7]:3000".parse().unwrap())
+            .attr(ATTR_LIFETIME, 600u32.to_be_bytes())
+            .encode();
+        assert_eq!(xor_address_attr(&ok, ATTR_XOR_RELAYED_ADDRESS), Some("[2001:db8::7]:3000".parse().unwrap()));
+        assert_eq!(lifetime(&ok), Some(600));
     }
 
     #[test]

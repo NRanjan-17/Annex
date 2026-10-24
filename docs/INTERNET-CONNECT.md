@@ -1,7 +1,9 @@
 # Connecting over the internet without a VPN (proposal)
 
-**Status:** proposal, not built. Today the only way to reach a computer elsewhere is a mesh VPN;
-see [REMOTE.md](REMOTE.md).
+**Status:** the core, the rendezvous server and the relay fallback are built and tested on a
+simulated internet and against a local server (`feat/internet-connect`); the Mac and Windows
+screens aren't yet, and nothing has been tried between two real networks. Until it ships, the way
+to reach a computer elsewhere is a mesh VPN; see [REMOTE.md](REMOTE.md).
 
 ## The problem
 
@@ -191,8 +193,13 @@ Phase 1 without phase 2 is Option 2. It's a working stopping point if relay cost
 2. **Hosting:** Cloudflare Workers + Durable Objects for rendezvous, Cloudflare STUN, and
    Cloudflare TURN when the relay comes. Whose Cloudflare account is decided before release; built
    with the server address as a setting and tested with `wrangler dev`.
-3. **Phase 2:** later. The first release is phase 1 only (direct connections); about 1 network in
-   5 still needs Tailscale until the relay ships.
+3. **Phase 2:** ~~later~~ built with phase 1 (2026-10-25): the relay is used only when the
+   direct connection fails. Two kinds: the user's own TURN server (a setting on the sharing
+   computer, no limits), or ours, which is **off unless its TURN secrets are set** and capped at
+   8 logins a day, 2 per address, 30 minutes each, about 6 Mbit/s (worst case ~460 GB a month,
+   inside the free 1,000 GB). Turning ours on waits on confirming with Cloudflare that a no-card
+   account can't be billed past the free allowance. Details:
+   [server/rendezvous/README.md](../server/rendezvous/README.md).
 4. **Platforms:** Mac and Windows together.
 
 Decisions 2–4 made 2026-10-25.

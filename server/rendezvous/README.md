@@ -59,9 +59,52 @@ cargo run -p annex-cli -- viewer --code K7P-4QX --seconds 20
 ```
 
 The first time, the sharing computer prints a PIN and the viewer asks for it, as on a LAN. The
-viewer then prints a `session_started` line with `"link":"internet"`. If it times out, one
-of the networks probably blocks direct connections (some mobile and office networks do); those
-need the relay, which isn't built yet.
+viewer then prints a `session_started` line with `"link":"internet"`.
+
+If one of the networks blocks direct connections (some mobile and office networks do), the viewer
+gives up on direct after about 10 seconds and asks for the relay. With a relay available the
+session starts with `"link":"relayed"`; without one, it ends. To test with your own relay
+(e.g. [coturn](https://github.com/coturn/coturn)), add to the sharing computer's command:
+
+```sh
+--turn turn:relay.example.com:3478 --turn-user annex --turn-pass secret
+```
+
+## Turn on our relay (optional, off by default)
+
+The rendezvous server can hand out short-lived logins for Cloudflare's relay (TURN) to sharing
+computers that have no relay of their own. **Leave this off unless you have confirmed with
+Cloudflare that TURN usage over the free allowance can't be billed to your account.** Cloudflare's
+TURN pricing is 1,000 GB a month free, then $0.05/GB; whether an account with no card can go over
+is not stated in their docs.
+
+1. In the dashboard: **Realtime → TURN Server → Create**. Note the **Turn Token ID** and
+   **API Token**.
+2. Store them as secrets (never in `wrangler.jsonc`):
+   ```sh
+   npx wrangler secret put TURN_KEY_ID
+   npx wrangler secret put TURN_KEY_API_TOKEN
+   ```
+3. Check the limits in `wrangler.jsonc` (`vars`), then `npx wrangler deploy`.
+
+To turn it off again: `npx wrangler secret delete TURN_KEY_ID`.
+
+### How usage stays capped
+
+| Limit | Default | Effect |
+|---|---|---|
+| `RELAY_TTL_SECONDS` | 1800 | Each login works 30 minutes; then Cloudflare drops the session. |
+| `RELAY_PER_DAY` | 8 | Logins a day in total (UTC). After that, no relay until tomorrow. |
+| `RELAY_PER_IP_PER_DAY` | 2 | Logins a day per sharing computer's address. |
+| Bitrate (in the app) | ~6 Mbit/s | Sessions on our relay are held to about 6 Mbit/s, whatever the screen size. |
+
+Worst case with the defaults: 8 sessions × 30 minutes × 6 Mbit/s ≈ 11 GB a day, plus error
+correction (up to 40 %) ≈ 15 GB a day, about **460 GB a month**, under the 1,000 GB free allowance.
+If you raise a limit, redo this sum. Setting `RELAY_PER_DAY` to `0` turns the relay off without
+removing the secrets.
+
+The rendezvous server only issues the login; the session goes from the computers to Cloudflare's
+relay, encrypted end to end as always. The relay can't read it.
 
 ## Use your own domain (optional)
 
@@ -96,6 +139,7 @@ Sessions already connected aren't affected; they don't use the server.
 - Codes: 6 characters from 32 (no 0/O or 1/I), about a billion possibilities, 10 minutes, one use.
 - Per address: 30 codes an hour, 10 join attempts per 10 minutes (each attempt is a guess).
 - Messages: at most 2 KB, up to 8 addresses, names cut at 64 characters.
+- After a viewer joins, both stay connected 45 seconds at most, for one relay request.
 
 Change them at the top of `src/index.ts`.
 
@@ -131,4 +175,5 @@ CI runs all of this on every push (`.github/workflows/ci.yml`, job `rendezvous`)
 | `wrangler deploy` says Durable Objects need a paid plan | The class must be SQLite-backed (`new_sqlite_classes` in `wrangler.jsonc`, already set). If you changed the migration, put it back. |
 | `curl` works but Annex says it can't reach the server | Use `wss://`, not `https://`, and no path after the domain. |
 | "too many attempts" | 10 wrong codes from one address in 10 minutes. Wait, or check the code. |
-| The code works but the computers never connect | The server's job is done. One network blocks direct connections; see [INTERNET-CONNECT.md](../../docs/INTERNET-CONNECT.md). |
+| The code works but the computers never connect | One network blocks direct connections and no relay was available: set up your own (`--turn`), or turn on ours (above). |
+| "no relay available" on the sharing computer | Ours is off (no TURN secrets) or today's logins are used up. |

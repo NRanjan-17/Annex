@@ -20,7 +20,7 @@ use crate::clock::now_us;
 use crate::conn::{Incoming, Reader, Writer, check_hello, hello};
 use crate::events::{Event, EventSink, LinkKind};
 use crate::pairing::{PairContext, pair_as_host};
-use crate::punch::PunchSocket;
+use crate::punch::{PunchSocket, TurnServer};
 use crate::transport::{
     BoxRead, BoxWrite, Established, TransportKind, accept_quic, accept_tcp, is_link_local, quic_server_config,
 };
@@ -210,6 +210,20 @@ impl HostHandle {
         if let Some(udp) = &self.shared.udp {
             udp.punch(viewer);
         }
+    }
+
+    /// The viewer couldn't connect directly: gets an address on `relay` that forwards to this
+    /// host, open to the viewer's IP addresses. Hand it to the viewer through the rendezvous
+    /// server. `limited`: it's our relay (sessions through it are held to about 6 Mbit/s, and
+    /// end when its login expires), not one the user set up.
+    pub async fn relay(
+        &self,
+        relay: TurnServer,
+        viewer: Vec<std::net::IpAddr>,
+        limited: bool,
+    ) -> Result<SocketAddr, SessionError> {
+        let udp = self.shared.udp.as_ref().ok_or(SessionError::Violation("QUIC isn't available".into()))?;
+        Ok(udp.allocate_relay(relay, viewer, limited).await?)
     }
 
     /// Whether this host accepts Extend sessions (it can create virtual displays).
@@ -467,7 +481,10 @@ async fn handle_conn(est: Established, shared: Arc<Shared>, shutdown: watch::Rec
     let mut started = false;
     let link = Link {
         transport: kind,
-        kind: if shared.udp.as_ref().is_some_and(|u| u.was_punched(remote)) {
+        limited: shared.udp.as_ref().and_then(|u| u.relayed(remote)).unwrap_or(false),
+        kind: if shared.udp.as_ref().is_some_and(|u| u.relayed(remote).is_some()) {
+            LinkKind::Relayed
+        } else if shared.udp.as_ref().is_some_and(|u| u.was_punched(remote)) {
             LinkKind::Internet
         } else if is_link_local(&remote) {
             LinkKind::Direct
@@ -501,6 +518,8 @@ async fn handle_conn(est: Established, shared: Arc<Shared>, shutdown: watch::Rec
 struct Link {
     transport: TransportKind,
     kind: LinkKind,
+    /// Through our relay, which has usage limits: the session is held to about 6 Mbit/s.
+    limited: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -585,6 +604,7 @@ async fn run_session(
         }
     }
     *started = true;
+    let relay_ceiling = crate::rate::relay_ceiling(req.mode, &stream);
     (shared.events)(Event::SessionStarted {
         session_id: id,
         mode: req.mode,
@@ -624,7 +644,13 @@ async fn run_session(
         // so a `Bye` followed by EOF is reported as the `Bye` reason, not as "closed".
         std::future::pending::<()>().await
     };
-    let mut rate = crate::rate::RateController::new(req.quality);
+    let mut rate = if link.limited {
+        let ceiling = relay_ceiling;
+        tracing::info!(id, ceiling, "through our relay: bitrate limited");
+        crate::rate::RateController::with_ceiling(ceiling)
+    } else {
+        crate::rate::RateController::new(req.quality)
+    };
     if rate.scale_percent() != 100 {
         // The viewer chose a lower quality: start the encoder there rather than at 100 %.
         (shared.events)(Event::BitrateHint { session_id: id, scale_percent: rate.scale_percent() });

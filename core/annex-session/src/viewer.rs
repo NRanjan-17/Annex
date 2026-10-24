@@ -55,6 +55,10 @@ pub struct ViewerConfig {
 #[derive(Debug)]
 pub struct InternetSocket {
     udp: Arc<PunchSocket>,
+    /// Host addresses on a relay (the session there is "relayed", not "internet").
+    relayed: std::sync::Mutex<Vec<std::net::SocketAddr>>,
+    /// The rendezvous connection, kept open to ask for the relay if connecting directly fails.
+    fallback: std::sync::Mutex<Option<crate::rendezvous::Joined>>,
     /// QUIC on the socket from the start: its driver is what reads the socket, STUN answers included.
     endpoint: quinn::Endpoint,
 }
@@ -80,7 +84,22 @@ impl InternetSocket {
         let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime for QUIC"))?;
         let endpoint =
             quinn::Endpoint::new_with_abstract_socket(quinn::EndpointConfig::default(), None, udp.clone(), runtime)?;
-        Ok(Arc::new(Self { udp, endpoint }))
+        Ok(Arc::new(Self { udp, relayed: Default::default(), fallback: Default::default(), endpoint }))
+    }
+
+    /// If connecting directly fails, ask the sharing computer for its relay address through
+    /// `joined` (the rendezvous connection that introduced them), and connect there.
+    pub fn relay_fallback(&self, joined: crate::rendezvous::Joined) {
+        *self.fallback.lock().unwrap() = Some(joined);
+    }
+
+    /// `addrs` are the host's addresses on a relay (from the rendezvous server's relay answer).
+    #[doc(hidden)]
+    pub fn through_relay(&self, addrs: &[std::net::SocketAddr]) {
+        self.relayed
+            .lock()
+            .unwrap()
+            .extend(addrs.iter().map(|a| std::net::SocketAddr::new(a.ip().to_canonical(), a.port())));
     }
 
     /// On a given socket. Tests use it for a simulated network.
@@ -213,7 +232,10 @@ async fn run(
     if fp == core.fingerprint() {
         return Err(SessionError::Violation("host uses our own identity".into()));
     }
-    let link = if cfg.internet.is_some() {
+    let canonical = std::net::SocketAddr::new(remote.ip().to_canonical(), remote.port());
+    let link = if cfg.internet.as_ref().is_some_and(|n| n.relayed.lock().unwrap().contains(&canonical)) {
+        LinkKind::Relayed
+    } else if cfg.internet.is_some() {
         LinkKind::Internet
     } else if is_link_local(&remote) {
         LinkKind::Direct
@@ -544,9 +566,38 @@ async fn connect_internet(
     net: &InternetSocket,
     addrs: Vec<std::net::SocketAddr>,
 ) -> Result<Established, SessionError> {
-    let endpoint = &net.endpoint;
     // Also open this side's router towards the host, in case its first packets beat ours.
     net.udp.punch(addrs.clone());
+    let direct = race(core, cfg, &net.endpoint, addrs).await;
+    let joined = net.fallback.lock().unwrap().take();
+    let (Err(e), Some(joined)) = (&direct, joined) else {
+        // Connected (dropping the rendezvous connection ends the match), or no relay to ask.
+        return direct;
+    };
+    tracing::info!("couldn't connect directly ({e}); asking for the relay");
+    match joined.ask_relay().await {
+        Ok(Some(relayed)) if !relayed.is_empty() => {
+            net.through_relay(&relayed);
+            race(core, cfg, &net.endpoint, relayed).await
+        }
+        Ok(_) => {
+            tracing::info!("the sharing computer has no relay");
+            direct
+        }
+        Err(e) => {
+            tracing::info!("asking for the relay failed: {e}");
+            direct
+        }
+    }
+}
+
+/// Tries `addrs` a little apart; the first to connect wins.
+async fn race(
+    core: &Arc<Core>,
+    cfg: &ViewerConfig,
+    endpoint: &quinn::Endpoint,
+    addrs: Vec<std::net::SocketAddr>,
+) -> Result<Established, SessionError> {
     let mut tries = tokio::task::JoinSet::new();
     for (i, addr) in addrs.into_iter().enumerate() {
         let (core, endpoint, expected) = (core.clone(), endpoint.clone(), cfg.expected_fingerprint.clone());

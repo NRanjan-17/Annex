@@ -4,11 +4,21 @@
 //
 // Protocol v1 (JSON text frames over WebSocket):
 //   Sharing computer  GET /v1/host        ← {"type":"code","code":"K7P4QX","expires_in":600}
-//                                         → {"type":"hello","name":"…","addrs":["203.0.113.9:47800",…]}
+//                                         → {"type":"hello","name":"…","addrs":["203.0.113.9:47800",…],
+//                                            "own_relay":false}
 //                                         ← {"type":"peer","name":"…","addrs":[…]}   (a viewer joined)
 //                                         ← {"type":"expired"}                       (10 minutes passed)
 //   Viewer            GET /v1/join/K7P4QX → {"type":"join","name":"…","addrs":[…]}
 //                                         ← {"type":"peer","name":"…","addrs":[…]}
+// After the match both sockets stay open for MATCH_WINDOW, for the relay fallback:
+//   Viewer (direct failed)                → {"type":"need_relay"}
+//   Sharing computer                      ← {"type":"need_relay","turn":{"urls":[…],"username":"…",
+//                                            "credential":"…","ttl":1800}}   (or "turn":null)
+//                                         → {"type":"relay","addrs":["198.51.100.5:61000"]}
+//                                           (its relayed address; or {"type":"no_relay"})
+//   Viewer                                ← {"type":"relay","addrs":[…]}  or  {"type":"no_relay"}
+// "turn" is a short-lived login for our relay (Cloudflare TURN), only if the sharing computer has
+// no relay of its own ("own_relay"), the relay is configured, and the budget allows (see Budget).
 // A code works once. Unknown or used codes get HTTP 404 before the upgrade; too many attempts
 // from one address get 429. Clients keep the socket alive with WebSocket pings, which the
 // runtime answers without waking the Durable Object (so a waiting host costs nothing).
@@ -23,12 +33,19 @@ const CODE_LIFETIME_MS = 10 * 60_000;
 const HOST_LIMIT = { count: 30, windowMs: 60 * 60_000 };
 const JOIN_LIMIT = { count: 10, windowMs: 10 * 60_000 };
 const MAX_MESSAGE = 2048;
+/** How long both sides stay connected after the match, for a relay request. */
+const MATCH_WINDOW_MS = 45_000;
 const MAX_ADDRS = 8;
 const MAX_NAME = 64;
 
 interface Peer {
   name: string;
   addrs: string[];
+}
+
+interface HostInfo extends Peer {
+  ownRelay: boolean;
+  ip: string;
 }
 
 function newCode(): string {
@@ -44,21 +61,27 @@ export function normalizeCode(raw: string): string | null {
 
 const ADDR = /^(\d{1,3}(\.\d{1,3}){3}|\[[0-9a-fA-F:.]+\]):\d{1,5}$/;
 
-/** A message from a client: a name and up to 8 `ip:port` addresses. */
-export function parsePeer(message: string | ArrayBuffer, type: string): Peer | null {
+function parseObject(message: string | ArrayBuffer): Record<string, unknown> | null {
   if (typeof message !== "string" || message.length > MAX_MESSAGE) return null;
-  let m: unknown;
   try {
-    m = JSON.parse(message);
+    const m: unknown = JSON.parse(message);
+    return typeof m === "object" && m !== null ? (m as Record<string, unknown>) : null;
   } catch {
     return null;
   }
-  if (typeof m !== "object" || m === null) return null;
-  const { type: t, name, addrs } = m as Record<string, unknown>;
-  if (t !== type || typeof name !== "string" || !Array.isArray(addrs)) return null;
-  if (addrs.length === 0 || addrs.length > MAX_ADDRS) return null;
-  if (!addrs.every((a) => typeof a === "string" && ADDR.test(a))) return null;
-  return { name: name.slice(0, MAX_NAME), addrs: addrs as string[] };
+}
+
+function parseAddrs(addrs: unknown): string[] | null {
+  if (!Array.isArray(addrs) || addrs.length === 0 || addrs.length > MAX_ADDRS) return null;
+  return addrs.every((a) => typeof a === "string" && ADDR.test(a)) ? (addrs as string[]) : null;
+}
+
+/** A message from a client: a name and up to 8 `ip:port` addresses. */
+export function parsePeer(message: string | ArrayBuffer, type: string): Peer | null {
+  const m = parseObject(message);
+  if (!m || m.type !== type || typeof m.name !== "string") return null;
+  const addrs = parseAddrs(m.addrs);
+  return addrs ? { name: m.name.slice(0, MAX_NAME), addrs } : null;
 }
 
 function upgradePair(): [WebSocket, WebSocket] {
@@ -66,7 +89,8 @@ function upgradePair(): [WebSocket, WebSocket] {
   return [pair[0], pair[1]];
 }
 
-/** One code: the sharing computer waiting on it, until a viewer joins or it expires. */
+/** One code: the sharing computer waiting on it, until a viewer joins or it expires; then both
+ * for a short while, in case the viewer needs the relay. */
 export class CodeRoom extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const role = request.headers.get("X-Annex-Role");
@@ -75,13 +99,15 @@ export class CodeRoom extends DurableObject<Env> {
       if (await this.ctx.storage.get("code")) return new Response("code in use", { status: 409 });
       const [client, server] = upgradePair();
       this.ctx.acceptWebSocket(server, ["host"]);
-      await this.ctx.storage.put("code", code);
+      await this.ctx.storage.put({ code, ip: request.headers.get("CF-Connecting-IP") ?? "local" });
       await this.ctx.storage.setAlarm(Date.now() + CODE_LIFETIME_MS);
       server.send(JSON.stringify({ type: "code", code, expires_in: CODE_LIFETIME_MS / 1000 }));
       return new Response(null, { status: 101, webSocket: client });
     }
-    // A viewer: only once the host has said where it is.
-    if (!(await this.ctx.storage.get<Peer>("host"))) return new Response("unknown code", { status: 404 });
+    // A viewer: only once the host has said where it is, and only one.
+    if (!(await this.ctx.storage.get<HostInfo>("host")) || (await this.ctx.storage.get("matched"))) {
+      return new Response("unknown code", { status: 404 });
+    }
     const [client, server] = upgradePair();
     this.ctx.acceptWebSocket(server, ["viewer"]);
     return new Response(null, { status: 101, webSocket: client });
@@ -89,41 +115,141 @@ export class CodeRoom extends DurableObject<Env> {
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const [tag] = this.ctx.getTags(ws);
-    if (tag === "host") {
-      const hello = parsePeer(message, "hello");
-      if (!hello) return ws.close(4400, "bad message");
-      await this.ctx.storage.put("host", hello);
-      return;
-    }
+    const matched = await this.ctx.storage.get<boolean>("matched");
+    if (tag === "host") return matched ? this.fromHostAfterMatch(message) : this.hello(ws, message);
+    if (matched) return this.fromViewerAfterMatch(ws, message);
+    return this.join(ws, message);
+  }
+
+  private async hello(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    const hello = parsePeer(message, "hello");
+    if (!hello) return ws.close(4400, "bad message");
+    const ownRelay = parseObject(message)?.own_relay === true;
+    const ip = (await this.ctx.storage.get<string>("ip")) ?? "local";
+    await this.ctx.storage.put("host", { ...hello, ownRelay, ip } satisfies HostInfo);
+  }
+
+  private async join(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const join = parsePeer(message, "join");
-    const host = await this.ctx.storage.get<Peer>("host");
+    const host = await this.ctx.storage.get<HostInfo>("host");
     const [hostWs] = this.ctx.getWebSockets("host");
     if (!join) return ws.close(4400, "bad message");
     if (!host || !hostWs) return ws.close(4404, "unknown code");
-    // Single use: forget the code before telling anyone, so a second viewer can't join.
-    await this.forget();
-    ws.send(JSON.stringify({ type: "peer", ...host }));
+    // Single use: mark it before telling anyone, so a second viewer can't join.
+    await this.ctx.storage.put("matched", true);
+    await this.ctx.storage.setAlarm(Date.now() + MATCH_WINDOW_MS);
+    ws.send(JSON.stringify({ type: "peer", name: host.name, addrs: host.addrs }));
     hostWs.send(JSON.stringify({ type: "peer", ...join }));
-    ws.close(1000, "matched");
-    hostWs.close(1000, "matched");
+  }
+
+  private async fromViewerAfterMatch(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    const [hostWs] = this.ctx.getWebSockets("host");
+    if (parseObject(message)?.type !== "need_relay" || (await this.ctx.storage.get("asked"))) {
+      return ws.close(4400, "bad message");
+    }
+    if (!hostWs) return this.end("no_relay");
+    await this.ctx.storage.put("asked", true);
+    const host = await this.ctx.storage.get<HostInfo>("host");
+    const turn = host && !host.ownRelay ? await relayLogin(this.env, host.ip) : null;
+    hostWs.send(JSON.stringify({ type: "need_relay", turn }));
+  }
+
+  private async fromHostAfterMatch(message: string | ArrayBuffer): Promise<void> {
+    const m = parseObject(message);
+    const addrs = m?.type === "relay" ? parseAddrs(m.addrs) : null;
+    const [viewerWs] = this.ctx.getWebSockets("viewer");
+    if (addrs && viewerWs) viewerWs.send(JSON.stringify({ type: "relay", addrs }));
+    await this.end(addrs ? null : "no_relay");
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
-    if (this.ctx.getTags(ws)[0] === "host") await this.forget();
+    const [tag] = this.ctx.getTags(ws);
+    if (tag === "host") await this.end("no_relay");
+    // A viewer that goes away before matching leaves the code usable; after matching, it's done.
+    else if (await this.ctx.storage.get("matched")) await this.end(null);
   }
 
   async alarm(): Promise<void> {
-    for (const ws of this.ctx.getWebSockets()) {
-      ws.send(JSON.stringify({ type: "expired" }));
-      ws.close(4410, "expired");
-    }
-    await this.forget();
+    const matched = await this.ctx.storage.get("matched");
+    if (!matched) for (const ws of this.ctx.getWebSockets()) ws.send(JSON.stringify({ type: "expired" }));
+    await this.end(matched ? "no_relay" : null, matched ? 1000 : 4410);
   }
 
-  private async forget(): Promise<void> {
+  /** Tells whoever is still connected `notice` (if any), closes everything and forgets the code. */
+  private async end(notice: string | null, code = 1000): Promise<void> {
+    for (const ws of this.ctx.getWebSockets()) {
+      try {
+        if (notice) ws.send(JSON.stringify({ type: notice }));
+        ws.close(code, notice ?? "done");
+      } catch {
+        // Already closing.
+      }
+    }
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }
+}
+
+/** One relay login per day, per sharing computer's address and in total: a hard cap on what the
+ * relay can use (each login works for RELAY_TTL_SECONDS, then the relay drops the session). */
+export class Budget extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS logins (day TEXT NOT NULL, ip TEXT NOT NULL)");
+    });
+  }
+
+  /** Counts one login for `ip` today (UTC); false if either cap is reached. */
+  take(ip: string, perDay: number, perIpPerDay: number): boolean {
+    const day = new Date().toISOString().slice(0, 10);
+    this.ctx.storage.sql.exec("DELETE FROM logins WHERE day <> ?", day);
+    const count = (where: string, ...args: string[]) =>
+      this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM logins WHERE ${where}`, ...args).one().n;
+    if (count("day = ?", day) >= perDay || count("day = ? AND ip = ?", day, ip) >= perIpPerDay) return false;
+    this.ctx.storage.sql.exec("INSERT INTO logins (day, ip) VALUES (?, ?)", day, ip);
+    return true;
+  }
+}
+
+export interface TurnLogin {
+  urls: string[];
+  username: string;
+  credential: string;
+  ttl: number;
+}
+
+function numberVar(value: string | undefined, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/** A short-lived login for our relay, or null: relay not configured (no TURN key), or over budget. */
+/** Set with `wrangler secret put` (so not in wrangler.jsonc's types). Both unset: our relay is off. */
+type Secrets = { TURN_KEY_ID?: string; TURN_KEY_API_TOKEN?: string };
+
+export async function relayLogin(env: Env, ip: string, fetcher: typeof fetch = fetch): Promise<TurnLogin | null> {
+  const { TURN_KEY_ID, TURN_KEY_API_TOKEN } = env as Env & Secrets;
+  if (!TURN_KEY_ID || !TURN_KEY_API_TOKEN) return null;
+  const ttl = numberVar(env.RELAY_TTL_SECONDS, 1800);
+  const perDay = numberVar(env.RELAY_PER_DAY, 8);
+  const perIp = numberVar(env.RELAY_PER_IP_PER_DAY, 2);
+  if (ttl === 0 || !(await env.BUDGET.getByName("global").take(ip, perDay, perIp))) return null;
+  const response = await fetcher(
+    `https://rtc.live.cloudflare.com/v1/turn/keys/${TURN_KEY_ID}/credentials/generate-ice-servers`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TURN_KEY_API_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ttl }),
+    },
+  );
+  if (!response.ok) return null;
+  const body = (await response.json()) as { iceServers?: { urls: string[]; username?: string; credential?: string }[] };
+  const turn = body.iceServers?.find((s) => s.username && s.credential);
+  if (!turn?.username || !turn.credential) return null;
+  // UDP only: that's what the core's relay client speaks.
+  const urls = turn.urls.filter((u) => u.startsWith("turn:") && u.includes("transport=udp"));
+  return urls.length ? { urls, username: turn.username, credential: turn.credential, ttl } : null;
 }
 
 /** Sliding-window counters for one client address. */

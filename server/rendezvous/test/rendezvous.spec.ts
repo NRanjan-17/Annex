@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { normalizeCode, parsePeer } from "../src/index";
+import { normalizeCode, parsePeer, relayLogin } from "../src/index";
 
 /** A test client: opens a WebSocket on a path and queues what it receives. */
 async function open(path: string, ip = "198.51.100.7") {
@@ -94,6 +94,92 @@ describe("rendezvous", () => {
     again.send!({ type: "join", ...VIEWER });
     expect(await again.next!()).toEqual({ type: "peer", ...HOST });
     expect(await host.next!()).toEqual({ type: "peer", ...VIEWER });
+  });
+});
+
+describe("relay fallback", () => {
+  async function matched(hostIp: string, viewerIp: string) {
+    const { host, code } = await hostWithCode(hostIp);
+    const viewer = await open(`/v1/join/${code}`, viewerIp);
+    viewer.send!({ type: "join", ...VIEWER });
+    expect(await viewer.next!()).toEqual({ type: "peer", ...HOST });
+    expect(await host.next!()).toEqual({ type: "peer", ...VIEWER });
+    return { host, viewer, code };
+  }
+
+  it("passes a relay request to the host and its relayed address back", async () => {
+    const { host, viewer } = await matched("192.0.2.80", "192.0.2.81");
+    viewer.send!({ type: "need_relay" });
+    // No TURN key in tests, so no login from us; a host with its own relay still answers.
+    expect(await host.next!()).toEqual({ type: "need_relay", turn: null });
+    host.send!({ type: "relay", addrs: ["198.51.100.5:61000"] });
+    expect(await viewer.next!()).toEqual({ type: "relay", addrs: ["198.51.100.5:61000"] });
+  });
+
+  it("tells the viewer when the host has no relay", async () => {
+    const { host, viewer } = await matched("192.0.2.82", "192.0.2.83");
+    viewer.send!({ type: "need_relay" });
+    await host.next!();
+    host.send!({ type: "no_relay" });
+    expect(await viewer.next!()).toEqual({ type: "no_relay" });
+  });
+
+  it("closes the match window after its alarm", async () => {
+    const { viewer, code } = await matched("192.0.2.84", "192.0.2.85");
+    expect(await runDurableObjectAlarm(env.CODES.getByName(code))).toBe(true);
+    expect(await viewer.next!()).toEqual({ type: "no_relay" });
+  });
+});
+
+describe("relay budget", () => {
+  const cloudflare = (async () =>
+    Response.json(
+      {
+        iceServers: [
+          { urls: ["stun:stun.cloudflare.com:3478"] },
+          {
+            urls: ["turn:turn.cloudflare.com:3478?transport=udp", "turns:turn.cloudflare.com:5349?transport=tcp"],
+            username: "u",
+            credential: "c",
+          },
+        ],
+      },
+      { status: 201 },
+    )) as unknown as typeof fetch;
+
+  function configured(name: string, vars: Record<string, string> = {}) {
+    // A fresh Budget per test, so the counts don't carry over.
+    const budget = { getByName: () => env.BUDGET.getByName(name) };
+    return { ...env, BUDGET: budget, TURN_KEY_ID: "key", TURN_KEY_API_TOKEN: "token", ...vars } as unknown as Env;
+  }
+
+  it("is off without a TURN key", async () => {
+    expect(await relayLogin(env, "192.0.2.1", cloudflare)).toBeNull();
+  });
+
+  it("hands out UDP logins with the configured lifetime", async () => {
+    let asked: RequestInit | undefined;
+    const spy = (async (_url: string, init: RequestInit) => {
+      asked = init;
+      return cloudflare(_url, init);
+    }) as unknown as typeof fetch;
+    const login = await relayLogin(configured("budget-a"), "192.0.2.1", spy);
+    expect(login).toEqual({ urls: ["turn:turn.cloudflare.com:3478?transport=udp"], username: "u", credential: "c", ttl: 1800 });
+    expect(JSON.parse(asked!.body as string)).toEqual({ ttl: 1800 });
+  });
+
+  it("stops at the per-address and daily caps", async () => {
+    const e = configured("budget-b", { RELAY_PER_DAY: "3", RELAY_PER_IP_PER_DAY: "2" });
+    const got = [];
+    for (const ip of ["192.0.2.1", "192.0.2.1", "192.0.2.1", "192.0.2.2", "192.0.2.3"]) {
+      got.push((await relayLogin(e, ip, cloudflare)) !== null);
+    }
+    expect(got).toEqual([true, true, false, true, false]);
+  });
+
+  it("gives nothing if Cloudflare refuses", async () => {
+    const refuse = (async () => new Response("no", { status: 403 })) as unknown as typeof fetch;
+    expect(await relayLogin(configured("budget-c"), "192.0.2.1", refuse)).toBeNull();
   });
 });
 

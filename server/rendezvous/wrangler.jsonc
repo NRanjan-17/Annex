@@ -9,8 +9,21 @@
   "durable_objects": {
     "bindings": [
       { "name": "CODES", "class_name": "CodeRoom" },
-      { "name": "LIMITS", "class_name": "Limiter" }
+      { "name": "LIMITS", "class_name": "Limiter" },
+      { "name": "BUDGET", "class_name": "Budget" }
     ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CodeRoom", "Limiter"] }]
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["CodeRoom", "Limiter"] },
+    { "tag": "v2", "new_sqlite_classes": ["Budget"] }
+  ],
+  // Our relay (Cloudflare TURN). Off unless both secrets are set:
+  //   npx wrangler secret put TURN_KEY_ID
+  //   npx wrangler secret put TURN_KEY_API_TOKEN
+  // Worst case per day: RELAY_PER_DAY × RELAY_TTL_SECONDS of relayed video. See README.md.
+  "vars": {
+    "RELAY_TTL_SECONDS": "1800",
+    "RELAY_PER_DAY": "8",
+    "RELAY_PER_IP_PER_DAY": "2"
+  }
 }

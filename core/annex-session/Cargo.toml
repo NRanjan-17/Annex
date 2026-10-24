@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 annex-crypto = { path = "../annex-crypto" }
 annex-proto = { path = "../annex-proto" }
+md5 = { package = "md-5", version = "0.11.0" }
 ring = "0.17.14"
 rustls-platform-verifier = "0.7.1"
 quinn = { version = "0.11.12", default-features = false, features = ["rustls-ring", "runtime-tokio", "log"] }

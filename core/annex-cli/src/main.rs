@@ -8,7 +8,9 @@
 //! annex viewer <address | --code K7P-4QX> [--extend] [--dump file.h264] [--expect <fingerprint>] [--seconds N]
 //! ```
 //! Internet connections (`--internet`, `--code`) need `--rendezvous wss://…` (or `ANNEX_RENDEZVOUS`)
-//! and use `--stun host:port` (default stun.cloudflare.com:3478).
+//! and use `--stun host:port` (default stun.cloudflare.com:3478). If a direct connection isn't
+//! possible, the host gets an address on a relay: its own with `--turn turn:host:port --turn-user U
+//! --turn-pass P`, otherwise ours through the rendezvous server (time- and quality-limited).
 //! Common options: `--data-dir DIR` (default: a separate "Annex CLI" data folder), `--name NAME`,
 //! `--trust-all` (skip PIN pairing and accept anyone; for automated tests only).
 
@@ -200,6 +202,11 @@ async fn host(o: &mut Opts) {
     let synthetic = o.flag("--synthetic");
     let advertise = !o.flag("--no-advertise");
     let internet = o.flag("--internet").then(|| internet_opts(o));
+    let turn = o.value("--turn").map(|url| {
+        let user = o.value("--turn-user").unwrap_or_default();
+        let pass = o.value("--turn-pass").unwrap_or_default();
+        (url, user, pass)
+    });
     let (aus, codec, w, h) = match &replay {
         Some(p) => {
             let data = std::fs::read(p).unwrap_or_else(|e| die(&format!("{}: {e}", p.display())));
@@ -238,7 +245,7 @@ async fn host(o: &mut Opts) {
 
     let handle = Arc::new(handle);
     if let Some((server, stun)) = internet {
-        tokio::spawn(share_over_internet(handle.clone(), core.device_name(), server, stun));
+        tokio::spawn(share_over_internet(handle.clone(), core.device_name(), server, stun, turn));
     }
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / fps as f64));
@@ -290,19 +297,57 @@ async fn stun_addr(stun: &str) -> std::net::SocketAddr {
 }
 
 /// Shows a code, waits for a viewer, opens the router towards it; then a new code for the next.
-async fn share_over_internet(handle: Arc<HostHandle>, name: String, server: String, stun: String) {
+async fn share_over_internet(
+    handle: Arc<HostHandle>,
+    name: String,
+    server: String,
+    stun: String,
+    turn: Option<(String, String, String)>,
+) {
     let stun = stun_addr(&stun).await;
+    let own_relay = match turn {
+        Some((url, username, password)) => match rendezvous::turn_url_addr(&url).await {
+            Some(addr) => Some(TurnServer { addr, username, password }),
+            None => die(&format!("can't use the relay {url} (needs turn:host:port over UDP)")),
+        },
+        None => None,
+    };
     loop {
         let addrs = match handle.internet_candidates(stun).await {
             Ok(a) => a,
             Err(e) => die(&format!("couldn't find this computer's public address: {e}")),
         };
-        let waiting = rendezvous::host(&server, &name, &addrs).await.unwrap_or_else(|e| die(&e.to_string()));
+        let waiting =
+            rendezvous::host(&server, &name, &addrs, own_relay.is_some()).await.unwrap_or_else(|e| die(&e.to_string()));
         eprintln!("internet code: {}  (reachable at {addrs:?})", waiting.code());
         match waiting.wait().await {
-            Ok(peer) => {
+            Ok(mut matched) => {
+                let peer = matched.peer.clone();
                 eprintln!("\"{}\" is connecting from {:?}", peer.name, peer.addrs);
-                handle.punch(peer.addrs);
+                handle.punch(peer.addrs.clone());
+                let (handle, own_relay) = (handle.clone(), own_relay.clone());
+                tokio::spawn(async move {
+                    let Ok(Some(login)) = matched.relay_request().await else { return };
+                    let relay = match (own_relay, login) {
+                        (Some(own), _) => Some((own, false)),
+                        (None, Some(login)) => login.server().await.ok().map(|s| (s, true)),
+                        (None, None) => None,
+                    };
+                    let relayed = match relay {
+                        Some((relay, limited)) => {
+                            let ips = peer.addrs.iter().map(|a| a.ip()).collect();
+                            handle.relay(relay, ips, limited).await.inspect_err(|e| eprintln!("relay: {e}")).ok()
+                        }
+                        None => {
+                            eprintln!("no relay available (ours is off or used up for today)");
+                            None
+                        }
+                    };
+                    if let Some(a) = relayed {
+                        eprintln!("relaying through {a}");
+                    }
+                    let _ = matched.answer_relay(relayed).await;
+                });
             }
             Err(SessionError::Rejected(r)) if r == "code_expired" => eprintln!("the code expired"),
             Err(e) => die(&e.to_string()),
@@ -319,12 +364,14 @@ async fn viewer(o: &mut Opts) {
         (Some(code), Some((server, stun))) => {
             let socket = InternetSocket::bind().unwrap_or_else(|e| die(&e.to_string()));
             let addrs = socket.candidates(stun_addr(&stun).await).await.unwrap_or_else(|e| die(&e.to_string()));
-            let peer = rendezvous::join(&server, &code, &core.device_name(), &addrs)
+            let joined = rendezvous::join(&server, &code, &core.device_name(), &addrs)
                 .await
                 .unwrap_or_else(|e| die(&e.to_string()));
-            eprintln!("joining \"{}\" at {:?}", peer.name, peer.addrs);
+            let peer_addrs = joined.peer.addrs.clone();
+            eprintln!("joining \"{}\" at {:?}", joined.peer.name, peer_addrs);
+            socket.relay_fallback(joined);
             internet = Some(socket);
-            peer.addrs.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+            peer_addrs.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
         }
         _ => o.positional().unwrap_or_else(|| die("viewer <address> or viewer --code <code>")),
     };

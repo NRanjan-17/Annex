@@ -13,7 +13,7 @@
 
 use std::collections::VecDeque;
 
-use annex_proto::{Quality, ReceiverReport};
+use annex_proto::{Mode, Quality, ReceiverReport, StreamConfig};
 
 pub const MIN_SCALE: u32 = 20;
 pub const MAX_SCALE: u32 = 150;
@@ -48,6 +48,26 @@ pub fn quality_ceiling(q: Quality) -> u32 {
     }
 }
 
+/// Our relay's bitrate limit. With its login lifetime (30 minutes) that's at most about 1.4 GB a
+/// session, so the daily login cap keeps it inside Cloudflare's free relay allowance.
+pub const RELAY_BPS: u64 = 6_000_000;
+
+/// The apps' normal bitrate for a stream (macOS `HostController` and `ExtendSession`, and their
+/// Windows twins, use the same formulas).
+pub fn nominal_bps(mode: Mode, s: &StreamConfig) -> u64 {
+    let (w, h, fps) = (u64::from(s.width), u64::from(s.height), u64::from(s.fps));
+    match mode {
+        Mode::Mirror => (w * h * fps / 10).max(4_000_000),
+        Mode::Extend => (w * h * (fps.min(60) + fps.saturating_sub(60) / 2) / 8).max(6_000_000),
+    }
+}
+
+/// The ceiling on our relay: [`RELAY_BPS`], and never above Fast.
+pub fn relay_ceiling(mode: Mode, s: &StreamConfig) -> u32 {
+    let percent = RELAY_BPS * 100 / nominal_bps(mode, s).max(1);
+    (percent as u32).clamp(1, quality_ceiling(Quality::Fast))
+}
+
 /// What changed after a report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateDecision {
@@ -60,6 +80,11 @@ pub struct RateDecision {
 impl RateController {
     pub fn new(quality: Quality) -> Self {
         let ceiling = quality_ceiling(quality);
+        RateController { scale: ceiling.min(100), fec: 15, recent_rtt_us: VecDeque::new(), ceiling }
+    }
+
+    /// Capped at `ceiling` percent (e.g. [`relay_ceiling`]), which may be below [`MIN_SCALE`].
+    pub fn with_ceiling(ceiling: u32) -> Self {
         RateController { scale: ceiling.min(100), fec: 15, recent_rtt_us: VecDeque::new(), ceiling }
     }
 
@@ -92,10 +117,10 @@ impl RateController {
         }
 
         if r.lost > 0 || shard_loss > 0.05 || rtt_congested {
-            self.scale = (self.scale * 4 / 5).max(MIN_SCALE);
+            self.scale = (self.scale * 4 / 5).max(MIN_SCALE.min(self.ceiling));
             self.fec = (self.fec + 5).min(MAX_FEC);
         } else if rtt_rising {
-            self.scale = (self.scale * 9 / 10).max(MIN_SCALE);
+            self.scale = (self.scale * 9 / 10).max(MIN_SCALE.min(self.ceiling));
         } else if shard_loss > 0.02 {
             self.fec = (self.fec + 2).min(MAX_FEC);
         } else if r.frames > 0 {
@@ -112,6 +137,26 @@ mod tests {
 
     fn report(frames: u32, lost: u32, shards: u32, recovered: u32, rtt_us: u32) -> ReceiverReport {
         ReceiverReport { frames, lost, shards, recovered, rtt_us }
+    }
+
+    #[test]
+    fn our_relay_holds_about_6_mbit() {
+        let s = |width, height, fps| StreamConfig { codec: annex_proto::Codec::H264, width, height, fps };
+        // 720p mirror is under the limit even at Fast.
+        assert_eq!(relay_ceiling(Mode::Mirror, &s(1280, 720, 60)), 55);
+        // 4K Extend at 60 Hz: ~62 Mbit/s normally, 9 % of that on the relay.
+        let big = s(3840, 2160, 60);
+        let c = relay_ceiling(Mode::Extend, &big);
+        assert_eq!(c, 9);
+        assert!(nominal_bps(Mode::Extend, &big) * u64::from(c) / 100 <= RELAY_BPS);
+        // Loss can't push it back up to the usual floor.
+        let mut r = RateController::with_ceiling(c);
+        r.on_report(&report(10, 1, 100, 0, 0));
+        assert!(r.scale_percent() <= c);
+        for _ in 0..20 {
+            r.on_report(&report(10, 0, 100, 0, 0));
+        }
+        assert_eq!(r.scale_percent(), c);
     }
 
     #[test]

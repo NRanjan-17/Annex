@@ -1,10 +1,11 @@
 //! Internet connections through a simulated internet: each computer sits behind its own home
-//! router (NAT), and a STUN server tells each one its public address. Nothing touches the real
-//! network, so the routers behave exactly as configured, every run.
+//! router (NAT), a STUN server tells each one its public address, and a TURN server relays when
+//! the routers won't allow a direct path. Nothing touches the real network, so the routers behave
+//! exactly as configured, every run.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, IoSliceMut};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
@@ -16,6 +17,9 @@ use quinn::{AsyncUdpSocket, UdpPoller};
 use tokio::sync::mpsc;
 
 const STUN: &str = "198.51.100.1:3478";
+const TURN: &str = "198.51.100.2:3478";
+const TURN_USER: &str = "annex";
+const TURN_PASS: &str = "s3cret";
 
 /// How a router maps and filters, the two kinds that matter for punching.
 #[derive(Clone, Copy)]
@@ -213,6 +217,105 @@ fn stun_server(net: &Arc<Net>) {
     });
 }
 
+/// A relay socket, and the IPs allowed to send to it.
+type Allocation = (Arc<SimSocket>, Arc<Mutex<HashSet<IpAddr>>>);
+
+/// A TURN server (RFC 8656) on the simulated internet: the parts a relay client uses, with a
+/// long-term login (realm "annex.test").
+fn turn_server(net: &Arc<Net>) {
+    let sock = net.socket(TURN, None);
+    let weak = Arc::downgrade(net);
+    let key = stun::long_term_key(TURN_USER, "annex.test", TURN_PASS);
+    tokio::spawn(async move {
+        // client address → (its relay socket, IPs allowed to send to it)
+        let allocations: Arc<Mutex<HashMap<SocketAddr, Allocation>>> = Arc::default();
+        let mut next_port = 50000u16;
+        loop {
+            let (client, data) = sock.recv().await;
+            let Some(net) = weak.upgrade() else { return };
+            let (Some(kind), Some(id)) = (stun::message_type(&data), stun::transaction_id(&data)) else { continue };
+            let reply = |m: stun::Message| net.send(sock.addr, client, &m.encode_signed(&key));
+            if kind == stun::SEND_INDICATION {
+                let allocs = allocations.lock().unwrap();
+                if let (Some((relay, allowed)), Some(peer), Some(payload)) = (
+                    allocs.get(&client),
+                    stun::xor_address_attr(&data, stun::ATTR_XOR_PEER_ADDRESS),
+                    stun::attribute(&data, stun::ATTR_DATA),
+                ) && allowed.lock().unwrap().contains(&peer.ip())
+                {
+                    net.send(relay.addr, peer, payload);
+                }
+                continue;
+            }
+            if !stun::integrity_ok(&data, &key) {
+                // No or wrong login: ask for one (wrong logins fail again the same way).
+                let m = stun::Message::new(kind | stun::ERROR_CLASS, id)
+                    .attr(stun::ATTR_ERROR_CODE, [0, 0, 4, 1])
+                    .attr(stun::ATTR_REALM, "annex.test")
+                    .attr(stun::ATTR_NONCE, "nonce-1");
+                net.send(sock.addr, client, &m.encode());
+                continue;
+            }
+            match kind {
+                stun::ALLOCATE_REQUEST => {
+                    next_port += 1;
+                    let relayed: SocketAddr = format!("198.51.100.2:{next_port}").parse().unwrap();
+                    let relay = net.socket(&relayed.to_string(), None);
+                    let allowed = Arc::new(Mutex::new(HashSet::new()));
+                    allocations.lock().unwrap().insert(client, (relay.clone(), allowed.clone()));
+                    // Packets to the relayed address go to the client, from permitted IPs only.
+                    let (weak, server) = (weak.clone(), sock.addr);
+                    tokio::spawn(async move {
+                        loop {
+                            let (from, payload) = relay.recv().await;
+                            let Some(net) = weak.upgrade() else { return };
+                            if allowed.lock().unwrap().contains(&from.ip()) {
+                                let m = stun::Message::new(stun::DATA_INDICATION, [9; 12])
+                                    .peer(stun::ATTR_XOR_PEER_ADDRESS, from)
+                                    .attr(stun::ATTR_DATA, &payload);
+                                net.send(server, client, &m.encode());
+                            }
+                        }
+                    });
+                    reply(
+                        stun::Message::new(stun::ALLOCATE_SUCCESS, id)
+                            .peer(stun::ATTR_XOR_RELAYED_ADDRESS, relayed)
+                            .attr(stun::ATTR_LIFETIME, 600u32.to_be_bytes()),
+                    );
+                }
+                stun::CREATE_PERMISSION_REQUEST => {
+                    if let Some((_, allowed)) = allocations.lock().unwrap().get(&client) {
+                        for p in peer_addresses(&data) {
+                            allowed.lock().unwrap().insert(p.ip());
+                        }
+                    }
+                    reply(stun::Message::new(kind | 0x0100, id));
+                }
+                _ => reply(stun::Message::new(kind | 0x0100, id)),
+            }
+        }
+    });
+}
+
+/// All XOR-PEER-ADDRESS attributes of a message (a permission request may carry several).
+fn peer_addresses(packet: &[u8]) -> Vec<SocketAddr> {
+    let mut out = Vec::new();
+    let mut at = 20;
+    while at + 4 <= packet.len() {
+        let kind = u16::from_be_bytes([packet[at], packet[at + 1]]);
+        let len = usize::from(u16::from_be_bytes([packet[at + 2], packet[at + 3]]));
+        if kind == stun::ATTR_XOR_PEER_ADDRESS {
+            // Rebuild a one-attribute message to decode it with the library's XOR rules.
+            let mut one = packet[..20].to_vec();
+            one[2..4].copy_from_slice(&((4 + len.next_multiple_of(4)) as u16).to_be_bytes());
+            one.extend_from_slice(&packet[at..at + 4 + len.next_multiple_of(4)]);
+            out.extend(stun::xor_address_attr(&one, stun::ATTR_XOR_PEER_ADDRESS));
+        }
+        at += 4 + len.next_multiple_of(4);
+    }
+    out
+}
+
 fn core(name: &str) -> Arc<Core> {
     Core::ephemeral(name, TrustPolicy::AcceptAllInsecure).unwrap()
 }
@@ -227,7 +330,7 @@ fn sink() -> (EventSink, mpsc::UnboundedReceiver<Event>) {
     )
 }
 
-async fn next_matching(rx: &mut mpsc::UnboundedReceiver<Event>, pred: impl Fn(&Event) -> bool) -> Option<Event> {
+async fn next_matching(rx: &mut mpsc::UnboundedReceiver<Event>, mut pred: impl FnMut(&Event) -> bool) -> Option<Event> {
     tokio::time::timeout(Duration::from_secs(15), async {
         while let Some(e) = rx.recv().await {
             if pred(&e) {
@@ -253,12 +356,35 @@ fn display() -> DisplayInfo {
     }
 }
 
-/// Runs what the rendezvous server will arrange: each side learns its public address from STUN,
-/// they swap candidates, the host punches, the viewer connects. Returns the host's and the
+/// Which relay the host uses, when it uses one.
+#[derive(Clone, Copy, PartialEq)]
+enum Relay {
+    /// No relay: direct or nothing.
+    None,
+    /// One the user set up (no limits).
+    Own,
+    /// Ours, from the rendezvous server (limited to about 6 Mbit/s).
+    Ours,
+    /// The user's, with the wrong password.
+    WrongLogin,
+}
+
+struct Outcome {
+    host: Option<Event>,
+    viewer: Option<Event>,
+    frames: usize,
+    /// The bitrate scale the host's encoder was told to start at (100 if never told).
+    host_scale: u32,
+}
+
+/// Runs what the rendezvous server arranges: each side learns its public address from STUN,
+/// they swap candidates, the host punches, the viewer connects (to the host's relay address, if
+/// `relay` is set: what happens after a direct attempt fails). Returns the host's and the
 /// viewer's events once the session has started or the viewer gave up.
-async fn connect_across(host_nat: Nat, viewer_nat: Nat) -> (Option<Event>, Option<Event>, usize) {
+async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome {
     let net = Arc::new(Net::default());
     stun_server(&net);
+    turn_server(&net);
     let home = net.router(host_nat, "203.0.113.10");
     let away = net.router(viewer_nat, "203.0.113.20");
     let stun_addr: SocketAddr = STUN.parse().unwrap();
@@ -277,7 +403,32 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat) -> (Option<Event>, Optio
 
     let viewer_sock = InternetSocket::with_socket(net.socket("192.168.1.5:50000", Some(away))).unwrap();
     let viewer_candidates = viewer_sock.candidates(stun_addr).await.unwrap();
-    host.punch(viewer_candidates);
+    host.punch(viewer_candidates.clone());
+    let mut address = host_candidates.iter().map(ToString::to_string).collect::<Vec<_>>().join(",");
+    if relay != Relay::None {
+        let login = TurnServer {
+            addr: TURN.parse().unwrap(),
+            username: TURN_USER.into(),
+            password: if relay == Relay::WrongLogin { "wrong".into() } else { TURN_PASS.into() },
+        };
+        let ips = viewer_candidates.iter().map(|a| a.ip()).collect();
+        match host.relay(login, ips, relay == Relay::Ours).await {
+            Ok(relayed) => {
+                assert_eq!(relayed.ip().to_string(), "198.51.100.2", "an address on the relay");
+                viewer_sock.through_relay(&[relayed]);
+                address = relayed.to_string();
+            }
+            Err(e) => {
+                host.stop().await;
+                return Outcome {
+                    host: None,
+                    viewer: Some(Event::Error { message: e.to_string() }),
+                    frames: 0,
+                    host_scale: 100,
+                };
+            }
+        }
+    }
 
     let frames = Arc::new(Mutex::new(0usize));
     let counted = frames.clone();
@@ -285,7 +436,7 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat) -> (Option<Event>, Optio
     let viewer = connect_viewer(
         core("Viewer"),
         ViewerConfig {
-            address: host_candidates.iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
+            address,
             display: display(),
             codecs: vec![Codec::H264],
             expected_fingerprint: None,
@@ -300,6 +451,7 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat) -> (Option<Event>, Optio
     );
     let viewer_event =
         next_matching(&mut vrx, |e| matches!(e, Event::SessionStarted { .. } | Event::SessionEnded { .. })).await;
+    let mut host_scale = 100;
     let host_event = match viewer_event {
         Some(Event::SessionStarted { .. }) => {
             let started = next_matching(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
@@ -308,6 +460,13 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat) -> (Option<Event>, Optio
                 tokio::time::sleep(Duration::from_millis(16)).await;
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
+            // The encoder's starting rate is set just after the session starts.
+            while let Ok(e) = hrx.try_recv() {
+                if let Event::BitrateHint { scale_percent, .. } = e {
+                    host_scale = scale_percent;
+                    break;
+                }
+            }
             started
         }
         _ => None,
@@ -315,21 +474,49 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat) -> (Option<Event>, Optio
     let delivered = *frames.lock().unwrap();
     viewer.disconnect().await;
     host.stop().await;
-    (host_event, viewer_event, delivered)
+    Outcome { host: host_event, viewer: viewer_event, frames: delivered, host_scale }
+}
+
+fn started(e: &Option<Event>) -> (LinkKind, TransportKind) {
+    match e {
+        Some(Event::SessionStarted { link, transport, .. }) => (*link, *transport),
+        other => panic!("expected a session, got {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn two_home_routers_connect_directly() {
-    let (host, viewer, frames) = connect_across(Nat::PortRestricted, Nat::PortRestricted).await;
-    let Some(Event::SessionStarted { link, transport, .. }) = viewer else { panic!("viewer: {viewer:?}") };
-    assert_eq!((link, transport), (LinkKind::Internet, TransportKind::Quic));
-    let Some(Event::SessionStarted { link, .. }) = host else { panic!("host: {host:?}") };
-    assert_eq!(link, LinkKind::Internet, "the host knows the session came over the internet");
-    assert!(frames >= 15, "only {frames} of 20 frames arrived");
+    let o = connect_across(Nat::PortRestricted, Nat::PortRestricted, Relay::None).await;
+    assert_eq!(started(&o.viewer), (LinkKind::Internet, TransportKind::Quic));
+    assert_eq!(started(&o.host).0, LinkKind::Internet, "the host knows the session came over the internet");
+    assert!(o.frames >= 15, "only {} of 20 frames arrived", o.frames);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_symmetric_router_needs_the_relay() {
-    let (_, viewer, _) = connect_across(Nat::Symmetric, Nat::PortRestricted).await;
-    assert!(matches!(viewer, Some(Event::SessionEnded { .. })), "expected no direct connection, got {viewer:?}");
+    let o = connect_across(Nat::Symmetric, Nat::PortRestricted, Relay::None).await;
+    assert!(matches!(o.viewer, Some(Event::SessionEnded { .. })), "expected no direct connection, got {:?}", o.viewer);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_relay_connects_two_symmetric_routers() {
+    let o = connect_across(Nat::Symmetric, Nat::Symmetric, Relay::Own).await;
+    assert_eq!(started(&o.viewer), (LinkKind::Relayed, TransportKind::Quic));
+    assert_eq!(started(&o.host).0, LinkKind::Relayed);
+    assert!(o.frames >= 15, "only {} of 20 frames arrived", o.frames);
+    assert_eq!(o.host_scale, 100, "the user's own relay has no quality limit");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn our_relay_keeps_sessions_to_fast_quality() {
+    let o = connect_across(Nat::Symmetric, Nat::PortRestricted, Relay::Ours).await;
+    assert_eq!(started(&o.host).0, LinkKind::Relayed);
+    assert_eq!(o.host_scale, 55, "held to Fast (6 Mbit/s is more than 720p needs)");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wrong_relay_login_is_refused() {
+    let o = connect_across(Nat::Symmetric, Nat::Symmetric, Relay::WrongLogin).await;
+    let Some(Event::Error { message }) = &o.viewer else { panic!("got {:?}", o.viewer) };
+    assert!(message.contains("refused the login"), "{message}");
 }

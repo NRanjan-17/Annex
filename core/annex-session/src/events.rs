@@ -14,6 +14,8 @@ pub enum LinkKind {
     Network,
     /// "internet": across the internet, found through the rendezvous server.
     Internet,
+    /// "relayed": across the internet through a relay (TURN), when a direct path wasn't possible.
+    Relayed,
 }
 
 use crate::LatencyStats;
