@@ -90,7 +90,8 @@ building:
 
 Written 2026-10-25 against the core as it is: QUIC (quinn) with self-signed Ed25519 identities,
 certificate pinning and PIN pairing bound to the TLS exporter (`core/annex-session/src/transport.rs`).
-Nothing here is built. It needs a yes on "Conflict with the plan" first.
+Nothing here is built. Decision 1 is made (2026-10-25): the "no servers" rule is dropped for this
+opt-in feature, and PLAN.md says so.
 
 ### What the user sees
 
@@ -171,12 +172,12 @@ Phase 1 without phase 2 is Option 2. It's a working stopping point if relay cost
 
 ### Decisions needed
 
-1. **Change the "no servers" rule?** Yes or no; the rest waits on it.
+1. ~~**Change the "no servers" rule?**~~ **Yes** (2026-10-25). PLAN.md updated.
 2. **Who runs and pays for the server**, and in which region.
 3. **Phase 2 now or later.** Without it, about 1 network in 5 still needs Tailscale.
 4. **Windows at launch**, or Mac first. Plan above assumes both, which adds about 2 days.
 
 ## Next step
 
-Answer decision 1. Separately, test the Tailscale route end to end between two Macs on different
+Answer decisions 2–4, then build phase 1. Separately, test the Tailscale route end to end between two Macs on different
 networks and note the delay; REMOTE.md's Status section says it hasn't been tested yet.
