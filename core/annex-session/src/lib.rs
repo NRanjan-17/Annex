@@ -12,6 +12,7 @@ mod host;
 mod pairing;
 mod punch;
 pub mod rate;
+pub mod rendezvous;
 pub mod stats;
 #[doc(hidden)]
 pub mod stun;

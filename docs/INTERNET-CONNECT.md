@@ -115,6 +115,12 @@ opt-in feature, and PLAN.md says so.
   would hold two different TLS sessions, so the PINs wouldn't match.
 - The code itself only finds the computer. Guessing one gets a stranger to the PIN prompt, not the
   screen; the server also limits code attempts per address.
+- **What the other computer learns:** the public address of your internet connection (and your
+  public IPv6 address, if you have one), as soon as it uses your code, before the PIN. That
+  shows your rough location and provider, not your street. Your home-network (LAN) addresses
+  aren't sent. Share codes only with people you mean to connect to. A wrong guess is very
+  unlikely: about a billion codes, 10 tries per 10 minutes per address, 10-minute lifetime. Using
+  the relay for every session would hide your address (later, with the relay).
 - The server sees: both public addresses, a hash of each computer's identity, when sessions start
   and end, and on the relay how many bytes passed. Never content. This list goes into SECURITY.md.
 

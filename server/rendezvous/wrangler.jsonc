@@ -1,0 +1,16 @@
+// Annex rendezvous (see docs/INTERNET-CONNECT.md). Fits the Workers Free plan: SQLite-backed
+// Durable Objects, and the waiting host's WebSocket hibernates between messages.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "annex-rendezvous",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [
+      { "name": "CODES", "class_name": "CodeRoom" },
+      { "name": "LIMITS", "class_name": "Limiter" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CodeRoom", "Limiter"] }]
+}

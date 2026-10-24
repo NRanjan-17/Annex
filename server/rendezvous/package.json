@@ -1,0 +1,22 @@
+{
+  "name": "annex-rendezvous",
+  "private": true,
+  "type": "module",
+  "description": "Annex's rendezvous server: matches a sharing computer's code with a viewer and swaps their addresses.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types",
+    "test": "vitest run",
+    "check": "wrangler types && tsc --noEmit && tsc --noEmit -p test"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "1.4.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.11",
+    "wrangler": "4.149.0"
+  },
+  "allowScripts": {
+    "workerd@1.20261006.1": true
+  }
+}

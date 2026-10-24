@@ -209,15 +209,43 @@ impl AsyncUdpSocket for PunchSocket {
     }
 }
 
-/// This computer's own addresses with `port`: its main LAN address, and its main IPv6 address
-/// (often public, so two IPv6 homes need no punching at all). Found by asking the system which
-/// address it would use towards the internet; nothing is sent.
+/// This computer's own public address with `port`, if it has one: its main IPv6 address when
+/// that's global (two IPv6 homes then need no punching at all). Private, link-local and LAN
+/// addresses are left out: computers on the same network find each other through Nearby, and
+/// they'd tell the other side about this home network for nothing. Found by asking the system
+/// which address it would use towards the internet; nothing is sent.
 pub fn own_addresses(port: u16) -> Vec<SocketAddr> {
-    let probe = |bind: &str, towards: &str| -> Option<SocketAddr> {
-        let s = UdpSocket::bind(bind).ok()?;
-        s.connect(towards).ok()?;
-        let ip = s.local_addr().ok()?.ip();
-        (!ip.is_unspecified() && !ip.is_loopback()).then_some(SocketAddr::new(ip, port))
-    };
-    [probe("0.0.0.0:0", "192.0.2.1:9"), probe("[::]:0", "[2001:db8::1]:9")].into_iter().flatten().collect()
+    let s = UdpSocket::bind("[::]:0").ok();
+    let ip = s.and_then(|s| s.connect("[2001:db8::1]:9").ok().and(s.local_addr().ok())).map(|a| a.ip());
+    match ip {
+        Some(IpAddr::V6(v6)) if is_global_v6(&v6) => vec![SocketAddr::new(IpAddr::V6(v6), port)],
+        _ => Vec::new(),
+    }
+}
+
+/// Global unicast (2000::/3), minus the documentation range 2001:db8::/32. Excludes link-local,
+/// unique-local and mapped IPv4.
+fn is_global_v6(ip: &std::net::Ipv6Addr) -> bool {
+    let s = ip.segments();
+    s[0] & 0xe000 == 0x2000 && !(s[0] == 0x2001 && s[1] == 0x0db8)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_global_ipv6_counts_as_public() {
+        for (ip, global) in [
+            ("2a02:8070:1::5", true),
+            ("2001:4860::8888", true),
+            ("2001:db8::1", false),
+            ("fe80::1", false),
+            ("fd12:3456::1", false),
+            ("::ffff:192.168.1.5", false),
+            ("::1", false),
+        ] {
+            assert_eq!(is_global_v6(&ip.parse().unwrap()), global, "{ip}");
+        }
+    }
 }
