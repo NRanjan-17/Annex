@@ -27,6 +27,18 @@ final class UpdateTests: XCTestCase {
         XCTAssertEqual(Updater.headline(beta), "Annex 99.1.0-pre.1 is available. It's a pre-release.")
     }
 
+    /// Until the user flips Beta updates, it follows what's installed; once flipped, their choice sticks.
+    @MainActor
+    func testBetaUpdatesFollowsInstalledVersionUntilChosen() throws {
+        let suite = "annex-beta-test-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertEqual(AppSettings(defaults: defaults).betaUpdates, AppSettings.runningBeta)
+        let settings = AppSettings(defaults: defaults)
+        settings.betaUpdates = !AppSettings.runningBeta
+        XCTAssertEqual(AppSettings(defaults: defaults).betaUpdates, !AppSettings.runningBeta)
+    }
+
     func testNothingToOfferAndBadInput() throws {
         XCTAssertNil(try AnnexUpdate.pick(json: "[]", beta: true))
         XCTAssertThrowsError(try AnnexUpdate.pick(json: "not json", beta: false))

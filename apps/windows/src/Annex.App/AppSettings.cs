@@ -23,8 +23,15 @@ public sealed class AppSettings
     public bool ShowTechnicalDetails { get; set; }
     /// <summary>Look for updates at launch and once a day.</summary>
     public bool CheckForUpdates { get; set; } = true;
-    /// <summary>Include pre-releases; off goes back to the latest normal release.</summary>
+    /// <summary>Include pre-releases; off goes back to the latest normal release. Until the user flips
+    /// it (<see cref="BetaUpdatesChosen"/>), it follows what's installed: someone who installed a beta
+    /// by hand gets betas, not an offer to go back.</summary>
     public bool BetaUpdates { get; set; }
+    /// <summary>The user has flipped Beta updates. (Older settings files always hold a BetaUpdates
+    /// value, so its presence can't say this.)</summary>
+    public bool BetaUpdatesChosen { get; set; }
+
+    public static bool RunningBeta => Annex.Interop.AnnexNative.Version.Contains('-');
     /// <summary>The update the user chose "Not now" for (the banner returns for a newer one).</summary>
     public string? DismissedUpdate { get; set; }
     /// <summary>When Annex last finished checking for updates (shown on the About page).</summary>
@@ -38,14 +45,17 @@ public sealed class AppSettings
 
     public static AppSettings Load()
     {
+        AppSettings settings;
         try
         {
-            return JsonSerializer.Deserialize(File.ReadAllText(FilePath), SettingsJson.Default.AppSettings) ?? new AppSettings();
+            settings = JsonSerializer.Deserialize(File.ReadAllText(FilePath), SettingsJson.Default.AppSettings) ?? new AppSettings();
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {
-            return new AppSettings();
+            settings = new AppSettings();
         }
+        if (!settings.BetaUpdatesChosen) settings.BetaUpdates = RunningBeta;
+        return settings;
     }
 
     public void Save()
