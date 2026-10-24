@@ -79,7 +79,9 @@ final class ExtendTests: XCTestCase {
         XCTAssertEqual(screen?.localizedName, "Annex Display")
 
         // Acceptance: change the resolution like System Settings would; the viewer must follow
-        // within a second. (Session-only change, nothing is persisted.)
+        // within a second. (Session-only change, nothing is persisted.) First let Annex apply its
+        // own scaling, which waits for the display's first mode, so it doesn't undo the change.
+        XCTAssertTrue(waitUntil { controller.extendScalingSettled }, "scaling was never applied")
         let options = [kCGDisplayShowDuplicateLowResolutionModes as String: true] as CFDictionary
         let modes = (CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode]) ?? []
         let target = try XCTUnwrap(modes.first { $0.pixelWidth == 1920 && $0.pixelHeight == 1200 }, "no 1920x1200 px mode offered")

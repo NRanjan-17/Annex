@@ -34,6 +34,8 @@ final class HostController {
     var extendScale = 0 {
         didSet { for s in extendSessions.values { s.setScale(extendScale) } }
     }
+    /// Every Extend display has its scaling applied (tests wait for this before changing modes).
+    var extendScalingSettled: Bool { extendSessions.values.allSatisfy(\.scaleSettled) }
     private var host: HostHandle?
     private let capturer = ScreenCapturer()
     private var encoder: H264Encoder?

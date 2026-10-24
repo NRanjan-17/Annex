@@ -95,6 +95,9 @@ final class ExtendSession {
     /// Switches the display to a scale step (0 = sharpest), like picking it in System Settings,
     /// and asks macOS to remember it. Above 100 % the step is drawn HiDPI (twice its point size).
     /// Left alone while macOS mirrors the display: a mirror takes its size from the other screen.
+    /// Annex's scaling has been applied (it waits for macOS to give the display its first mode).
+    var scaleSettled: Bool { scaleToApply == nil }
+
     func setScale(_ scale: Int) {
         scaleToApply = scale
         applyScaleIfReady()
