@@ -1,25 +1,30 @@
 import SwiftUI
 
-/// Sidebar pages of the main window.
+/// Pages of the main window.
 enum Pane: Hashable {
-    case share, connect, peer(String), devices, settings, about
+    case home, share, connect, peer(String), devices, settings, about
 }
 
-/// The main window: a System Settings-style sidebar and pages.
+/// The main window: a floating glass sidebar and pages, over the living backdrop.
 struct MainView: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        // The sidebar is the app's navigation; it always stays visible.
-        NavigationSplitView(columnVisibility: .constant(.all)) {
-            Sidebar(model: model)
-                .navigationSplitViewColumnWidth(min: 210, ideal: 230, max: 280)
-                .toolbar(removing: .sidebarToggle)
-        } detail: {
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ZStack {
+            Backdrop(live: model.isViewing || model.hostStatus.viewerName != nil)
+            HStack(spacing: 0) {
+                Sidebar(model: model)
+                    .frame(width: 216)
+                    .padding(10)
+                detail
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
-        .frame(minWidth: 780, minHeight: 540)
+        .ignoresSafeArea()
+        .background(WindowChrome())
+        .preferredColorScheme(.dark)
+        .tint(Color(white: 0.82))
+        .frame(minWidth: 940, minHeight: 620)
         .onAppear {
             model.refreshTrusted()
             model.refreshPermissions()
@@ -29,13 +34,13 @@ struct MainView: View {
 
     @ViewBuilder private var detail: some View {
         switch model.pane {
+        case .home, .connect: HomeView(model: model)
         case .share: SharePage(model: model, settings: model.settings)
-        case .connect: ConnectPage(model: model)
         case .peer(let id):
             if let peer = model.discovered.first(where: { $0.id == id }) {
                 PeerPage(model: model, peer: peer)
             } else {
-                ConnectPage(model: model)
+                HomeView(model: model)
             }
         case .devices: DevicesPage(model: model, settings: model.settings)
         case .settings: SettingsPage(model: model, settings: model.settings)
@@ -44,127 +49,134 @@ struct MainView: View {
     }
 }
 
+/// The window itself: an empty unified toolbar so the traffic lights sit inset on the sidebar's
+/// glass (as in Apple's own sidebar apps) instead of on its corner, no title, content under the
+/// title bar, and a real full-screen window.
+struct WindowChrome: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { view.window.map(Self.configure) }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    static func configure(_ window: NSWindow) {
+        window.identifier = Self.id
+        if window.toolbar == nil {
+            let toolbar = NSToolbar(identifier: "annex.main")
+            toolbar.showsBaselineSeparator = false
+            window.toolbar = toolbar
+            // The toolbar is only there to inset the traffic lights. In full screen there are
+            // none, and an empty toolbar would slide down as a grey band.
+            let center = NotificationCenter.default
+            center.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated { window.toolbar?.isVisible = false }
+            }
+            center.addObserver(forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated { window.toolbar?.isVisible = true }
+            }
+        }
+        window.toolbarStyle = .unified
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        allowFullScreen(window)
+    }
+
+    static let id = NSUserInterfaceItemIdentifier("annex.main")
+
+    /// While Annex is only in the menu bar, AppKit marks its windows `.auxiliary` and
+    /// `.fullScreenNone`, which turns the green button into plain zoom. This is the app's main
+    /// window, so put full screen back; `DockPresence` calls this again on every switch.
+    static func allowFullScreen(_ window: NSWindow) {
+        window.collectionBehavior.remove([.auxiliary, .fullScreenAuxiliary, .fullScreenNone])
+        window.collectionBehavior.insert([.primary, .fullScreenPrimary])
+    }
+}
+
 // MARK: Sidebar
 
+/// Three places: the computers around you, this Mac, and the ones you've paired. Settings and
+/// About sit at the bottom, out of the way.
 private struct Sidebar: View {
     @ObservedObject var model: AppModel
 
     var body: some View {
-        // Rows draw their own selection (a soft grey, like Music) instead of the List's accent fill.
-        List {
-            Section {
-                item("Share This Mac", "display.2", .share, active: model.isHosting)
-                item("Connect", "rectangle.connected.to.line.below", .connect, active: model.isViewing)
-            }
-
-            Section {
-                if model.discovered.isEmpty {
-                    HStack(spacing: 10) {
-                        ProgressView().controlSize(.mini).frame(width: 20)
-                        Text("Searching…").font(.system(size: 13)).foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                }
-                ForEach(model.discovered) { peer in
-                    item(peer.name, "desktopcomputer", .peer(peer.id), active: false, dimmed: !peer.isSharing)
-                }
-            } header: {
-                HStack {
-                    Text("Nearby")
-                    Spacer()
-                    NearbyRefreshButton(model: model)
-                }
-            }
-
-            Section {
-                item("Paired Devices", "person.2", .devices, active: false)
-                item("Settings", "gearshape", .settings, active: false)
-                item("About", "info.circle", .about, active: false)
-            }
+        VStack(alignment: .leading, spacing: 2) {
+            // Room for the window's traffic lights, which sit on the glass.
+            Color.clear.frame(height: 34)
+            item("Nearby", "dot.radiowaves.left.and.right", .home, badge: sharingCount, also: [.connect])
+            item("This Mac", "laptopcomputer", .share, live: model.isHosting)
+            item("Paired Devices", "person.2", .devices)
+            Spacer()
+            item("Settings", "gearshape", .settings)
+            item("About", "info.circle", .about)
         }
-        .listStyle(.sidebar)
-        // This Mac, at the bottom like the account row in Music.
-        .safeAreaInset(edge: .bottom) {
-            ThisMacFooter(model: model)
-        }
+        .padding(8)
+        .frame(maxHeight: .infinity)
+        .glassPanel(radius: 22)
     }
 
-    private func item(_ title: String, _ symbol: String, _ pane: Pane, active: Bool, dimmed: Bool = false) -> some View {
-        SidebarItem(title: title, symbol: symbol, active: active, dimmed: dimmed, selected: model.pane == pane) {
-            model.pane = pane
-        }
-        .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
+    private var sharingCount: Int? {
+        let n = model.discovered.filter(\.isSharing).count
+        return n > 0 ? n : nil
     }
-}
 
-/// The Annex purple, from the app icon.
-extension Color {
-    static let annex = Color(red: 0.42, green: 0.36, blue: 0.95)
-}
-
-private struct ThisMacFooter: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        Button { model.pane = .settings } label: {
-            HStack(spacing: 10) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .frame(width: 28, height: 28)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(model.deviceName.isEmpty ? "This Mac" : model.deviceName)
-                        .font(.system(size: 13, weight: .medium))
-                        .lineLimit(1)
-                    Text(model.isHosting ? "Sharing" : "This Mac")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 12)
-            .contentShape(Rectangle())
+    private func item(_ title: String, _ symbol: String, _ pane: Pane, live: Bool = false, badge: Int? = nil,
+                      also: [Pane] = []) -> some View {
+        SidebarItem(title: title, symbol: symbol, live: live, badge: badge,
+                    selected: model.pane == pane || also.contains(model.pane)) {
+            withAnimation(.snappy) { model.pane = pane }
         }
-        .buttonStyle(.plain)
-        .help("Rename this Mac")
     }
 }
 
 private struct SidebarItem: View {
     let title: String
     let symbol: String
-    let active: Bool
-    let dimmed: Bool
+    let live: Bool
+    let badge: Int?
     let selected: Bool
     let action: () -> Void
     @State private var hovered = false
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 9) {
+            HStack(spacing: 10) {
                 // A fixed box keeps every symbol centred on the same column, whatever its shape.
                 Image(systemName: symbol)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(dimmed ? Color.secondary : Color.annex)
+                    .font(.system(size: 13.5, weight: .medium))
+                    .foregroundStyle(selected ? Color.black : Color.secondary)
                     .frame(width: 20, height: 20)
                 Text(title)
                     .font(.system(size: 13, weight: selected ? .semibold : .regular))
-                    .foregroundStyle(dimmed ? .secondary : .primary)
+                    .foregroundStyle(selected ? Color.black : Color.primary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                if active {
-                    Circle().fill(Color.green).frame(width: 7, height: 7)
+                if live { LiveDot(size: 7) }
+                if let badge {
+                    Text("\(badge)")
+                        .font(.system(size: 10.5, weight: .bold)).monospacedDigit()
+                        .foregroundStyle(selected ? Color.black.opacity(0.6) : Color.secondary)
                 }
             }
-            .padding(.horizontal, 8)
-            .frame(height: 30)
+            .padding(.horizontal, 10)
+            .frame(height: 32)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(Color.primary.opacity(selected ? 0.10 : hovered ? 0.05 : 0)))
+            .background {
+                if selected {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(0.92))
+                        .shadow(color: Color.white.opacity(0.18), radius: 12)
+                } else if hovered {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.primary.opacity(0.06))
+                }
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .onHover { hovered = $0 }
     }
 }
@@ -173,11 +185,11 @@ private struct SidebarItem: View {
 // MARK: Building blocks
 //
 // Every page uses one design language, the one the About page started: a header card, then
-// sections, each a small bold title over one rounded group of full-width rows divided by
+// sections, each a small uppercase label over one rounded glass group of full-width rows divided by
 // hairlines. Rows carry text on the left and one control on the right; only status rows get an
 // icon (a check, a warning, a spinner), never a coloured tile.
 
-/// A rounded, gradient-filled icon like the ones in System Settings (used by page headers).
+/// A rounded monochrome icon. `tint` is kept for callers; the look is black and white.
 struct IconTile: View {
     let symbol: String
     let tint: Color
@@ -188,7 +200,7 @@ struct IconTile: View {
             .font(.system(size: size * 0.5, weight: .semibold))
             .foregroundStyle(.white)
             .frame(width: size, height: size)
-            .background(RoundedRectangle(cornerRadius: size * 0.27, style: .continuous).fill(tint.gradient))
+            .background(RoundedRectangle(cornerRadius: size * 0.27, style: .continuous).fill(Color.white.opacity(0.1)))
     }
 }
 
@@ -199,12 +211,14 @@ private struct Page<Content: View>: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) { content }
-                .padding(24)
+            VStack(alignment: .leading, spacing: 22) { content }
+                .padding(.horizontal, 28)
+                .padding(.top, 28)
+                .padding(.bottom, 28)
                 .frame(maxWidth: 720)
                 .frame(maxWidth: .infinity)
         }
-        .navigationTitle(title)
+        .scrollContentBackground(.hidden)
     }
 }
 
@@ -220,8 +234,8 @@ private struct SettingsGroup<Content: View>: View {
             .clipped()
             .padding(padding)
             .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.045)))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.white.opacity(0.045)))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.white.opacity(0.08)))
     }
 }
 
@@ -236,7 +250,7 @@ private struct GroupSection<Content: View, Accessory: View>: View {
         VStack(alignment: .leading, spacing: 8) {
             if let title {
                 HStack {
-                    Text(title).font(.headline)
+                    Eyebrow(text: title)
                     Spacer()
                     accessory
                 }
@@ -334,25 +348,19 @@ private struct ToggleRow: View {
     }
 }
 
-/// The card at the top of each page: big icon, title, one-line description.
+/// The top of each page: its title and one line on what it's for. Plain text, no card.
 private struct Hero<Icon: View>: View {
     let title: String
     let text: String
     @ViewBuilder var icon: Icon
 
     var body: some View {
-        SettingsGroup(padding: 22) {
-            VStack(spacing: 6) {
-                icon
-                Text(title).font(.system(size: 20, weight: .semibold)).padding(.top, 4)
-                Text(text)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 440)
-            }
-            .frame(maxWidth: .infinity)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.system(size: 28, weight: .semibold, design: .rounded))
+            Text(text).font(.system(size: 13)).foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 4)
     }
 }
 
@@ -391,7 +399,7 @@ private struct SharePage: View {
 
     var body: some View {
         Page(title: "Share This Mac") {
-            Hero(title: "Share This Mac",
+            Hero(title: "This Mac",
                  text: "Let another computer show this screen, or extend this display onto it.",
                  symbol: "display.2", tint: .blue)
             UpdateBanner(updater: model.updater)
@@ -408,7 +416,7 @@ private struct SharePage: View {
                         Button { model.setHosting(true) } label: {
                             Label("Start Sharing", systemImage: "play.fill").padding(.horizontal, 6)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .primaryGlassButton()
                         .controlSize(.large)
                     }
                 }
@@ -463,6 +471,13 @@ private struct SharePage: View {
             }
             if model.isHosting, let port = model.hostStatus.listeningPort {
                 HowToConnect(model: model, port: port)
+            }
+            if !model.isHosting {
+                GroupSection("How it works") {
+                    GroupRow(title: "1. Start sharing here.")
+                    GroupRow(title: "2. On the other computer, open Annex and pick this Mac in Nearby.")
+                    GroupRow(title: "3. The first time, type the PIN this Mac shows. After that, it just connects.")
+                }
             }
         }
         .modifier(WatchesPermissions(model: model))
@@ -553,7 +568,7 @@ private struct ConnectButtons: View {
             } label: {
                 Label("Show Its Screen", systemImage: "rectangle.on.rectangle")
             }
-            .buttonStyle(.borderedProminent)
+            .primaryGlassButton()
             .help("Use the other computer's screen on this Mac.")
             Button {
                 model.extendMode = true
@@ -571,44 +586,44 @@ private struct ConnectButtons: View {
     }
 }
 
-private struct ConnectPage: View {
+/// For a computer that isn't on the radar: type its address, or join a PC's Direct Wi-Fi.
+struct OtherWaysSheet: View {
     @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        Page(title: "Connect") {
-            Hero(title: "Connect",
-                 text: "Show another computer's screen here, or extend its display onto this one.",
-                 symbol: "rectangle.connected.to.line.below", tint: .indigo)
-            UpdateBanner(updater: model.updater)
-            ViewerStatusSection(model: model)
-            GroupSection(title: "Nearby", accessory: { NearbyRefreshButton(model: model) }) {
-                if model.discovered.isEmpty {
-                    GroupRow(title: "Looking for computers…", subtitle: "Start sharing on the other computer.",
-                             status: .spinner)
-                }
-                ForEach(model.discovered) { peer in
-                    PeerRow(model: model, peer: peer)
-                }
-            }
-            if model.discovered.allSatisfy({ !$0.isSharing }) {
-                NotShowingUp()
-            }
-            GroupSection("Connect by address", footer: "Use this if the computer isn't listed.") {
-                GroupRow(title: "Address") {
-                    InputField(text: $model.manualAddress, placeholder: "192.168.1.20",
-                               onSubmit: { model.extendMode = false; model.connectManual() })
-                        .frame(width: 200)
-                }
-                GroupCell {
-                    HStack {
-                        Spacer()
-                        ConnectButtons(model: model, connect: { model.connectManual() }, compact: true)
-                            .disabled(model.isViewing || model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 22) {
+                    Hero(title: "Connect by Address",
+                         text: "For a computer that isn't in Nearby: another network, a VPN, or a PC's Direct Wi-Fi.") { EmptyView() }
+                    GroupSection("Address", footer: "Over the internet, use Tailscale or ZeroTier and type the address it gives.") {
+                        GroupRow(title: "IP address or host:port") {
+                            InputField(text: $model.manualAddress, placeholder: "192.168.1.20",
+                                       onSubmit: { model.extendMode = false; model.connectManual(); dismiss() })
+                                .frame(width: 200)
+                        }
+                        GroupCell {
+                            HStack {
+                                Spacer()
+                                ConnectButtons(model: model, connect: { model.connectManual(); dismiss() }, compact: true)
+                                    .disabled(model.isViewing || model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+                            }
+                        }
                     }
-                }
+                    PCHotspotSection(model: model)
             }
-            PCHotspotSection(model: model)
+            .padding(28)
+            .fixedSize(horizontal: false, vertical: true)
+            Divider().opacity(0.4)
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+            .padding(16)
         }
+        .frame(width: 560)
+        .preferredColorScheme(.dark)
+        .tint(Color(white: 0.82))
     }
 }
 
@@ -654,7 +669,7 @@ private struct NewMacSection: View {
             if let until = model.visibleToNewMacsUntil {
                 GroupRow(title: "Any Mac nearby can find this one",
                          subtitle: "Until \(until.formatted(date: .omitted, time: .shortened)).",
-                         status: .symbol("person.2.wave.2.fill", .blue)) {
+                         status: .symbol("person.2.wave.2.fill", .primary)) {
                     Button("Stop") { model.hideFromNewMacs() }
                 }
             } else {
@@ -765,7 +780,7 @@ private struct PeerPage: View {
                         model.extendMode = false
                         model.connect(to: peer)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .primaryGlassButton()
                     .disabled(model.isViewing || !peer.isSharing)
                 }
                 GroupRow(title: "Extend display", subtitle: "This Mac becomes a second screen for \(peer.name).") {
@@ -1043,11 +1058,11 @@ private struct AboutPage: View {
         case .idle: (nil, "Annex \(Annex.version)")
         case .checking: (.spinner, "Checking for updates…")
         case .upToDate: (.symbol("checkmark.circle.fill", .green), "You're on the latest version.")
-        case .available(let info): (.symbol("arrow.down.circle.fill", .blue), Updater.headline(info))
+        case .available(let info): (.symbol("arrow.down.circle.fill", .primary), Updater.headline(info))
         case .downloading: (.spinner, "Downloading the update…")
         case .installing: (.spinner, "Installing… Annex reopens in a moment.")
         case .failed(let message): (.symbol("exclamationmark.triangle.fill", .orange), message)
-        case .manual(let message): (.symbol("arrow.down.circle", .blue), message)
+        case .manual(let message): (.symbol("arrow.down.circle", .primary), message)
         }
         return GroupRow(title: text, status: state) {
             if case .available(let info) = updater.state {
@@ -1066,13 +1081,13 @@ private struct AboutPage: View {
 }
 
 /// Shown at the top of Share and Connect when an automatic check found an update.
-private struct UpdateBanner: View {
+struct UpdateBanner: View {
     @ObservedObject var updater: Updater
 
     var body: some View {
         if let info = updater.bannerUpdate {
             GroupSection {
-                GroupRow(title: Updater.headline(info), status: .symbol("arrow.down.circle.fill", .blue)) {
+                GroupRow(title: Updater.headline(info), status: .symbol("arrow.down.circle.fill", .primary)) {
                     HStack(spacing: 8) {
                         Button("Not Now") { updater.dismissBanner() }
                         Button("Install") { updater.confirmAndInstall() }

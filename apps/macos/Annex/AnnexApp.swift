@@ -14,12 +14,12 @@ struct AnnexApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // The app window: sidebar and pages, like System Settings.
+        // The app window: a glass sidebar and pages over a living backdrop.
         Window("Annex", id: "main") {
             MainView(model: model)
         }
-        .defaultSize(width: 880, height: 620)
-        .windowToolbarStyle(.unified)
+        .defaultSize(width: 1080, height: 700)
+        .windowStyle(.hiddenTitleBar)
         .defaultPosition(.center)
         .commands { CommandGroup(replacing: .appSettings) { SettingsCommand(model: model) } }
 
@@ -98,8 +98,12 @@ final class DockPresence {
             w.isVisible && w.styleMask.contains(.titled) && !(w is NSPanel) && w.level == .normal
         }
         let policy: NSApplication.ActivationPolicy = open ? .regular : .accessory
+        // Switching policy (or a window opening while Annex is menu-bar only) takes full screen
+        // away from the main window; give it back every time.
+        for w in NSApp.windows where w.identifier == WindowChrome.id { WindowChrome.allowFullScreen(w) }
         guard NSApp.activationPolicy() != policy else { return }
         NSApp.setActivationPolicy(policy)
+        for w in NSApp.windows where w.identifier == WindowChrome.id { WindowChrome.allowFullScreen(w) }
         if open { NSApp.activate(ignoringOtherApps: true) }
     }
 }
