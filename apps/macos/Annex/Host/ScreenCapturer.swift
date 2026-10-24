@@ -4,7 +4,11 @@ import ScreenCaptureKit
 /// Captures one display with ScreenCaptureKit, scaled by the system to the stream size and
 /// delivered as NV12 (420v) pixel buffers ready for VideoToolbox.
 final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
+    // start/stop run off the caller's actor and may overlap, so the stream and a generation
+    // (bumped by every start and stop) are guarded by a lock.
+    private let lock = NSLock()
     private var stream: SCStream?
+    private var generation = 0
     private let queue = DispatchQueue(label: "annex.capture", qos: .userInteractive)
 
     /// Called on the capture queue for every new frame.
@@ -12,7 +16,15 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Called if the system stops the stream (permission revoked, display removed, ...).
     var onStop: ((Error) -> Void)?
 
+    /// Replaces any running capture. Returns without capturing if `stop()` or another `start` was
+    /// called meanwhile, so a stop during start can never leave capture running.
     func start(displayID: CGDirectDisplayID, width: Int, height: Int, fps: Int) async throws {
+        let (gen, old) = lock.withLock { () -> (Int, SCStream?) in
+            generation += 1
+            defer { stream = nil }
+            return (generation, stream)
+        }
+        if let old { try? await old.stopCapture() }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
             throw AnnexError(message: "Display \(displayID) is not available for capture")
@@ -28,16 +40,34 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         config.queueDepth = 4
         config.capturesAudio = false
 
+        guard isCurrent(gen) else { return }
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
-        try await stream.startCapture()
-        self.stream = stream
+        do {
+            try await stream.startCapture()
+        } catch {
+            if isCurrent(gen) { throw error }
+            return
+        }
+        let current = lock.withLock { () -> Bool in
+            guard gen == generation else { return false }
+            self.stream = stream
+            return true
+        }
+        if !current { try? await stream.stopCapture() }
     }
 
     func stop() async {
-        guard let stream else { return }
-        self.stream = nil
-        try? await stream.stopCapture()
+        let stream = lock.withLock { () -> SCStream? in
+            generation += 1
+            defer { self.stream = nil }
+            return self.stream
+        }
+        try? await stream?.stopCapture()
+    }
+
+    private func isCurrent(_ gen: Int) -> Bool {
+        lock.withLock { gen == generation }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {

@@ -228,6 +228,8 @@ final class HostController {
 
     /// Bumped on every start/stop so a slow encoder setup can't resurrect an ended capture.
     private var generation = 0
+    /// The last mirror capture failure shown, so a later successful start clears only that.
+    private var mirrorCaptureError: String?
 
     private func startMirrorCapture(stream: StreamConfig) {
         stopMirrorCapture()
@@ -270,16 +272,25 @@ final class HostController {
             enc?.encode(pb, captureMicros: Annex.nowMicros())
         }
         capturer.onStop = { [weak self] error in
-            DispatchQueue.main.async { self?.status.error = "Capture stopped: \(error.localizedDescription)" }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.mirrorCaptureError = "Capture stopped: \(error.localizedDescription)"
+                self.status.error = self.mirrorCaptureError
+            }
         }
         let capturer = self.capturer
         let id = display.id
         Task { [weak self] in
             do {
                 try await capturer.start(displayID: id, width: stream.width, height: stream.height, fps: stream.fps)
-                self?.status.error = nil
+                // Clear only this capture's own earlier failure, not an unrelated (extend) error.
+                guard let self, gen == self.generation, self.status.error == self.mirrorCaptureError else { return }
+                self.status.error = nil
             } catch {
-                self?.status.error = "Screen capture failed: \(error.localizedDescription). Allow Annex in System Settings → Privacy & Security → Screen & System Audio Recording."
+                guard let self, gen == self.generation else { return }
+                let message = "Screen capture failed: \(error.localizedDescription). Allow Annex in System Settings → Privacy & Security → Screen & System Audio Recording."
+                self.mirrorCaptureError = message
+                self.status.error = message
             }
         }
     }
