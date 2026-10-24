@@ -19,12 +19,16 @@ final class H264Encoder {
     /// so the session can end with a reason instead of showing a black screen.
     var onFailure: ((OSStatus) -> Void)?
     private var failures = 0
+    private var everEncoded = false
+    private var reportedFirstError = false
 
     /// Creating a session can take from ~0.3 s to many seconds; never call this on the main thread.
-    init(width: Int, height: Int, fps: Int, bitrate: Int, preferHardware: Bool) throws {
+    /// `lowLatency: false` asks for the plain hardware encoder, for when the low-latency one
+    /// accepts a size but then encodes nothing.
+    init(width: Int, height: Int, fps: Int, bitrate: Int, preferHardware: Bool, lowLatency: Bool = true) throws {
         let hardware: [CFString: Any] = [kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true]
         let software: [CFString: Any] = [kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: false]
-        let attempts = preferHardware ? [hardware, [:]] : [software, [:]]
+        let attempts = preferHardware ? (lowLatency ? [hardware, [:]] : [[:]]) : [software, [:]]
         var status: OSStatus = -1
         var created: VTCompressionSession?
         var lowLatencyHardware = false
@@ -35,7 +39,7 @@ final class H264Encoder {
                                                 outputCallback: nil, refcon: nil, compressionSessionOut: &created)
             if status == noErr {
                 // Low-latency rate control exists only in the hardware encoder.
-                lowLatencyHardware = preferHardware && index == 0
+                lowLatencyHardware = preferHardware && lowLatency && index == 0
                 break
             }
         }
@@ -139,6 +143,7 @@ final class H264Encoder {
     private func succeeded() {
         lock.lock()
         failures = 0
+        everEncoded = true
         lock.unlock()
     }
 
@@ -146,7 +151,11 @@ final class H264Encoder {
         lock.lock()
         failures += 1
         let report = failures == 60
+        // A static screen sends few frames, so 60 failures may never come: log the first one.
+        let first = !everEncoded && !reportedFirstError
+        reportedFirstError = true
         lock.unlock()
+        if first { Annex.log("encoder: frame failed to encode (OSStatus \(status))", error: true) }
         if report { onFailure?(status) }
     }
 }
