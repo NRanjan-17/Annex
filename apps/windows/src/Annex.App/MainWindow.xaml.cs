@@ -735,7 +735,8 @@ public sealed partial class MainWindow : Window
 
         var outer = new StackPanel { Spacing = 0 };
         outer.Children.Add(Ui.Panel(panel, radius: 18, fill: 0.03, padding: new Thickness(24, 28, 24, 28)));
-        var help = new StackPanel { MaxWidth = 720 };
+        // As wide as the panel above it, like the groups on every other page.
+        var help = new StackPanel { HorizontalAlignment = HorizontalAlignment.Stretch };
         NotShowingUp(help);
         Ui.JoinRows(help);
         outer.Children.Add(help);
