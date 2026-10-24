@@ -18,9 +18,25 @@ final class AppModel: ObservableObject {
     @Published var displays: [Displays.Info] = []
     @Published var selectedDisplayID: CGDirectDisplayID?
     @Published private(set) var isHosting = false
-    @Published private(set) var hostStatus = HostController.Status() { didSet { updateKeepAwake() } }
+    @Published private(set) var hostStatus = HostController.Status() {
+        didSet {
+            updateKeepAwake()
+            updatePeerToPeerVisibility()
+        }
+    }
+    /// Host: every Mac nearby can find this one on peer-to-peer Wi-Fi until then (else only
+    /// paired Macs can).
+    @Published private(set) var visibleToNewMacsUntil: Date?
 
+    /// Nearby: computers found on the network, plus Macs found only on peer-to-peer Wi-Fi.
     @Published private(set) var discovered: [PeerInfo] = []
+    private var lanPeers: [PeerInfo] = []
+    /// Macs sharing on peer-to-peer Wi-Fi (no router needed), while the Connect page looks for them.
+    private var peerToPeerHosts: [PeerToPeerHost] = []
+    private var peerToPeerBrowser: PeerToPeerBrowser?
+    private var peerToPeerAdvertiser: PeerToPeerAdvertiser?
+    /// The current viewer's relay over peer-to-peer Wi-Fi, if it has one.
+    private var peerToPeerTunnel: PeerToPeerTunnel?
     @Published var manualAddress = ""
     /// Viewer: ask hosts for a new virtual display instead of mirroring their screen.
     @Published var extendMode = false
@@ -134,6 +150,9 @@ final class AppModel: ObservableObject {
             }
             // Ask for Local Network access now, not when the first viewer connects.
             if !Self.isRunningTests { localNetwork.request() }
+            $pane.combineLatest(settings.$peerToPeerWiFi)
+                .sink { [weak self] pane, on in self?.updatePeerToPeerBrowsing(pane: pane, on: on) }
+                .store(in: &cancellables)
         } catch {
             startupError = error.localizedDescription
         }
@@ -193,17 +212,64 @@ final class AppModel: ObservableObject {
             host = h
             isHosting = true
             hostStatus = h.status
+            if settings.peerToPeerWiFi, let port = h.status.listeningPort.flatMap({ UInt16(exactly: $0) }), port > 0 {
+                do {
+                    peerToPeerAdvertiser = try PeerToPeerAdvertiser(name: core.deviceName, fingerprint: core.fingerprint,
+                                                                    extend: HostController.extendSupported, corePort: port,
+                                                                    visibility: peerToPeerVisibility)
+                } catch {
+                    Annex.log("p2p: couldn't advertise: \(error)", error: true)
+                }
+            }
         } catch {
             hostStatus = HostController.Status(error: error.localizedDescription)
         }
     }
 
     private func stopHosting() {
+        peerToPeerAdvertiser?.stop()
+        peerToPeerAdvertiser = nil
+        visibleToNewMacsUntil = nil
         host?.stop()
         host = nil
         isHosting = false
         hostStatus = HostController.Status()
         hostDirectWiFi = nil
+    }
+
+    // MARK: Peer-to-peer visibility
+
+    /// How long "Let a new Mac find this one" lasts.
+    static let newMacWindow: TimeInterval = 5 * 60
+
+    /// Host: for a few minutes, every Mac nearby can see this one on peer-to-peer Wi-Fi. It still
+    /// has to pair with the PIN shown here.
+    func letNewMacsFindThisOne() {
+        let until = Date().addingTimeInterval(Self.newMacWindow)
+        visibleToNewMacsUntil = until
+        updatePeerToPeerVisibility()
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.newMacWindow) { [weak self] in
+            guard let self, self.visibleToNewMacsUntil == until else { return }
+            self.hideFromNewMacs()
+        }
+    }
+
+    func hideFromNewMacs() {
+        visibleToNewMacsUntil = nil
+        updatePeerToPeerVisibility()
+    }
+
+    /// Peer-to-peer Wi-Fi slows the normal Wi-Fi link while it's on, which would hurt a session
+    /// streaming over that link, so this Mac stops advertising while any session runs (flows
+    /// already relayed keep going). The user asking for new Macs overrides that.
+    private var peerToPeerVisibility: PeerToPeer.Visibility {
+        if let until = visibleToNewMacsUntil, until > Date() { return .everyone }
+        let busy = !hostStatus.viewers.isEmpty || !hostStatus.extendViewers.isEmpty
+        return busy ? .hidden : .paired
+    }
+
+    private func updatePeerToPeerVisibility() {
+        peerToPeerAdvertiser?.setVisibility(peerToPeerVisibility)
     }
 
     /// Host: ask a viewer (a Windows PC) to start its hotspot; this Mac joins it when it answers.
@@ -227,11 +293,38 @@ final class AppModel: ObservableObject {
     // MARK: Viewing
 
     func connect(to peer: PeerInfo) {
-        guard let address = peer.connectAddress else { return }
         // Pin the certificate only for hosts we already trust; unknown hosts get a prompt.
         let pinned = peer.fingerprint.flatMap { fp in trusted.contains { $0.fingerprint == fp } ? fp : nil }
-        connect(address: address, title: peer.name, expectedFingerprint: pinned)
-        switchOnStart = useDirectWiFi && viewer != nil
+        let useDirect = useDirectWiFi
+        guard settings.peerToPeerWiFi, let fp = peer.fingerprint,
+              let p2p = peerToPeerHosts.first(where: { $0.fingerprint == fp }) else {
+            guard let address = peer.connectAddress else { return }
+            connect(address: address, title: peer.name, expectedFingerprint: pinned)
+            switchOnStart = useDirect && viewer != nil
+            return
+        }
+        // Also reachable over peer-to-peer Wi-Fi: open the relay first, then let the core race
+        // it against the network addresses.
+        disconnectViewer()
+        let generation = viewerGeneration
+        viewerStatus = "Connecting to \(peer.name)…"
+        var tunnel: PeerToPeerTunnel?
+        tunnel = try? PeerToPeerTunnel(to: p2p.endpoint) { [weak self] local in
+            guard let self, self.viewerGeneration == generation else { tunnel?.stop(); return }
+            let address = [peer.connectAddress, local].compactMap { $0 }.joined(separator: ",")
+            guard !address.isEmpty else {
+                tunnel?.stop()
+                self.viewerStatus = "Couldn't reach \(peer.name) over peer-to-peer Wi-Fi."
+                return
+            }
+            self.connect(address: address, title: peer.name, expectedFingerprint: pinned, tunnel: local == nil ? nil : tunnel)
+            if local == nil { tunnel?.stop() }
+            self.switchOnStart = useDirect && self.viewer != nil
+        }
+        if tunnel == nil, let address = peer.connectAddress {
+            connect(address: address, title: peer.name, expectedFingerprint: pinned)
+            switchOnStart = useDirect && viewer != nil
+        }
     }
 
     func connectManual() {
@@ -240,9 +333,10 @@ final class AppModel: ObservableObject {
         connect(address: address, title: address, expectedFingerprint: nil)
     }
 
-    private func connect(address: String, title: String, expectedFingerprint: String?) {
-        guard let core else { return }
+    private func connect(address: String, title: String, expectedFingerprint: String?, tunnel: PeerToPeerTunnel? = nil) {
+        guard let core else { tunnel?.stop(); return }
         disconnectViewer()
+        peerToPeerTunnel = tunnel
         switchOnStart = false
         holdingWindow = false
         let generation = viewerGeneration
@@ -280,6 +374,8 @@ final class AppModel: ObservableObject {
         viewerWindow = nil
         viewer?.disconnect()
         viewer = nil
+        peerToPeerTunnel?.stop()
+        peerToPeerTunnel = nil
         w?.onClose = nil
         w?.close()
         latency = nil
@@ -347,6 +443,8 @@ final class AppModel: ObservableObject {
                 viewerStatus = reason == "user" ? nil : Self.friendlyReason(reason, peer: viewerPeerName)
             }
             viewer = nil
+            peerToPeerTunnel?.stop()
+            peerToPeerTunnel = nil
             let w = viewerWindow
             viewerWindow = nil
             w?.onClose = nil
@@ -567,14 +665,53 @@ final class AppModel: ObservableObject {
     private func handleDiscovery(_ e: CoreEvent) {
         switch e {
         case .peerFound(let p):
-            discovered.removeAll { $0.instance == p.instance }
-            discovered.append(p)
-            discovered.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            lanPeers.removeAll { $0.instance == p.instance }
+            lanPeers.append(p)
+            rebuildNearby()
         case .peerLost(let instance):
-            discovered.removeAll { $0.instance == instance }
-            if pane == .peer(instance) { pane = .connect }
+            lanPeers.removeAll { $0.instance == instance }
+            rebuildNearby()
         default:
             break
+        }
+    }
+
+    /// The network's list, plus each Mac found only on peer-to-peer Wi-Fi (one row per computer:
+    /// a Mac on both shows once, and connecting tries both ways).
+    private func rebuildNearby() {
+        let known = Set(lanPeers.compactMap(\.fingerprint))
+        let peerOnly = peerToPeerHosts.filter { !known.contains($0.fingerprint) }.map(Self.peerInfo)
+        discovered = (lanPeers + peerOnly).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        if case .peer(let instance) = pane, !discovered.contains(where: { $0.instance == instance }) { pane = .connect }
+    }
+
+    nonisolated static func peerInfo(_ h: PeerToPeerHost) -> PeerInfo {
+        PeerInfo(instance: "p2p:\(h.fingerprint)", name: h.name, addresses: [], port: 0, fingerprint: h.fingerprint,
+                 protoMajor: 1, sharing: true, extend: h.extend)
+    }
+
+    /// Looks for Macs on peer-to-peer Wi-Fi only while Connect (or a computer's page) is open:
+    /// browsing keeps peer-to-peer Wi-Fi on, which takes some speed from the normal Wi-Fi link.
+    private func updatePeerToPeerBrowsing(pane: Pane, on: Bool) {
+        let wanted: Bool
+        switch pane {
+        case .connect, .peer: wanted = on
+        default: wanted = false
+        }
+        if wanted, peerToPeerBrowser == nil {
+            peerToPeerBrowser = PeerToPeerBrowser(known: { [weak self] in
+                Dictionary((self?.trusted ?? []).map { ($0.fingerprint, $0.name) }, uniquingKeysWith: { a, _ in a })
+            }) { [weak self] hosts in
+                guard let self else { return }
+                let own = self.core?.fingerprint
+                self.peerToPeerHosts = hosts.filter { $0.fingerprint != own }
+                self.rebuildNearby()
+            }
+        } else if !wanted, let b = peerToPeerBrowser {
+            b.stop()
+            peerToPeerBrowser = nil
+            peerToPeerHosts = []
+            rebuildNearby()
         }
     }
 
