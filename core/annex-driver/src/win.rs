@@ -12,6 +12,7 @@ use windows::Win32::Foundation::HWND;
 use windows::core::{BOOL, HSTRING, PCWSTR, w};
 
 use crate::HARDWARE_ID;
+use crate::pnputil::published_names;
 
 pub fn run(args: &[String]) -> i32 {
     let result = match args.first().map(String::as_str) {
@@ -167,34 +168,9 @@ fn uninstall() -> Result<(), String> {
     Ok(())
 }
 
-/// Published names (`oemNN.inf`) of driver-store entries whose original name is `original`.
-fn published_names(pnputil_output: &str, original: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut current: Option<String> = None;
-    for line in pnputil_output.lines() {
-        let Some((key, value)) = line.split_once(':') else { continue };
-        let (key, value) = (key.trim().to_ascii_lowercase(), value.trim());
-        if key.starts_with("published name") {
-            current = Some(value.to_string());
-        } else if key.starts_with("original name")
-            && value.eq_ignore_ascii_case(original)
-            && let Some(p) = current.take()
-        {
-            names.push(p);
-        }
-    }
-    names
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_pnputil_listing() {
-        let out = "Published Name:     oem12.inf\nOriginal Name:      annexidd.inf\nProvider Name: Annex\n\nPublished Name: oem3.inf\nOriginal Name: other.inf\n";
-        assert_eq!(published_names(out, "annexidd.inf"), vec!["oem12.inf"]);
-    }
 
     #[test]
     fn multi_sz_is_double_terminated() {
