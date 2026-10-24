@@ -17,7 +17,9 @@ mod viewer;
 
 pub use crate::core::{Core, FAILURE_WINDOW, MAX_PAIRING_FAILURES, TrustPolicy};
 pub use events::{Event, EventSink, FrameOut, FrameSink, LinkKind, TransportKind};
-pub use host::{HostConfig, HostHandle, MAX_H264, MAX_SESSIONS, SessionId, SubmitResult, extend_stream_for, start_host};
+pub use host::{
+    HostConfig, HostHandle, MAX_H264, MAX_SESSIONS, SessionId, SubmitResult, extend_stream_for, start_host,
+};
 pub use stats::LatencyStats;
 pub use transport::is_link_local;
 pub use viewer::{ViewerConfig, ViewerHandle, connect_viewer};
