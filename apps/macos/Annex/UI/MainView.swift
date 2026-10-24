@@ -883,6 +883,15 @@ private struct SettingsPage: View {
                       subtitle: "Another Mac can connect with no router, like AirDrop. "
                           + (model.isHosting || model.isViewing ? "Applies to the next session." : "Uses a little Wi-Fi speed while on."),
                       isOn: $settings.peerToPeerWiFi)
+            GroupRow(title: "Extended display scaling",
+                     subtitle: "Text size on a screen extending this Mac. Sharpest is crisp; the steps between look a little soft.") {
+                Picker("", selection: $settings.extendScale) {
+                    Text("Sharpest").tag(0)
+                    ForEach(ExtendSession.scales, id: \.self) { Text("\($0) %").tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
         }
     }
 

@@ -29,6 +29,9 @@ final class AppSettings: ObservableObject {
     @Published var dismissedUpdateVersion: String? { didSet { defaults.set(dismissedUpdateVersion, forKey: Keys.dismissedUpdate) } }
     /// When the last update check finished (shown on the About page).
     @Published var lastUpdateCheck: Date? { didSet { defaults.set(lastUpdateCheck, forKey: Keys.lastCheck) } }
+    /// Host: the size of text and windows on a screen extending this Mac. 0 = sharpest (100 %, or
+    /// 200 % on a high-resolution screen); otherwise a scale step, 100–200.
+    @Published var extendScale: Int { didSet { defaults.set(extendScale, forKey: Keys.extendScale) } }
     /// Mac ↔ Mac with no router, over peer-to-peer Wi-Fi (what AirDrop uses). On by default.
     @Published var peerToPeerWiFi: Bool { didSet { defaults.set(peerToPeerWiFi, forKey: Keys.peerToPeer) } }
     /// The name other devices see; nil = this Mac's name from System Settings.
@@ -51,6 +54,7 @@ final class AppSettings: ObservableObject {
         static let dismissedUpdate = "dismissedUpdateVersion"
         static let lastCheck = "lastUpdateCheck"
         static let peerToPeer = "peerToPeerWiFi"
+        static let extendScale = "extendScale"
     }
 
     /// This copy is a pre-release (`0.2.0-pre.1`).
@@ -76,6 +80,7 @@ final class AppSettings: ObservableObject {
         dismissedUpdateVersion = defaults.string(forKey: Keys.dismissedUpdate)
         lastUpdateCheck = defaults.object(forKey: Keys.lastCheck) as? Date
         peerToPeerWiFi = defaults.bool(forKey: Keys.peerToPeer)
+        extendScale = defaults.integer(forKey: Keys.extendScale)
         refreshLaunchAtLogin()
     }
 

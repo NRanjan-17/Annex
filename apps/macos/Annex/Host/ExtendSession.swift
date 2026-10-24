@@ -36,6 +36,10 @@ final class ExtendSession {
     private var startedWithoutMode = false
     private var generation = 0
     private var stopped = false
+    /// The viewer's own scaling, for "Sharpest" (100 %, or 200 % on a high-resolution screen).
+    private var viewerScalePercent = 100
+    /// Annex's scaling choice (Settings → Sharing), applied once macOS has given the display a mode.
+    private var scaleToApply: Int?
 
     var onError: ((String) -> Void)?
 
@@ -49,8 +53,9 @@ final class ExtendSession {
     static let vendorID: UInt32 = 0x4E41  // "AN"
     static let productID: UInt32 = 0x4558  // "EX"
 
+    /// `scale`: Settings → Sharing → Extended display scaling (0 = sharpest).
     init(sessionID: UInt64, host: HostHandle, viewer: DisplayInfo, viewerFingerprint: String, viewerName: String,
-         preferHardware: Bool) throws {
+         preferHardware: Bool, scale: Int = 0) throws {
         guard AnnexVirtualDisplay.isSupported() else {
             throw AnnexError(message: "Virtual displays aren't supported on this version of macOS.")
         }
@@ -59,8 +64,10 @@ final class ExtendSession {
         self.viewerName = viewerName
         self.viewerFingerprint = viewerFingerprint
         self.preferHardware = preferHardware
-        let plan = Self.plan(for: viewer)
+        let plan = Self.plan(for: viewer, scale: scale)
         viewerPixels = plan.viewerPixels
+        viewerScalePercent = viewer.scalePercent
+        scaleToApply = scale
         fps = plan.rates[0]
         guard let d = AnnexVirtualDisplay(
             name: "Annex Display", vendorID: Self.vendorID, productID: Self.productID,
@@ -82,6 +89,47 @@ final class ExtendSession {
                   + "\(viewer.scalePercent) %, \(plan.modes.count) sizes × rates \(plan.rates)")
         DisplayReconfiguration.shared.observe(display: d.displayID, owner: self)
         restartCapture()
+        applyScaleIfReady()
+    }
+
+    /// Switches the display to a scale step (0 = sharpest), like picking it in System Settings,
+    /// and asks macOS to remember it. Above 100 % the step is drawn HiDPI (twice its point size).
+    /// Left alone while macOS mirrors the display: a mirror takes its size from the other screen.
+    func setScale(_ scale: Int) {
+        scaleToApply = scale
+        applyScaleIfReady()
+    }
+
+    private func applyScaleIfReady() {
+        guard !stopped, let scale = scaleToApply else { return }
+        let id = display.displayID
+        guard let current = CGDisplayCopyDisplayMode(id) else { return }  // no mode yet: retried later
+        scaleToApply = nil
+        guard CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay else { return }
+        let step = Self.resolvedScale(scale, viewerScalePercent: viewerScalePercent)
+        let points = ((viewerPixels.0 * 100 / step) & ~1, (viewerPixels.1 * 100 / step) & ~1)
+        let pixelWidth = step > 100 ? points.0 * 2 : points.0
+        let options = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+        let modes = (CGDisplayCopyAllDisplayModes(id, options) as? [CGDisplayMode] ?? [])
+            .filter { $0.width == points.0 && $0.height == points.1 && $0.pixelWidth == pixelWidth }
+        let rate = Self.rate(of: current, fallback: fps)
+        guard let mode = modes.first(where: { Self.rate(of: $0, fallback: 0) == rate }) ?? modes.first else {
+            Annex.log("extend: no \(points.0)×\(points.1) mode for \(step) %", error: true)
+            return
+        }
+        guard mode.width != current.width || mode.pixelWidth != current.pixelWidth
+                || Self.rate(of: mode, fallback: 0) != rate else { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        CGConfigureDisplayWithDisplayMode(config, id, mode, nil)
+        let result = CGCompleteDisplayConfiguration(config, .permanently)
+        Annex.log("extend: scaling \(step) % (\(points.0)×\(points.1) points), \(result == .success ? "set" : "failed: \(result.rawValue)")")
+    }
+
+    /// The step a choice means for this viewer: "Sharpest" (0) is 100 %, or 200 % on a screen
+    /// that already runs at 150 % or more.
+    nonisolated static func resolvedScale(_ scale: Int, viewerScalePercent: Int) -> Int {
+        scale == 0 ? (viewerScalePercent >= 150 ? 200 : 100) : scales.contains(scale) ? scale : 100
     }
 
     struct Plan: Equatable {
@@ -108,11 +156,12 @@ final class ExtendSession {
     /// down to the viewer's pixels. It starts at a sharp step: 100 % (one Mac pixel per viewer
     /// pixel) on an ordinary screen, 200 % (exactly double) on a high-resolution one. The steps in
     /// between, like a PC's 125 %, are shrunk by an uneven amount and look soft, so they're there to
-    /// choose in System Settings for bigger text, not the default.
-    nonisolated static func plan(for viewer: DisplayInfo) -> Plan {
+    /// choose (Annex's Settings → Sharing, or System Settings) for bigger text, not the default.
+    /// `scale` is Annex's choice (0 = sharpest); its size comes first.
+    nonisolated static func plan(for viewer: DisplayInfo, scale: Int = 0) -> Plan {
         let w = max(viewer.widthPx, 640) & ~1
         let h = max(viewer.heightPx, 480) & ~1
-        let preferred = viewer.scalePercent >= 150 ? 200 : 100
+        let preferred = resolvedScale(scale, viewerScalePercent: viewer.scalePercent)
         let ordered = [preferred] + scales.filter { $0 != preferred }
         var modes: [(Int, Int)] = []
         for scale in ordered {
@@ -203,6 +252,8 @@ final class ExtendSession {
     /// Called when the display's mode, or whether it's mirrored, may have changed.
     func reconfigured() {
         guard !stopped, let mode = CGDisplayCopyDisplayMode(display.displayID) else { return }
+        // The first mode has arrived: Annex's scaling wins over whatever macOS remembered.
+        if scaleToApply != nil { applyScaleIfReady() }
         let size = Self.streamSize(pixels: (mode.pixelWidth, mode.pixelHeight), viewer: viewerPixels,
                                    fps: Self.rate(of: mode, fallback: fps))
         if startedWithoutMode || size != pixelSize || Self.rate(of: mode, fallback: fps) != fps

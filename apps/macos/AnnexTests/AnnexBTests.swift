@@ -53,6 +53,13 @@ final class AnnexBTests: XCTestCase {
         XCTAssertEqual(laptop.modes.first!.0, 1920)
         XCTAssertEqual(laptop.modes.first!.1, 1080)
         XCTAssertTrue(laptop.modes.contains { $0 == (1536, 864) }, "125 % can still be chosen")
+        // Settings → Sharing → Extended display scaling: its step comes first; Sharpest depends on the screen.
+        let chosen = ExtendSession.plan(for: DisplayInfo(widthPx: 1920, heightPx: 1080, scalePercent: 125), scale: 150)
+        XCTAssertEqual(chosen.modes.first!.0, 1280)
+        XCTAssertEqual(ExtendSession.resolvedScale(0, viewerScalePercent: 125), 100)
+        XCTAssertEqual(ExtendSession.resolvedScale(0, viewerScalePercent: 200), 200)
+        XCTAssertEqual(ExtendSession.resolvedScale(175, viewerScalePercent: 100), 175)
+        XCTAssertEqual(ExtendSession.resolvedScale(130, viewerScalePercent: 100), 100, "not a step")
         // Refresh rates: the viewer's list, current first; without one, the usual lower rates.
         XCTAssertEqual(standard.rates, [60])
         let fast = ExtendSession.plan(for: DisplayInfo(widthPx: 1920, heightPx: 1080, refreshHz: 144, refreshRates: [165, 144, 120, 60, 48]))

@@ -30,6 +30,10 @@ final class HostController {
     let fps = 60
     private let core: CoreClient
     private let preferHardware: Bool
+    /// Settings → Sharing → Extended display scaling (0 = sharpest), for new and running sessions.
+    var extendScale = 0 {
+        didSet { for s in extendSessions.values { s.setScale(extendScale) } }
+    }
     private var host: HostHandle?
     private let capturer = ScreenCapturer()
     private var encoder: H264Encoder?
@@ -189,7 +193,8 @@ final class HostController {
         do {
             let session = try ExtendSession(
                 sessionID: s.sessionId, host: host, viewer: s.viewerDisplay ?? DisplayInfo(widthPx: 1920, heightPx: 1080),
-                viewerFingerprint: s.fingerprint, viewerName: s.peerName, preferHardware: preferHardware)
+                viewerFingerprint: s.fingerprint, viewerName: s.peerName, preferHardware: preferHardware,
+                scale: extendScale)
             let id = s.sessionId
             // Any capture or encoder failure ends the session, which removes the display again.
             session.onError = { [weak self] message in self?.failExtend(id, message) }

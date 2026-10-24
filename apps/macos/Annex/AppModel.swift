@@ -111,6 +111,10 @@ final class AppModel: ObservableObject {
         extendMode = settings.extendByDefault
         // Re-publish settings changes so views observing the model refresh.
         settings.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &cancellables)
+        // A new scaling choice applies straight away to screens extending this Mac.
+        settings.$extendScale.dropFirst().removeDuplicates()
+            .sink { [weak self] scale in self?.host?.extendScale = scale }
+            .store(in: &cancellables)
         guard !Self.isRunningTests else { return }
         start()
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
@@ -227,6 +231,7 @@ final class AppModel: ObservableObject {
             CGRequestScreenCaptureAccess()
         }
         let h = HostController(core: core, display: display, preferHardware: settings.preferHardwareEncoder)
+        h.extendScale = settings.extendScale
         h.onStatus = { [weak self] s in self?.hostStatus = s }
         h.onEvent = { [weak self] e in self?.handleSessionEvent(e) }
         do {
