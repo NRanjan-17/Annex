@@ -211,7 +211,7 @@ private struct SearchStatus: View {
 }
 
 /// Three dots lighting up in turn: looking, not stuck.
-private struct ScanningDots: View {
+struct ScanningDots: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 12)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
