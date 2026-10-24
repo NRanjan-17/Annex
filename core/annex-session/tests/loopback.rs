@@ -840,3 +840,26 @@ async fn direct_link_messages_flow_both_ways() {
     viewer.disconnect().await;
     host.stop().await;
 }
+
+/// The host listens on IPv6 as well (discovery advertises `fe80::…` on a cable, and viewers try
+/// it first), over both QUIC and the TCP fallback, and an IPv4 viewer still reads as IPv4.
+#[tokio::test(flavor = "multi_thread")]
+async fn host_accepts_ipv6_and_ipv4_viewers() {
+    let (hev, mut hrx) = channel_sink();
+    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
+    for address in [format!("[::1]:{}", host.port()), format!("127.0.0.1:{}", host.port())] {
+        let (vev, mut vrx) = channel_sink();
+        let viewer =
+            connect_viewer(viewer_core("Viewer"), ViewerConfig { address, ..viewer_cfg(0) }, vev, Arc::new(|_| {}));
+        let Event::SessionStarted { transport, .. } =
+            wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await
+        else {
+            unreachable!()
+        };
+        assert_eq!(transport, annex_session::TransportKind::Quic);
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+        viewer.disconnect().await;
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionEnded { .. })).await;
+    }
+    host.stop().await;
+}
