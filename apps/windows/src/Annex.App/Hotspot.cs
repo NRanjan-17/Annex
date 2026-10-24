@@ -16,15 +16,24 @@ internal sealed class Hotspot
 
     private NetworkOperatorTetheringManager? _manager;
     private (string Ssid, string Passphrase)? _previous;
+    private Task<string?>? _starting;
 
     public string? Ssid { get; private set; }
     public string? Passphrase { get; private set; }
     public bool IsOn => Ssid is not null;
 
     /// <summary>Starts the hotspot. Returns null on success, or a message for the user.</summary>
-    public async Task<string?> StartAsync()
+    public Task<string?> StartAsync()
     {
-        if (IsOn) return null;
+        if (IsOn) return Task.FromResult<string?>(null);
+        // A caller while a start is under way shares it: starting again would save the first
+        // start's temporary network as the user's own, and theirs would never come back.
+        if (_starting is { IsCompleted: false } running) return running;
+        return _starting = StartCoreAsync();
+    }
+
+    private async Task<string?> StartCoreAsync()
+    {
         try
         {
             var profile = NetworkInformation.GetInternetConnectionProfile()

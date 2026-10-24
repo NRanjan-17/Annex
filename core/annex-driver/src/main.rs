@@ -7,6 +7,9 @@
 //! ```
 //! Used by the Windows installer. Unsigned / test-signed packages only install with test signing on.
 
+// Used by `win`; elsewhere only its tests run.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod pnputil;
 #[cfg(windows)]
 mod win;
 

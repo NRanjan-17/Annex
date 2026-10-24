@@ -263,6 +263,19 @@ pub struct HardwareEncoder {
     force_key: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     _manager: IMFDXGIDeviceManager,
+    /// Last field: dropped after Drop::drop shut the MFT down and joined its thread.
+    _activate: ShutdownOnDrop,
+}
+
+/// The activation object of the MFT in use; ShutdownObject releases what ActivateObject made.
+struct ShutdownOnDrop(IMFActivate);
+
+impl Drop for ShutdownOnDrop {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.0.ShutdownObject();
+        }
+    }
 }
 
 // SAFETY: the MFT and manager are free-threaded COM objects; access is synchronised by MF.
@@ -289,10 +302,11 @@ impl HardwareEncoder {
             candidates.extend(hardware_encoders(None)?);
             let mut last = MediaError::Other("no hardware H.264 encoder".into());
             let mut chosen = None;
-            for activate in candidates {
+            let mut candidates = candidates.into_iter();
+            for activate in candidates.by_ref() {
                 match try_activate(&activate, &manager) {
                     Ok(mft) => {
-                        chosen = Some(mft);
+                        chosen = Some((ShutdownOnDrop(activate), mft));
                         break;
                     }
                     Err(e) => {
@@ -302,7 +316,10 @@ impl HardwareEncoder {
                     }
                 }
             }
-            let mft = chosen.ok_or(last)?;
+            for untried in candidates {
+                let _ = untried.ShutdownObject();
+            }
+            let (activate, mft) = chosen.ok_or(last)?;
 
             configure(&mft, cfg)?;
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
@@ -324,7 +341,7 @@ impl HardwareEncoder {
                     })
                     .map_err(|e| MediaError::Other(e.to_string()))?
             };
-            Ok(HardwareEncoder { mft, slot, force_key, thread: Some(thread), _manager: manager })
+            Ok(HardwareEncoder { mft, slot, force_key, thread: Some(thread), _manager: manager, _activate: activate })
         }
     }
 
@@ -416,8 +433,13 @@ fn event_loop(
 
 impl Drop for HardwareEncoder {
     fn drop(&mut self) {
-        self.slot.stop.store(true, Ordering::Release);
-        self.slot.ready.notify_all();
+        {
+            // Under the frame lock: the event thread checks `stop` and then waits while holding
+            // it, so the wake-up can't land between the two and be lost.
+            let _g = self.slot.frame.lock().unwrap_or_else(|e| e.into_inner());
+            self.slot.stop.store(true, Ordering::Release);
+            self.slot.ready.notify_all();
+        }
         unsafe {
             // Unblocks GetEvent in the event thread.
             if let Ok(s) = self.mft.cast::<IMFShutdown>() {

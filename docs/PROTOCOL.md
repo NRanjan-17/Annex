@@ -147,8 +147,9 @@ length) sized to the path MTU, plus `parity_count` Reed-Solomon parity shards
 ```
 
 Any `data_count` shards rebuild the frame. Frames are delivered in order. A frame that is
-still incomplete when a newer frame completes is counted as lost, and the viewer asks for a
-keyframe (at most every 250 ms). Parity starts at 15 % and is adapted between 10 % and 40 %.
+still incomplete when a newer frame completes is counted as lost, as is a frame none of whose
+datagrams arrived (a gap in `frame_id`), and the viewer asks for a keyframe (at most every
+250 ms). At most 32 incomplete frames are kept; beyond that the oldest is counted as lost. Parity starts at 15 % and is adapted between 10 % and 40 %.
 
 ## Adaptive bitrate
 
@@ -157,7 +158,7 @@ received, datagrams rebuilt from parity, and the RTT. The host's controller (`an
 
 | Condition | Bitrate scale | FEC |
 |---|---|---|
-| a frame lost, > 5 % datagrams rebuilt, or RTT > 2× best + 15 ms | × 0.8 (min 20 %) | +5 points (max 40 %) |
+| a frame lost, > 5 % datagrams rebuilt, or RTT > 2× best (of the last 10 reports) + 15 ms | × 0.8 (min 20 %) | +5 points (max 40 %) |
 | 2–5 % datagrams rebuilt | hold | +2 points |
 | clean interval | +5 points (max 150 %) | −1 point (min 10 %) |
 

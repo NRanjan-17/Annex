@@ -491,6 +491,14 @@ async fn run_session(
         outbox,
     });
     shared.sessions.lock().unwrap().insert(id, slot.clone());
+    if req.mode == Mode::Mirror {
+        // A `set_stream` between reading the mirror stream above and the insert didn't reach this
+        // slot; one after the insert did, and is picked up by `stream_rx.changed()` below.
+        let current = shared.mirror_stream.lock().unwrap().clone();
+        if current != stream {
+            slot.stream.send_replace(current);
+        }
+    }
     *started = true;
     (shared.events)(Event::SessionStarted {
         session_id: id,
@@ -515,7 +523,6 @@ async fn run_session(
 
     // The reader runs independently so control messages are handled while we write video.
     let (ctl_tx, mut ctl_rx) = mpsc::channel::<Result<Control, SessionError>>(32);
-    stream_rx.mark_unchanged();
     let reader_fut = async {
         loop {
             let item = match reader.next().await {
@@ -541,7 +548,15 @@ async fn run_session(
         loop {
             tokio::select! {
                 f = frame_rx.recv() => match f {
-                    Some(f) => video.send(writer, f.header, &f.data).await?,
+                    Some(f) => match video.send(writer, f.header, &f.data).await {
+                        // Too big to send (more datagram shards than a frame may have): skip it and
+                        // resync with a keyframe instead of ending the session.
+                        Err(SessionError::Proto(annex_proto::ProtoError::RecordTooLarge(len))) => {
+                            tracing::warn!(id, len, frame_id = f.header.frame_id, "frame too large to send; dropped");
+                            shared.request_keyframe(&slot);
+                        }
+                        r => r?,
+                    },
                     None => return Ok("stopped".to_string()),
                 },
                 Some(c) = outbox_rx.recv() => writer.send_control(&c).await?,

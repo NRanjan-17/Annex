@@ -22,12 +22,10 @@ const WINDOW: usize = 16;
 
 impl ClockSync {
     /// `t0`/`t1`: viewer send/receive times; `t_host`: host time when it answered.
+    /// `t0` and `t_host` come back from the peer, so arithmetic on them is checked.
     pub fn add_sample(&mut self, t0: i64, t_host: i64, t1: i64) {
-        if t1 < t0 {
-            return;
-        }
-        let rtt = t1 - t0;
-        let offset = t_host - (t0 + rtt / 2);
+        let Some(rtt) = t1.checked_sub(t0).filter(|r| *r >= 0) else { return };
+        let Some(offset) = t0.checked_add(rtt / 2).and_then(|mid| t_host.checked_sub(mid)) else { return };
         if self.samples.len() == WINDOW {
             self.samples.pop_front();
         }
@@ -48,7 +46,7 @@ impl ClockSync {
 
     /// Converts a host timestamp to this (viewer) clock.
     pub fn to_local(&self, host_ts: i64) -> Option<i64> {
-        self.offset_us().map(|o| host_ts - o)
+        self.offset_us().and_then(|o| host_ts.checked_sub(o))
     }
 }
 
@@ -76,6 +74,18 @@ mod tests {
             c.add_sample(i * 10, i * 10 + 5, i * 10 + 10);
         }
         assert_eq!(c.samples.len(), WINDOW);
+    }
+
+    #[test]
+    fn extreme_peer_timestamps_do_not_overflow() {
+        let mut c = ClockSync::default();
+        c.add_sample(i64::MIN, 0, i64::MAX);
+        c.add_sample(0, i64::MIN, i64::MAX);
+        c.add_sample(1, i64::MIN, 3);
+        assert_eq!(c.offset_us(), None);
+        c.add_sample(0, -1000, 0);
+        assert_eq!(c.to_local(i64::MAX), None);
+        assert_eq!(c.to_local(0), Some(1000));
     }
 
     #[test]

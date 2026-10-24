@@ -59,6 +59,8 @@ public sealed partial class MainWindow : Window
     // Direct Wi-Fi link: this PC's hotspot, and a reconnect we're waiting for after switching.
     private readonly Hotspot _hotspot = new();
     private (string Fingerprint, string Name, bool Extend, DateTimeOffset Until)? _directPending;
+    /// <summary>SwitchToDirectWifiAsync is waiting for the hotspot (before _directPending is set).</summary>
+    private bool _directStarting;
     private string? _directStatus;
     /// <summary>Identifies the current viewer, so events still queued from a replaced one are ignored.</summary>
     private object? _viewerToken;
@@ -628,10 +630,20 @@ public sealed partial class MainWindow : Window
     /// encrypted session, then reconnect once the host appears on the hotspot.</summary>
     private async Task SwitchToDirectWifiAsync()
     {
-        if (_viewer is null || _viewerFingerprint is null) return;
+        // SessionStarted and DirectLinkRequested can both ask for the switch: one offer is enough.
+        if (_viewer is null || _viewerFingerprint is null || _directStarting) return;
+        _directStarting = true;
         _directStatus = "Starting this PC's hotspot…";
         RenderIf("connect", "peer");
-        var error = await _hotspot.StartAsync();
+        string? error;
+        try
+        {
+            error = await _hotspot.StartAsync();
+        }
+        finally
+        {
+            _directStarting = false;
+        }
         if (error is not null || _viewer is null)
         {
             _directStatus = error ?? "Disconnected before the switch.";
@@ -1423,7 +1435,16 @@ public sealed partial class MainWindow : Window
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
         };
-        var result = await dialog.ShowAsync();
+        ContentDialogResult result;
+        try
+        {
+            result = await dialog.ShowAsync();
+        }
+        catch (Exception)
+        {
+            // Another dialog is already open: refuse the pairing rather than crash (it can be retried).
+            result = ContentDialogResult.None;
+        }
         if (result == ContentDialogResult.Primary)
             _core.SubmitPin(req.RequestId, box.Text);
         else

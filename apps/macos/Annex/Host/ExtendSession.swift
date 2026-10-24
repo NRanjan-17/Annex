@@ -245,6 +245,8 @@ final class ExtendSession {
         }
         await capturer.stop()
         guard Self.captureEnabled else { return }
+        // Reset before capture starts: the first frame can arrive before start returns.
+        lastFrame.value = nil
         // A brand-new display can take a moment to show up in ScreenCaptureKit.
         for attempt in 0..<20 {
             guard gen == generation, !stopped else { return }
@@ -265,7 +267,6 @@ extension ExtendSession {
     /// A new capture always delivers a first frame quickly; if none arrives, the viewer would sit
     /// on a black window while the Mac stays extended, so the session fails instead.
     fileprivate func expectFirstFrame(generation gen: Int) {
-        lastFrame.value = nil
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 6_000_000_000)
             guard let self, gen == self.generation, !self.stopped else { return }

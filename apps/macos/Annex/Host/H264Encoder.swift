@@ -120,7 +120,12 @@ final class H264Encoder {
         let pts = CMTime(value: captureMicros, timescale: 1_000_000)
         let status = VTCompressionSessionEncodeFrame(session, imageBuffer: pixelBuffer, presentationTimeStamp: pts,
                                                      duration: .invalid, frameProperties: props, infoFlagsOut: nil) { [weak self] status, _, sample in
-            guard status == noErr else { self?.failed(status); return }
+            guard status == noErr else {
+                self?.failed(status)
+                // The forced keyframe was lost with this frame; force the next one instead.
+                if key { self?.requestKeyframe() }
+                return
+            }
             self?.succeeded()
             guard let sample, let (data, isKey) = AnnexB.fromSampleBuffer(sample) else { return }
             self?.onEncoded?(data, isKey, captureMicros)

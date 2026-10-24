@@ -219,6 +219,30 @@ impl AnnexCore {
         p.advert.take()
     }
 
+    /// `begin_hosting` plus the host's own record. If that can't be registered, the presence
+    /// record is restored (the device would otherwise vanish from other computers' Nearby lists).
+    fn advertise_host(&self, port: u16, extend: bool) -> Result<Advertisement, (i32, String)> {
+        let presence = self.begin_hosting();
+        let advert =
+            self.discovery().and_then(|d| d.advertise(&self.core.device_name(), port, true, extend).map_err(failed));
+        match advert {
+            Ok(advert) => {
+                if let Some(old) = presence {
+                    old.replaced_by(&advert);
+                }
+                Ok(advert)
+            }
+            Err(e) => {
+                // Never withdrawn (begin_hosting only took it), so put it back as it was rather
+                // than re-register, which would likely fail the same way and withdraw it.
+                let mut p = self.presence.lock().unwrap();
+                p.hosting = false;
+                p.advert = presence;
+                Err(e)
+            }
+        }
+    }
+
     /// The host stopped; its record (if any) is replaced by the presence record.
     fn end_hosting(&self, host_advert: Option<Advertisement>) {
         self.presence.lock().unwrap().hosting = false;
@@ -643,13 +667,15 @@ pub unsafe extern "C" fn annex_host_start(
         let handle =
             c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, callbacks.event_sink())).map_err(failed)?;
         let advert = if advertise {
-            let presence = c.begin_hosting();
-            let d = c.discovery()?;
-            let advert = d.advertise(&c.core.device_name(), handle.port(), true, extend).map_err(failed)?;
-            if let Some(old) = presence {
-                old.replaced_by(&advert);
+            match c.advertise_host(handle.port(), extend) {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    // The caller never gets this host, so nothing else would stop it.
+                    c.rt.block_on(handle.stop());
+                    callbacks.clear();
+                    return Err(e);
+                }
             }
-            Some(advert)
         } else {
             None
         };
@@ -866,14 +892,16 @@ pub unsafe extern "C" fn annex_host_start_screen(
         let (host, screen) =
             win_host::start(c, monitor, port, prefer_hardware, gpu, callbacks.event_sink()).map_err(failed)?;
         let advert = if advertise {
-            let presence = c.begin_hosting();
-            let d = c.discovery()?;
-            let advert =
-                d.advertise(&c.core.device_name(), host.port(), true, host.extend_supported()).map_err(failed)?;
-            if let Some(old) = presence {
-                old.replaced_by(&advert);
+            match c.advertise_host(host.port(), host.extend_supported()) {
+                Ok(a) => Some(a),
+                Err(e) => {
+                    // The caller never gets this host, so nothing else would stop it.
+                    screen.stop();
+                    c.rt.block_on(host.stop());
+                    callbacks.clear();
+                    return Err(e);
+                }
             }
-            Some(advert)
         } else {
             None
         };
@@ -905,10 +933,13 @@ mod win_host {
     }
 
     /// One Extend session: a virtual monitor from the AnnexIdd driver, captured for one viewer.
+    /// Registered when the session starts, before the monitor exists, so that a session ending
+    /// during setup is seen (`start_extend` then removes the monitor itself).
     struct ExtendSession {
-        connector: u32,
-        /// Where this viewer's pointer lands.
-        monitor: Monitor,
+        /// Set once the driver added the monitor.
+        connector: Option<u32>,
+        /// Where this viewer's pointer lands (once the monitor is active).
+        monitor: Option<Monitor>,
         stop: Arc<AtomicBool>,
         pipeline: Arc<Mutex<Option<HostPipeline>>>,
     }
@@ -946,6 +977,10 @@ mod win_host {
                 p.request_keyframe();
                 return;
             }
+            // The last viewer may have left before this thread got here.
+            if self.mirror_sessions.lock().unwrap().is_empty() {
+                return;
+            }
             let Some(host) = self.host.get().cloned() else { return };
             // Weak: the host owns this pipeline (via the event sink), not the other way round.
             let output = Arc::new(move |f: EncodedFrame| {
@@ -967,16 +1002,25 @@ mod win_host {
             }
         }
 
-        fn start_extend(self: &Arc<Self>, id: u64, display: DisplayInfo, fingerprint: String) {
-            let Some(host) = self.host() else { return };
-            let Some(driver) = self.driver.clone() else {
-                tracing::error!("extend session {id}: no display driver");
-                host.end_session(id);
+        fn start_extend(
+            self: &Arc<Self>,
+            id: u64,
+            display: DisplayInfo,
+            fingerprint: String,
+            stop: Arc<AtomicBool>,
+            pipeline: Arc<Mutex<Option<HostPipeline>>>,
+        ) {
+            let Some(host) = self.host() else {
+                self.extends.lock().unwrap().remove(&id);
                 return;
             };
             let fail = |e: String| {
                 tracing::error!("extend session {id} failed: {e}");
                 host.end_session(id);
+            };
+            let Some(driver) = self.driver.clone() else {
+                self.extends.lock().unwrap().remove(&id);
+                return fail("no display driver".into());
             };
             let serial = idd::serial_for(&fingerprint);
             // The viewer's refresh rate, like a monitor; Windows Settings also offers 60 Hz.
@@ -990,8 +1034,19 @@ mod win_host {
                 display.height_mm,
             ) {
                 Ok(c) => c,
-                Err(e) => return fail(e.to_string()),
+                Err(e) => {
+                    self.extends.lock().unwrap().remove(&id);
+                    return fail(e.to_string());
+                }
             };
+            // Ended meanwhile: end_extend found no monitor to remove.
+            match self.extends.lock().unwrap().get_mut(&id) {
+                Some(s) => s.connector = Some(connector),
+                None => {
+                    let _ = driver.remove_monitor(connector);
+                    return;
+                }
+            }
             // (Plain locals: inside tracing's macros `display` names tracing's display() helper.)
             let (asked_w, asked_h) = (display.width_px, display.height_px);
             tracing::info!(id, connector, width = asked_w, height = asked_h, hz, "extend: virtual monitor added");
@@ -1001,19 +1056,22 @@ mod win_host {
                     m
                 }
                 Err(e) => {
-                    let _ = driver.remove_monitor(connector);
-                    return fail(e.to_string());
+                    // Unless end_extend already removed it.
+                    if self.extends.lock().unwrap().remove(&id).is_some() {
+                        let _ = driver.remove_monitor(connector);
+                        fail(e.to_string());
+                    }
+                    return;
                 }
             };
-            let stop = Arc::new(AtomicBool::new(false));
-            let pipeline: Arc<Mutex<Option<HostPipeline>>> = Arc::default();
-            self.extends.lock().unwrap().insert(
-                id,
-                ExtendSession { connector, monitor: monitor.clone(), stop: stop.clone(), pipeline: pipeline.clone() },
-            );
+            match self.extends.lock().unwrap().get_mut(&id) {
+                Some(s) => s.monitor = Some(monitor.clone()),
+                None => return, // ended while the monitor came up; end_extend removed it
+            }
             let weak_host = Arc::downgrade(&host);
             let prefer_hardware = self.prefer_hardware;
             let gpu = self.mirror_cfg.gpu;
+            let slot = pipeline.clone();
             let start = move |m: &Monitor| -> Option<(u32, u32)> {
                 let host = weak_host.upgrade()?;
                 // The virtual monitor's size, within what H.264 can carry (a 4.5K or 5K viewer
@@ -1052,25 +1110,26 @@ mod win_host {
             while !stop.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(250));
                 let Some((w, h)) = monitor_size(&monitor.name) else { continue };
-                if current != Some((w & !1, h & !1)) {
+                // Compared the way `start` sizes the stream: a monitor beyond H.264's limit is
+                // streamed smaller, and isn't a resize.
+                if current != Some(stream_size(w, h, MAX_H264.0, MAX_H264.1)) {
                     // Stop the old pipeline before capturing at the new size.
-                    let old = self.extends.lock().unwrap().get(&id).map(|e| e.pipeline.clone());
-                    if let Some(p) = old {
-                        p.lock().unwrap().take();
-                    }
+                    slot.lock().unwrap().take();
                     let resized = Monitor { width: w, height: h, ..monitor.clone() };
                     current = start(&resized);
                 }
             }
+            // A pipeline started after end_extend took the last one.
+            slot.lock().unwrap().take();
         }
 
         fn end_extend(&self, id: u64) {
             let Some(session) = self.extends.lock().unwrap().remove(&id) else { return };
             session.stop.store(true, Ordering::Release);
             session.pipeline.lock().unwrap().take();
-            if let Some(driver) = &self.driver {
+            if let (Some(driver), Some(connector)) = (&self.driver, session.connector) {
                 // Windows moves the monitor's windows back to the remaining displays.
-                let _ = driver.remove_monitor(session.connector);
+                let _ = driver.remove_monitor(connector);
             }
         }
 
@@ -1083,6 +1142,18 @@ mod win_host {
                     std::thread::spawn(move || me.start_mirror());
                 }
                 Event::SessionStarted { session_id, mode: Mode::Extend, viewer_display, fingerprint, .. } => {
+                    // Registered now, before SessionEnded can run end_extend.
+                    let stop = Arc::new(AtomicBool::new(false));
+                    let pipeline: Arc<Mutex<Option<HostPipeline>>> = Arc::default();
+                    self.extends.lock().unwrap().insert(
+                        *session_id,
+                        ExtendSession {
+                            connector: None,
+                            monitor: None,
+                            stop: stop.clone(),
+                            pipeline: pipeline.clone(),
+                        },
+                    );
                     let me = self.clone();
                     let (id, display, fp) = (
                         *session_id,
@@ -1097,7 +1168,7 @@ mod win_host {
                         }),
                         fingerprint.clone(),
                     );
-                    std::thread::spawn(move || me.start_extend(id, display, fp));
+                    std::thread::spawn(move || me.start_extend(id, display, fp, stop, pipeline));
                 }
                 Event::SessionEnded { session_id, .. } => {
                     if self.mirror_sessions.lock().unwrap().remove(session_id) {
@@ -1132,7 +1203,7 @@ mod win_host {
                     }
                 }
                 Event::Input { session_id, event } => {
-                    let monitor = self.extends.lock().unwrap().get(session_id).map(|e| e.monitor.clone());
+                    let monitor = self.extends.lock().unwrap().get(session_id).and_then(|e| e.monitor.clone());
                     let monitor = monitor.unwrap_or_else(|| self.mirror_cfg.monitor.clone());
                     if let Err(e) = self.injector.lock().unwrap().inject(&monitor, *event) {
                         tracing::debug!("input not injected: {e}");

@@ -77,6 +77,11 @@ struct Asset {
 /// `beta`: include pre-releases. Without it, someone on a pre-release is offered the newest normal
 /// release even if it's older (that's what turning Beta updates off means). `asset_suffix` names
 /// this platform's file, e.g. `-macos-universal.dmg` or `-x64.exe`.
+///
+/// The tag isn't signed, so the file must be named for the tag's version (`Annex-<v><suffix>` or
+/// `Annex-Setup-<v><suffix>`, as CI names it). [`verify`] then requires exactly that name in the
+/// signed checksums, which ties the offered version to the signature: an old signed file
+/// re-published under a newer tag isn't offered.
 pub fn pick(releases_json: &str, current: &str, beta: bool, asset_suffix: &str) -> Result<Option<Update>, UpdateError> {
     let releases: Vec<Release> =
         serde_json::from_str(releases_json).map_err(|e| UpdateError::BadReleases(e.to_string()))?;
@@ -86,8 +91,10 @@ pub fn pick(releases_json: &str, current: &str, beta: bool, asset_suffix: &str) 
         .iter()
         .filter(|r| !r.draft && (beta || !r.prerelease))
         .filter_map(|r| {
-            let version = Version::parse(r.tag_name.trim_start_matches('v')).ok()?;
-            let asset = r.assets.iter().find(|a| a.name.ends_with(asset_suffix))?;
+            let v = r.tag_name.trim_start_matches('v');
+            let version = Version::parse(v).ok()?;
+            let names = [format!("Annex-{v}{asset_suffix}"), format!("Annex-Setup-{v}{asset_suffix}")];
+            let asset = r.assets.iter().find(|a| names.contains(&a.name))?;
             let sums = r.assets.iter().find(|a| a.name == SUMS_NAME)?;
             let sig = r.assets.iter().find(|a| a.name == SIG_NAME)?;
             Some((version, r, asset, sums, sig))
@@ -237,6 +244,21 @@ mod tests {
         assert_eq!(pick(&json, "0.1.0", false, "-x64.exe").unwrap().unwrap().version, "0.2.0");
         assert_eq!(pick(&json, "0.1.0", false, "-arm64.exe").unwrap(), None, "no file for this platform");
         assert!(pick("not json", "0.1.0", false, "-x64.exe").is_err());
+    }
+
+    #[test]
+    fn a_newer_tag_on_an_older_file_is_not_offered() {
+        // Someone re-publishes the signed 0.1.0 files under a v99 tag to force a downgrade.
+        let replayed = release("v0.1.0", false, true).replace(r#""tag_name":"v0.1.0""#, r#""tag_name":"v99.0.0""#);
+        let json = list(&[replayed, release("v0.2.0", false, true)]);
+        let u = pick(&json, "0.1.0", false, "-x64.exe").unwrap().unwrap();
+        assert_eq!((u.version.as_str(), u.asset_name.as_str()), ("0.2.0", "Annex-Setup-0.2.0-x64.exe"));
+        assert_eq!(pick(&json, "0.2.0", false, "-macos-universal.dmg").unwrap(), None);
+        // A pre-release's file doesn't stand in for the release of the same number either.
+        let json = list(&[
+            release("v1.0.0-pre.1", false, true).replace(r#""tag_name":"v1.0.0-pre.1""#, r#""tag_name":"v1.0.0""#)
+        ]);
+        assert_eq!(pick(&json, "0.1.0", false, "-x64.exe").unwrap(), None);
     }
 
     #[test]
