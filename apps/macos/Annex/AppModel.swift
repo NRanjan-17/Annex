@@ -109,18 +109,6 @@ final class AppModel: ObservableObject {
         settings.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &cancellables)
         guard !Self.isRunningTests else { return }
         start()
-        #if DEBUG
-        if ProcessInfo.processInfo.environment["ANNEX_PREVIEW_PEERS"] != nil { rebuildNearby() }
-        // Open a page straight away for screenshots (`ANNEX_PREVIEW_PANE=settings`).
-        switch ProcessInfo.processInfo.environment["ANNEX_PREVIEW_PANE"] {
-        case "share": pane = .share
-        case "connect": pane = .connect
-        case "devices": pane = .devices
-        case "settings": pane = .settings
-        case "about": pane = .about
-        default: break
-        }
-        #endif
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in self?.refreshPermissions() }
             .store(in: &cancellables)
@@ -694,19 +682,6 @@ final class AppModel: ObservableObject {
         let known = Set(lanPeers.compactMap(\.fingerprint))
         let peerOnly = peerToPeerHosts.filter { !known.contains($0.fingerprint) }.map(Self.peerInfo)
         discovered = (lanPeers + peerOnly).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        #if DEBUG
-        // Sample computers for screenshots of Home (`ANNEX_PREVIEW_PEERS=1`).
-        if ProcessInfo.processInfo.environment["ANNEX_PREVIEW_PEERS"] != nil, discovered.isEmpty {
-            discovered = [
-                PeerInfo(instance: "preview-air", name: "MacBook Air", addresses: ["192.168.1.24"], port: 47800,
-                         fingerprint: nil, protoMajor: 1, sharing: true, extend: true),
-                PeerInfo(instance: "preview-pc", name: "Studio PC", addresses: ["192.168.137.1"], port: 47800,
-                         fingerprint: nil, protoMajor: 1, sharing: true, extend: true),
-                PeerInfo(instance: "preview-imac", name: "Office iMac", addresses: ["192.168.1.31"], port: 47800,
-                         fingerprint: nil, protoMajor: 1, sharing: false, extend: true),
-            ]
-        }
-        #endif
         if case .peer(let instance) = pane, !discovered.contains(where: { $0.instance == instance }) { pane = .home }
     }
 

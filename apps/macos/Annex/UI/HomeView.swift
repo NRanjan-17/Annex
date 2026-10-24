@@ -4,21 +4,8 @@ import SwiftUI
 /// people need: pick a computer, then Extend or Show Its Screen.
 struct HomeView: View {
     @ObservedObject var model: AppModel
-    @State private var selectedID: String? = {
-        #if DEBUG
-        // Screenshots of the selected-computer card (`ANNEX_PREVIEW_SELECT=<instance>`).
-        return ProcessInfo.processInfo.environment["ANNEX_PREVIEW_SELECT"]
-        #else
-        return nil
-        #endif
-    }()
-    @State private var showOtherWays: Bool = {
-        #if DEBUG
-        return ProcessInfo.processInfo.environment["ANNEX_PREVIEW_SHEET"] != nil
-        #else
-        return false
-        #endif
-    }()
+    @State private var selectedID: String?
+    @State private var showOtherWays = false
 
     private var selected: PeerInfo? {
         guard let id = selectedID else { return nil }
