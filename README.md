@@ -99,8 +99,9 @@ Choose **Extend display** (or turn on *Extend display by default* in
 
 - **Mac:** arrange it in System Settings → Displays, and pick its scaling there, from *Larger Text*
   to *More Space* (the same steps as Windows' 100–200 %), and its refresh rate: the same rates
-  the other computer's screen supports, so a 144 Hz laptop gets 144 Hz. It starts at the other
-  computer's own scaling and refresh rate.
+  the other computer's screen supports, so a 144 Hz laptop gets 144 Hz. It starts at the sharpest
+  scaling (100 %, or 200 % on a high-resolution screen) and the other computer's refresh rate; the
+  steps in between give bigger text but look a little soft.
 - **Windows:** arrange it, and pick its scale and refresh rate, in Settings → System → Display.
   Needs the Extend-mode driver (below).
 

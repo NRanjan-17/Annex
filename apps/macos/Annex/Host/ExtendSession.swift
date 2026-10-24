@@ -103,14 +103,16 @@ final class ExtendSession {
     /// "More Space".
     nonisolated static let scales = [100, 125, 150, 175, 200]
 
-    /// Modes for a viewer screen: one "looks like" size per scale step, defaulting to the step
-    /// nearest the viewer's own scaling (so a PC at 150 % starts at 150 %). Above 100 % macOS draws
+    /// Modes for a viewer screen: one "looks like" size per scale step. Above 100 % macOS draws
     /// them HiDPI, at twice the point size, as on a Retina screen; the capture scales that back
-    /// down to the viewer's pixels.
+    /// down to the viewer's pixels. It starts at a sharp step: 100 % (one Mac pixel per viewer
+    /// pixel) on an ordinary screen, 200 % (exactly double) on a high-resolution one. The steps in
+    /// between, like a PC's 125 %, are shrunk by an uneven amount and look soft, so they're there to
+    /// choose in System Settings for bigger text, not the default.
     nonisolated static func plan(for viewer: DisplayInfo) -> Plan {
         let w = max(viewer.widthPx, 640) & ~1
         let h = max(viewer.heightPx, 480) & ~1
-        let preferred = scales.min { abs($0 - viewer.scalePercent) < abs($1 - viewer.scalePercent) }!
+        let preferred = viewer.scalePercent >= 150 ? 200 : 100
         let ordered = [preferred] + scales.filter { $0 != preferred }
         var modes: [(Int, Int)] = []
         for scale in ordered {
