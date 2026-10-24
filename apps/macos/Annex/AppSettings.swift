@@ -29,6 +29,8 @@ final class AppSettings: ObservableObject {
     @Published var dismissedUpdateVersion: String? { didSet { defaults.set(dismissedUpdateVersion, forKey: Keys.dismissedUpdate) } }
     /// When the last update check finished (shown on the About page).
     @Published var lastUpdateCheck: Date? { didSet { defaults.set(lastUpdateCheck, forKey: Keys.lastCheck) } }
+    /// Mac ↔ Mac with no router, over peer-to-peer Wi-Fi (what AirDrop uses). On by default.
+    @Published var peerToPeerWiFi: Bool { didSet { defaults.set(peerToPeerWiFi, forKey: Keys.peerToPeer) } }
     /// The name other devices see; nil = this Mac's name from System Settings.
     @Published var customDeviceName: String? { didSet { defaults.set(customDeviceName, forKey: Keys.name) } }
     @Published private(set) var launchAtLogin = false
@@ -48,11 +50,13 @@ final class AppSettings: ObservableObject {
         static let beta = "betaUpdates"
         static let dismissedUpdate = "dismissedUpdateVersion"
         static let lastCheck = "lastUpdateCheck"
+        static let peerToPeer = "peerToPeerWiFi"
     }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true, Keys.updates: true])
+        defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true, Keys.updates: true,
+                                       Keys.peerToPeer: true])
         preferHardwareEncoder = defaults.bool(forKey: Keys.hardware)
         startSharingAtLaunch = defaults.bool(forKey: Keys.autoShare)
         controlWhenViewing = defaults.bool(forKey: Keys.control)
@@ -66,6 +70,7 @@ final class AppSettings: ObservableObject {
         betaUpdates = defaults.bool(forKey: Keys.beta)
         dismissedUpdateVersion = defaults.string(forKey: Keys.dismissedUpdate)
         lastUpdateCheck = defaults.object(forKey: Keys.lastCheck) as? Date
+        peerToPeerWiFi = defaults.bool(forKey: Keys.peerToPeer)
         refreshLaunchAtLogin()
     }
 

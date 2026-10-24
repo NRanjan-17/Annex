@@ -30,6 +30,22 @@ With nothing else on the link, both computers give themselves **link-local** add
    usual; its list of addresses includes the link-local one, which viewers try first. You can
    also type the address shown on the host (`169.254.x.y`) under *Connect*.
 
+## Mac ↔ Mac with no router
+
+Two Macs find each other over **peer-to-peer Wi-Fi** (AWDL, what AirDrop uses) even when
+they're on different networks or none: Wi-Fi only needs to be turned on. Settings → Sharing →
+**Peer-to-peer Wi-Fi** (on by default) controls it on both sides.
+
+- The sharing Mac advertises `_annexp2p._udp` on peer-to-peer Wi-Fi while it shares.
+- The viewing Mac looks for it only while **Connect** (or a computer's page) is open, since
+  peer-to-peer Wi-Fi takes some speed from the normal Wi-Fi link while it's searching.
+- A Mac reachable both ways shows once in Nearby, and connecting tries both.
+
+The core's sockets can't use peer-to-peer Wi-Fi (macOS only allows it through
+Network.framework), so the app relays it: viewer core → local port → peer-to-peer Wi-Fi →
+host relay → the host core's QUIC port on `127.0.0.1`. TLS runs end to end through the relay,
+so certificates and PIN pairing work as usual. QUIC only; there's no TCP fallback on this path.
+
 ## Latency expectations (targets)
 
 | Link | Target (p95, capture → display) |
