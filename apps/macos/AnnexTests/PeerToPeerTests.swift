@@ -28,7 +28,7 @@ final class PeerToPeerTests: XCTestCase {
         let fingerprint = String(repeating: "ab", count: 32)
         let name = "Annex Test \(UUID().uuidString.prefix(6))"
         let advertiser = try PeerToPeerAdvertiser(name: name, fingerprint: fingerprint, extend: true, corePort: corePort,
-                                                  advertise: false)
+                                                  visibility: .hidden)
         defer { advertiser.stop() }
 
         // Bonjour needs the Local Network permission, which an ad-hoc signed test build doesn't
@@ -58,5 +58,34 @@ final class PeerToPeerTests: XCTestCase {
         wait(for: [back], timeout: 10)
         client.cancel()
         echo.cancel()
+    }
+
+    /// Paired Macs recognise a hidden-name advertisement; strangers don't, and it changes every
+    /// quarter hour.
+    func testOnlyPairedMacsRecogniseThePairedTag() {
+        let fp = String(repeating: "c3", count: 32)
+        let endpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: 1)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let e = PeerToPeer.epoch(now)
+        let tag = PeerToPeer.tag(fingerprint: fp, epoch: e)
+        let txt = ["v": "1", "t": tag, "role": "host", "sharing": "1", "extend": "1"]
+
+        let paired = PeerToPeer.host(txt: txt, endpoint: endpoint, known: [fp: "Studio"], now: now)
+        XCTAssertEqual(paired?.fingerprint, fp)
+        XCTAssertEqual(paired?.name, "Studio")
+        XCTAssertEqual(paired?.extend, true)
+        XCTAssertNil(PeerToPeer.host(txt: txt, endpoint: endpoint, known: [:], now: now))
+        XCTAssertNil(PeerToPeer.host(txt: txt, endpoint: endpoint, known: [String(repeating: "d4", count: 32): "Other"], now: now))
+        // A clock a quarter hour off still matches; an hour off doesn't.
+        XCTAssertNotNil(PeerToPeer.host(txt: txt, endpoint: endpoint, known: [fp: "Studio"], now: now.addingTimeInterval(900)))
+        XCTAssertNil(PeerToPeer.host(txt: txt, endpoint: endpoint, known: [fp: "Studio"], now: now.addingTimeInterval(3600)))
+        // The tag reveals nothing stable: a new one every quarter hour, never the fingerprint.
+        XCTAssertNotEqual(tag, PeerToPeer.tag(fingerprint: fp, epoch: e + 1))
+        XCTAssertFalse(fp.contains(tag))
+        // Shown to everyone: name and fingerprint in the clear, a paired name preferred.
+        let open = ["v": "1", "id": fp, "name": "Saidev’s Mac", "sharing": "1"]
+        XCTAssertEqual(PeerToPeer.host(txt: open, endpoint: endpoint, known: [:], now: now)?.name, "Saidev’s Mac")
+        XCTAssertEqual(PeerToPeer.host(txt: open, endpoint: endpoint, known: [fp: "Studio"], now: now)?.name, "Studio")
+        XCTAssertNil(PeerToPeer.host(txt: ["v": "1", "id": fp, "sharing": "0"], endpoint: endpoint, known: [:], now: now))
     }
 }

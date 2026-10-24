@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Network
 
@@ -8,6 +9,11 @@ import Network
 /// `_annexp2p._udp` on peer-to-peer Wi-Fi and passes each flow to the core's QUIC port on
 /// 127.0.0.1; the viewer opens a local port that the core connects to like any other address.
 /// TLS runs end to end through the relay, so certificate pinning and PIN pairing are unchanged.
+///
+/// Peer-to-peer Wi-Fi reaches anyone nearby, on any network. So by default a sharing Mac shows
+/// itself only to Macs it has paired with (`paired`), and to everyone nearby only for a few
+/// minutes when its user asks (`everyone`), like AirDrop's "Everyone for 10 Minutes". A new Mac
+/// then pairs with the PIN as usual.
 enum PeerToPeer {
     static let serviceType = "_annexp2p._udp"
     /// A relayed flow with no datagrams for this long is over (QUIC sends keep-alives every 2 s).
@@ -19,9 +25,53 @@ enum PeerToPeer {
         return p
     }
 
+    /// Who can see a sharing Mac on peer-to-peer Wi-Fi.
+    enum Visibility: Equatable {
+        /// Not advertised (no session needs it, or one is running: see `AppModel`).
+        case hidden
+        /// Only Macs it has paired with recognise it.
+        case paired
+        /// Every Mac nearby sees its name, for a few minutes.
+        case everyone
+    }
+
     /// The TXT keys `annex-discovery` advertises, so both lists read the same.
     static func txt(name: String, fingerprint: String, extend: Bool) -> NWTXTRecord {
         NWTXTRecord(["v": "1", "id": fingerprint, "name": name, "role": "host", "sharing": "1", "extend": extend ? "1" : "0"])
+    }
+
+    /// Paired Macs know each other's fingerprint and strangers nearby don't, so a `paired`
+    /// advertisement carries no name or fingerprint, only a tag made from the fingerprint and
+    /// the quarter hour. A paired viewer recognises it; to anyone else it's a random name that
+    /// changes every 15 minutes, so the Mac can't be followed from place to place.
+    static let tagPeriod: TimeInterval = 900
+
+    static func epoch(_ date: Date) -> Int { Int(date.timeIntervalSince1970 / tagPeriod) }
+
+    static func tag(fingerprint: String, epoch: Int) -> String {
+        let digest = SHA256.hash(data: Data("annex-p2p-v1:\(fingerprint.lowercased()):\(epoch)".utf8))
+        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func pairedTXT(tag: String, extend: Bool) -> NWTXTRecord {
+        NWTXTRecord(["v": "1", "t": tag, "role": "host", "sharing": "1", "extend": extend ? "1" : "0"])
+    }
+
+    /// What one browse result is to this viewer: a host to list, or nothing. `known` maps the
+    /// fingerprints of paired Macs to their names. A tag matches the quarter hour before and
+    /// after too, for clocks that differ a little.
+    static func host(txt: [String: String], endpoint: NWEndpoint, known: [String: String], now: Date) -> PeerToPeerHost? {
+        guard txt["sharing"] != "0" else { return nil }
+        let extend = txt["extend"] == "1"
+        if let id = txt["id"], id.count == 64 {
+            return PeerToPeerHost(fingerprint: id, name: known[id] ?? txt["name"] ?? id, extend: extend, endpoint: endpoint)
+        }
+        guard let t = txt["t"] else { return nil }
+        let e = epoch(now)
+        guard let (fp, name) = known.first(where: { fp, _ in
+            [e - 1, e, e + 1].contains { tag(fingerprint: fp, epoch: $0) == t }
+        }) else { return nil }
+        return PeerToPeerHost(fingerprint: fp, name: name, extend: extend, endpoint: endpoint)
     }
 }
 
@@ -119,16 +169,24 @@ final class PeerToPeerAdvertiser {
     private let queue = DispatchQueue(label: "annex.p2p.host")
     private let listener: NWListener
     private let splices: SpliceSet
+    private let name: String
+    private let fingerprint: String
+    private let extend: Bool
+    // On `queue`: what's advertised now (the tag's quarter hour for `paired`).
+    private var visibility: PeerToPeer.Visibility
+    private var advertised: (PeerToPeer.Visibility, Int?)?
+    private var refresh: DispatchSourceTimer?
 
-    /// `advertise: false` relays without registering with Bonjour (tests: an ad-hoc signed build
-    /// has no Local Network permission, and a refused registration stops the listener too).
-    init(name: String, fingerprint: String, extend: Bool, corePort: UInt16, advertise: Bool = true) throws {
+    /// Starts relaying. Tests pass `.hidden`: an ad-hoc signed build has no Local Network
+    /// permission, and a refused Bonjour registration stops the listener too.
+    init(name: String, fingerprint: String, extend: Bool, corePort: UInt16, visibility: PeerToPeer.Visibility) throws {
         listener = try NWListener(using: PeerToPeer.parameters())
         splices = SpliceSet(queue: queue)
-        if advertise {
-            listener.service = NWListener.Service(name: name, type: PeerToPeer.serviceType, domain: nil,
-                                                  txtRecord: PeerToPeer.txt(name: name, fingerprint: fingerprint, extend: extend))
-        }
+        self.name = name
+        self.fingerprint = fingerprint
+        self.extend = extend
+        self.visibility = visibility
+        applyVisibility()
         let core = NWEndpoint.hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: corePort)!)
         listener.newConnectionHandler = { [splices] inbound in
             Annex.log("p2p: viewer flow from \(inbound.endpoint)")
@@ -142,6 +200,40 @@ final class PeerToPeerAdvertiser {
             }
         }
         listener.start(queue: queue)
+        // The `paired` tag changes every quarter hour.
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 30, repeating: 30)
+        t.setEventHandler { [weak self] in self?.applyVisibility() }
+        t.resume()
+        refresh = t
+    }
+
+    /// Changes who sees this Mac. Flows already relayed keep going.
+    func setVisibility(_ v: PeerToPeer.Visibility) {
+        queue.async { [weak self] in
+            guard let self, self.visibility != v else { return }
+            self.visibility = v
+            self.applyVisibility()
+        }
+    }
+
+    /// Registers (or removes) the Bonjour service for `visibility`, if that changed.
+    private func applyVisibility() {
+        let epoch = visibility == .paired ? PeerToPeer.epoch(Date()) : nil
+        if let a = advertised, a.0 == visibility, a.1 == epoch { return }
+        advertised = (visibility, epoch)
+        switch visibility {
+        case .hidden:
+            listener.service = nil
+        case .everyone:
+            listener.service = NWListener.Service(name: name, type: PeerToPeer.serviceType, domain: nil,
+                                                  txtRecord: PeerToPeer.txt(name: name, fingerprint: fingerprint, extend: extend))
+        case .paired:
+            let tag = PeerToPeer.tag(fingerprint: fingerprint, epoch: epoch!)
+            listener.service = NWListener.Service(name: "Annex \(tag.prefix(8))", type: PeerToPeer.serviceType, domain: nil,
+                                                  txtRecord: PeerToPeer.pairedTXT(tag: tag, extend: extend))
+        }
+        Annex.log("p2p: visible to \(visibility)")
     }
 
     /// The relay's UDP port once it's listening (for tests; viewers find it through Bonjour).
@@ -152,7 +244,10 @@ final class PeerToPeerAdvertiser {
         listener.newConnectionHandler = nil
         listener.stateUpdateHandler = nil
         listener.cancel()
-        queue.async { [splices] in splices.endAll() }
+        queue.async { [splices, refresh] in
+            refresh?.cancel()
+            splices.endAll()
+        }
     }
 }
 
@@ -162,13 +257,16 @@ final class PeerToPeerBrowser {
     private let browser = NWBrowser(for: .bonjourWithTXTRecord(type: PeerToPeer.serviceType, domain: nil),
                                     using: PeerToPeer.parameters())
 
-    /// Called on the main queue with every host currently found.
-    init(onChange: @escaping ([PeerToPeerHost]) -> Void) {
+    /// Calls `onChange` on the main queue with every host currently found. `known` gives the
+    /// paired Macs (fingerprint → name), which are the only ones that can be recognised unless a
+    /// host shows itself to everyone.
+    init(known: @escaping () -> [String: String], onChange: @escaping ([PeerToPeerHost]) -> Void) {
         browser.browseResultsChangedHandler = { results, _ in
+            let paired = known()
+            let now = Date()
             let hosts = results.compactMap { r -> PeerToPeerHost? in
-                guard case .bonjour(let txt) = r.metadata, let id = txt["id"], id.count == 64,
-                      txt["sharing"] != "0" else { return nil }
-                return PeerToPeerHost(fingerprint: id, name: txt["name"] ?? id, extend: txt["extend"] == "1", endpoint: r.endpoint)
+                guard case .bonjour(let txt) = r.metadata else { return nil }
+                return PeerToPeer.host(txt: txt.dictionary, endpoint: r.endpoint, known: paired, now: now)
             }
             onChange(hosts)
         }

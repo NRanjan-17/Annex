@@ -18,7 +18,15 @@ final class AppModel: ObservableObject {
     @Published var displays: [Displays.Info] = []
     @Published var selectedDisplayID: CGDirectDisplayID?
     @Published private(set) var isHosting = false
-    @Published private(set) var hostStatus = HostController.Status() { didSet { updateKeepAwake() } }
+    @Published private(set) var hostStatus = HostController.Status() {
+        didSet {
+            updateKeepAwake()
+            updatePeerToPeerVisibility()
+        }
+    }
+    /// Host: every Mac nearby can find this one on peer-to-peer Wi-Fi until then (else only
+    /// paired Macs can).
+    @Published private(set) var visibleToNewMacsUntil: Date?
 
     /// Nearby: computers found on the network, plus Macs found only on peer-to-peer Wi-Fi.
     @Published private(set) var discovered: [PeerInfo] = []
@@ -207,7 +215,8 @@ final class AppModel: ObservableObject {
             if settings.peerToPeerWiFi, let port = h.status.listeningPort.flatMap({ UInt16(exactly: $0) }), port > 0 {
                 do {
                     peerToPeerAdvertiser = try PeerToPeerAdvertiser(name: core.deviceName, fingerprint: core.fingerprint,
-                                                                    extend: HostController.extendSupported, corePort: port)
+                                                                    extend: HostController.extendSupported, corePort: port,
+                                                                    visibility: peerToPeerVisibility)
                 } catch {
                     Annex.log("p2p: couldn't advertise: \(error)", error: true)
                 }
@@ -220,11 +229,47 @@ final class AppModel: ObservableObject {
     private func stopHosting() {
         peerToPeerAdvertiser?.stop()
         peerToPeerAdvertiser = nil
+        visibleToNewMacsUntil = nil
         host?.stop()
         host = nil
         isHosting = false
         hostStatus = HostController.Status()
         hostDirectWiFi = nil
+    }
+
+    // MARK: Peer-to-peer visibility
+
+    /// How long "Let a new Mac find this one" lasts.
+    static let newMacWindow: TimeInterval = 5 * 60
+
+    /// Host: for a few minutes, every Mac nearby can see this one on peer-to-peer Wi-Fi. It still
+    /// has to pair with the PIN shown here.
+    func letNewMacsFindThisOne() {
+        let until = Date().addingTimeInterval(Self.newMacWindow)
+        visibleToNewMacsUntil = until
+        updatePeerToPeerVisibility()
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.newMacWindow) { [weak self] in
+            guard let self, self.visibleToNewMacsUntil == until else { return }
+            self.hideFromNewMacs()
+        }
+    }
+
+    func hideFromNewMacs() {
+        visibleToNewMacsUntil = nil
+        updatePeerToPeerVisibility()
+    }
+
+    /// Peer-to-peer Wi-Fi slows the normal Wi-Fi link while it's on, which would hurt a session
+    /// streaming over that link, so this Mac stops advertising while any session runs (flows
+    /// already relayed keep going). The user asking for new Macs overrides that.
+    private var peerToPeerVisibility: PeerToPeer.Visibility {
+        if let until = visibleToNewMacsUntil, until > Date() { return .everyone }
+        let busy = !hostStatus.viewers.isEmpty || !hostStatus.extendViewers.isEmpty
+        return busy ? .hidden : .paired
+    }
+
+    private func updatePeerToPeerVisibility() {
+        peerToPeerAdvertiser?.setVisibility(peerToPeerVisibility)
     }
 
     /// Host: ask a viewer (a Windows PC) to start its hotspot; this Mac joins it when it answers.
@@ -617,7 +662,9 @@ final class AppModel: ObservableObject {
         default: wanted = false
         }
         if wanted, peerToPeerBrowser == nil {
-            peerToPeerBrowser = PeerToPeerBrowser { [weak self] hosts in
+            peerToPeerBrowser = PeerToPeerBrowser(known: { [weak self] in
+                Dictionary((self?.trusted ?? []).map { ($0.fingerprint, $0.name) }, uniquingKeysWith: { a, _ in a })
+            }) { [weak self] hosts in
                 guard let self else { return }
                 let own = self.core?.fingerprint
                 self.peerToPeerHosts = hosts.filter { $0.fingerprint != own }

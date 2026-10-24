@@ -36,7 +36,15 @@ Two Macs find each other over **peer-to-peer Wi-Fi** (AWDL, what AirDrop uses) e
 they're on different networks or none: Wi-Fi only needs to be turned on. Settings → Sharing →
 **Peer-to-peer Wi-Fi** (on by default) controls it on both sides.
 
-- The sharing Mac advertises `_annexp2p._udp` on peer-to-peer Wi-Fi while it shares.
+- The sharing Mac advertises `_annexp2p._udp` on peer-to-peer Wi-Fi while it shares and no
+  session is running (peer-to-peer Wi-Fi slows the normal Wi-Fi link a session may be using;
+  flows already relayed keep going).
+- **Only paired Macs see it.** The advertisement carries no name or fingerprint, only a tag
+  derived from the fingerprint and the quarter hour, which a paired Mac recognises and anyone
+  else sees as a random name that changes every 15 minutes.
+- **A new Mac:** on the sharing Mac, Share → *Macs with no network* → **Allow** shows it to
+  every Mac nearby for 5 minutes (like AirDrop's "Everyone for 10 Minutes"). The new Mac
+  pairs with the PIN as usual, and from then on finds it by itself.
 - The viewing Mac looks for it only while **Connect** (or a computer's page) is open, since
   peer-to-peer Wi-Fi takes some speed from the normal Wi-Fi link while it's searching.
 - A Mac reachable both ways shows once in Nearby, and connecting tries both.

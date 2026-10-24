@@ -434,6 +434,9 @@ private struct SharePage: View {
                     GroupRow(title: err, status: .symbol("exclamationmark.triangle.fill", .orange))
                 }
             }
+            if model.isHosting && settings.peerToPeerWiFi {
+                NewMacSection(model: model)
+            }
             if model.isHosting && model.hostStatus.viewerName != nil {
                 let s = model.hostStatus
                 GroupSection("Connected now") {
@@ -602,6 +605,30 @@ private struct ConnectPage: View {
                         ConnectButtons(model: model, connect: { model.connectManual() }, compact: true)
                             .disabled(model.isViewing || model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Host: peer-to-peer Wi-Fi shows this Mac to paired Macs only; this opens it to every Mac
+/// nearby for a few minutes, so a new one can find it and pair.
+private struct NewMacSection: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        GroupSection("Macs with no network",
+                     footer: "Macs paired with this one find it over peer-to-peer Wi-Fi, even on another network or none. "
+                         + "A new Mac still needs the PIN shown here.") {
+            if let until = model.visibleToNewMacsUntil {
+                GroupRow(title: "Any Mac nearby can find this one",
+                         subtitle: "Until \(until.formatted(date: .omitted, time: .shortened)).",
+                         status: .symbol("person.2.wave.2.fill", .blue)) {
+                    Button("Stop") { model.hideFromNewMacs() }
+                }
+            } else {
+                GroupRow(title: "Let a new Mac find this one", subtitle: "For 5 minutes, like AirDrop’s Everyone.") {
+                    Button("Allow") { model.letNewMacsFindThisOne() }
                 }
             }
         }
