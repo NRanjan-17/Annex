@@ -30,6 +30,28 @@ With nothing else on the link, both computers give themselves **link-local** add
    usual; its list of addresses includes the link-local one, which viewers try first. You can
    also type the address shown on the host (`169.254.x.y`) under *Connect*.
 
+## When the network keeps the computers apart
+
+Some networks (often school, office and guest Wi-Fi) don't let devices on them reach each
+other. The computers may still appear in Nearby, but connecting times out. Direct Wi-Fi works
+around this with no network at all, as long as one side is a Windows PC:
+
+1. On the PC, open **Share** and turn on **Direct Wi-Fi**. It shows a network name
+   (`Annex-XXXX`) and a 20-character password, new each time.
+2. On the Mac, open **Connect → Direct Wi-Fi to a PC**, type both, and press **Join**. The Mac
+   leaves its current Wi-Fi for the PC's hotspot.
+3. Connect as usual. As the viewer, the Mac fills in the PC's address (`192.168.137.1`); press
+   *Show Its Screen* or *Extend Display*. As the host, the Mac appears in the PC's Nearby list.
+
+The hotspot only carries the connection. Trust still comes from the certificates and the PIN,
+so a stranger who learns the password can't get a picture. While on the hotspot the Mac has
+the PC's internet connection, if the PC shares one. Turning Direct Wi-Fi off on the PC sends
+the Mac back to its usual network.
+
+When the two computers *can* reach each other, the in-session **Direct Wi-Fi** switch does the
+same thing without typing: the PC hands the network name and password over the encrypted
+session.
+
 ## Mac ↔ Mac with no router
 
 Two Macs find each other over **peer-to-peer Wi-Fi** (AWDL, what AirDrop uses) even when
@@ -53,6 +75,7 @@ The core's sockets can't use peer-to-peer Wi-Fi (macOS only allows it through
 Network.framework), so the app relays it: viewer core → local port → peer-to-peer Wi-Fi →
 host relay → the host core's QUIC port on `127.0.0.1`. TLS runs end to end through the relay,
 so certificates and PIN pairing work as usual. QUIC only; there's no TCP fallback on this path.
+
 
 ## Latency expectations (targets)
 

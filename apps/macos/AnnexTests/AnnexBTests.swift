@@ -59,12 +59,27 @@ final class AnnexBTests: XCTestCase {
         let old = ExtendSession.plan(for: DisplayInfo(widthPx: 1920, heightPx: 1080, refreshHz: 144))
         XCTAssertEqual(old.rates, [144, 120, 90, 60])
         // A scaled mode is drawn bigger than the viewer's screen and streamed at its size.
-        XCTAssertTrue(ExtendSession.streamSize(pixels: (3072, 1728), viewer: (1920, 1080)) == (1920, 1080))
-        XCTAssertTrue(ExtendSession.streamSize(pixels: (1280, 720), viewer: (1920, 1080)) == (1280, 720))
-        // A 4.5K iMac at 2x: more than H.264 can carry, so it's streamed at 4096×2304.
-        XCTAssertTrue(ExtendSession.streamSize(pixels: (4480, 2520), viewer: (4480, 2520)) == (4096, 2304))
+        XCTAssertTrue(ExtendSession.streamSize(pixels: (3072, 1728), viewer: (1920, 1080), fps: 60) == (1920, 1080))
+        XCTAssertTrue(ExtendSession.streamSize(pixels: (1280, 720), viewer: (1920, 1080), fps: 60) == (1280, 720))
+        // A 4.5K iMac at 2x: more than H.264 can carry, so it's streamed at 4096×2304 at 30 fps…
+        XCTAssertTrue(ExtendSession.streamSize(pixels: (4480, 2520), viewer: (4480, 2520), fps: 30) == (4096, 2304))
+        // …and smaller at 60 fps, within level 5.2's macroblock rate.
+        let big = ExtendSession.streamSize(pixels: (4480, 2520), viewer: (4480, 2520), fps: 60)
+        XCTAssertLessThanOrEqual(((big.0 + 15) / 16) * ((big.1 + 15) / 16) * 60, ExtendSession.maxMacroblocksPerSecond)
+        XCTAssertGreaterThan(big.0, 3800)
+        // A 3840×2160 screen at 60 fps already fits and keeps its size.
+        XCTAssertTrue(ExtendSession.streamSize(pixels: (3840, 2160), viewer: (3840, 2160), fps: 60) == (3840, 2160))
         XCTAssertEqual(ExtendSession.serial(for: "deadbeef00"), 0xDEADBEEF)
         XCTAssertEqual(ExtendSession.serial(for: "zz"), 1)
+    }
+
+    @MainActor func testUnreachableReasonsPointAtTheFix() {
+        // A timeout can be a network that keeps computers apart: point at Direct Wi-Fi.
+        XCTAssertTrue(AppModel.friendlyReason("timed out: connect", peer: "PC").contains("Direct Wi-Fi to a PC"))
+        // Refused means the other computer answered: it isn't sharing, so no Direct Wi-Fi hint.
+        let refused = AppModel.friendlyReason("i/o: Connection refused (os error 61)", peer: "PC")
+        XCTAssertTrue(refused.hasPrefix("Couldn't reach PC."))
+        XCTAssertFalse(refused.contains("Direct Wi-Fi"))
     }
 
     func testEventDecoding() {

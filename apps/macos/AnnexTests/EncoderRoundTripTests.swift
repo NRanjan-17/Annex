@@ -31,6 +31,24 @@ final class EncoderRoundTripTests: XCTestCase {
         try roundTrip(preferHardware: false)
     }
 
+    /// A 4.5K iMac's Extend stream at 60 fps: the low-latency hardware encoder returns no frames
+    /// (and no error) above H.264 level 5.2's macroblock rate, so the stream must stay within it.
+    func testLargestExtendStreamEncodes() throws {
+        let (w, h) = ExtendSession.streamSize(pixels: (4480, 2520), viewer: (4480, 2520), fps: 60)
+        let encoder = try H264Encoder(width: w, height: h, fps: 60, bitrate: w * h * 60 / 8, preferHardware: true)
+        var count = 0
+        let lock = NSLock()
+        encoder.onEncoded = { _, _, _ in lock.lock(); count += 1; lock.unlock() }
+        for i in 0..<8 {
+            encoder.encode(makeFrame(width: w, height: h, shade: UInt8(16 + i * 18)), captureMicros: Int64(i) * 16_667)
+            usleep(16_667)
+        }
+        encoder.flush()
+        encoder.invalidate()
+        lock.lock(); defer { lock.unlock() }
+        XCTAssertGreaterThanOrEqual(count, 6, "\(w)×\(h) at 60 fps encoded only \(count) of 8 frames")
+    }
+
     private func roundTrip(preferHardware: Bool) throws {
         let (w, h) = (640, 360)
         let encoder = try H264Encoder(width: w, height: h, fps: 60, bitrate: 2_000_000, preferHardware: preferHardware)

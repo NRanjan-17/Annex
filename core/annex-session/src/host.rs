@@ -290,12 +290,11 @@ pub fn extend_stream_for(display: &DisplayInfo) -> StreamConfig {
 
 /// Binds the listener and starts accepting viewers. Must be called inside a tokio runtime.
 pub async fn start_host(core: Arc<Core>, cfg: HostConfig, events: EventSink) -> Result<HostHandle, SessionError> {
-    let listener = TcpListener::bind(("0.0.0.0", cfg.port)).await?;
+    let listener = bind_tcp(cfg.port).await?;
     let port = listener.local_addr()?.port();
     let tls = tokio_rustls::TlsAcceptor::from(Arc::new(annex_crypto::server_config(core.identity())?));
     // QUIC on the same port number (UDP). If UDP can't be bound, viewers fall back to TCP.
-    let quic = match quinn::Endpoint::server(quic_server_config(&core)?, (std::net::Ipv4Addr::UNSPECIFIED, port).into())
-    {
+    let quic = match bind_quic(quic_server_config(&core)?, port, listener.local_addr()?.is_ipv6()) {
         Ok(e) => Some(e),
         Err(e) => {
             tracing::warn!("QUIC unavailable, TCP only: {e}");
@@ -317,6 +316,42 @@ pub async fn start_host(core: Arc<Core>, cfg: HostConfig, events: EventSink) -> 
     Ok(HostHandle { shared, port, shutdown, task: Mutex::new(Some(task)) })
 }
 
+/// IPv6 and IPv4 on one socket where the system allows it: discovery advertises IPv6 addresses
+/// (`fe80::…` on a cable), and viewers try those first. Falls back to IPv4 only.
+async fn bind_tcp(port: u16) -> std::io::Result<TcpListener> {
+    let dual = || -> std::io::Result<std::net::TcpListener> {
+        let s = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+        // Set both ways explicitly: Windows defaults to IPv6 only, macOS and Linux don't.
+        s.set_only_v6(false)?;
+        #[cfg(not(windows))]
+        s.set_reuse_address(true)?;
+        s.bind(&std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into())?;
+        s.listen(128)?;
+        s.set_nonblocking(true)?;
+        Ok(s.into())
+    };
+    match dual() {
+        Ok(l) => TcpListener::from_std(l),
+        Err(e) => {
+            tracing::info!("IPv6 listener unavailable, IPv4 only: {e}");
+            TcpListener::bind(("0.0.0.0", port)).await
+        }
+    }
+}
+
+/// The QUIC endpoint, on the same addresses as the TCP listener.
+fn bind_quic(config: quinn::ServerConfig, port: u16, ipv6: bool) -> std::io::Result<quinn::Endpoint> {
+    if !ipv6 {
+        return quinn::Endpoint::server(config, (std::net::Ipv4Addr::UNSPECIFIED, port).into());
+    }
+    let s = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+    s.set_only_v6(false)?;
+    s.bind(&std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into())?;
+    s.set_nonblocking(true)?;
+    let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime for QUIC"))?;
+    quinn::Endpoint::new(quinn::EndpointConfig::default(), Some(config), s.into(), runtime)
+}
+
 async fn accept_loop(
     listener: TcpListener,
     tls: tokio_rustls::TlsAcceptor,
@@ -333,7 +368,7 @@ async fn accept_loop(
         tokio::select! {
             r = listener.accept() => match r {
                 Ok((sock, addr)) => {
-                    tracing::info!(%addr, "incoming TCP connection");
+                    tracing::info!(addr = %crate::transport::canonical(addr), "incoming TCP connection");
                     let (tls, shared, shutdown) = (tls.clone(), shared.clone(), shutdown.clone());
                     sessions.spawn(async move {
                         match accept_tcp(sock, tls).await {
@@ -345,7 +380,7 @@ async fn accept_loop(
                 Err(e) => tracing::warn!("accept failed: {e}"),
             },
             Some(incoming) = quic_accept(&quic) => {
-                tracing::info!(addr = %incoming.remote_address(), "incoming QUIC connection");
+                tracing::info!(addr = %crate::transport::canonical(incoming.remote_address()), "incoming QUIC connection");
                 let (shared, shutdown) = (shared.clone(), shutdown.clone());
                 sessions.spawn(async move {
                     match accept_quic(incoming).await {

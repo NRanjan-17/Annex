@@ -607,6 +607,37 @@ private struct ConnectPage: View {
                     }
                 }
             }
+            PCHotspotSection(model: model)
+        }
+    }
+}
+
+/// Joins a Windows PC's hotspot by hand, for networks that keep computers from reaching each other.
+private struct PCHotspotSection: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        GroupSection("Direct Wi-Fi to a PC",
+                     footer: "When this network won't connect the two computers: on the PC, turn on Share → Direct Wi-Fi "
+                         + "and type the network and password it shows. Works whether this Mac views or shares.") {
+            GroupRow(title: "Network") {
+                InputField(text: $model.pcHotspotName, placeholder: "Annex-1A2B").frame(width: 200)
+            }
+            GroupRow(title: "Password") {
+                InputField(text: $model.pcHotspotPassword, placeholder: "From the PC",
+                           onSubmit: { model.joinPCHotspot() })
+                    .frame(width: 200)
+            }
+            GroupCell {
+                HStack {
+                    Spacer()
+                    if model.joiningPCHotspot { ProgressView().controlSize(.small) }
+                    Button("Join") { model.joinPCHotspot() }
+                        .disabled(model.joiningPCHotspot || model.isViewing
+                                  || model.pcHotspotName.trimmingCharacters(in: .whitespaces).isEmpty
+                                  || model.pcHotspotPassword.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
         }
     }
 }

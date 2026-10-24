@@ -10,6 +10,10 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private var builder = H264SampleBuilder()
     private var waitingForKeyframe = true
     private var viewer: ViewerHandle?
+    // For annex.log (render queue only): a black window otherwise leaves no trace on the viewer.
+    private var framesReceived = 0
+    private var loggedFirstFrame = false
+    private var loggedBadFrame = false
 
     var onClose: (() -> Void)?
 
@@ -64,14 +68,25 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     /// Called from the core's thread with a copy of the access unit.
     func enqueue(_ data: Data, frameID: UInt32, keyframe: Bool) {
         queue.async { [self] in
+            framesReceived += 1
             if waitingForKeyframe && !keyframe { return }
             guard let sample = builder.sampleBuffer(from: data) else {
+                if !loggedBadFrame {
+                    loggedBadFrame = true
+                    Annex.log("viewer: frame \(frameID) (\(data.count) bytes, key \(keyframe)) could not be read as H.264", error: true)
+                }
                 viewer?.requestKeyframe()
                 return
             }
             waitingForKeyframe = false
+            if !loggedFirstFrame {
+                loggedFirstFrame = true
+                Annex.log("viewer: first picture after \(framesReceived) frames received")
+            }
             let renderer = videoView.displayLayer.sampleBufferRenderer
             if renderer.status == .failed || renderer.requiresFlushToResumeDecoding {
+                Annex.log("viewer: decoder needs a reset (\(renderer.error?.localizedDescription ?? "no error given")); "
+                          + "asking for a keyframe", error: renderer.status == .failed)
                 renderer.flush()
                 waitingForKeyframe = true
                 viewer?.requestKeyframe()
@@ -84,6 +99,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        queue.async { [self] in
+            if !loggedFirstFrame { Annex.log("viewer: closed without a picture; \(framesReceived) frames received", error: true) }
+        }
         videoView.releaseHeldInput()
         onClose?()
     }
