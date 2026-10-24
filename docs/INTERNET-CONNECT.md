@@ -173,11 +173,15 @@ Phase 1 without phase 2 is Option 2. It's a working stopping point if relay cost
 ### Decisions needed
 
 1. ~~**Change the "no servers" rule?**~~ **Yes** (2026-10-25). PLAN.md updated.
-2. **Who runs and pays for the server**, and in which region.
-3. **Phase 2 now or later.** Without it, about 1 network in 5 still needs Tailscale.
-4. **Windows at launch**, or Mac first. Plan above assumes both, which adds about 2 days.
+2. **Who runs and pays for the server:** decided later, before release. Built with the server
+   address as a setting and tested against a locally run server.
+3. **Phase 2:** later. The first release is phase 1 only (direct connections); about 1 network in
+   5 still needs Tailscale until the relay ships.
+4. **Platforms:** Mac and Windows together.
+
+Decisions 2–4 made 2026-10-25.
 
 ## Next step
 
-Answer decisions 2–4, then build phase 1. Separately, test the Tailscale route end to end between two Macs on different
+Build phase 1. Separately, test the Tailscale route end to end between two Macs on different
 networks and note the delay; REMOTE.md's Status section says it hasn't been tested yet.
