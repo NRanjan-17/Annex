@@ -14,12 +14,12 @@ struct AnnexApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // The app window: sidebar and pages, like System Settings.
+        // The app window: a glass sidebar and pages over a living backdrop.
         Window("Annex", id: "main") {
             MainView(model: model)
         }
-        .defaultSize(width: 880, height: 620)
-        .windowToolbarStyle(.unified)
+        .defaultSize(width: 1080, height: 700)
+        .windowStyle(.hiddenTitleBar)
         .defaultPosition(.center)
         .commands { CommandGroup(replacing: .appSettings) { SettingsCommand(model: model) } }
 
