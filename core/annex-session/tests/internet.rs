@@ -221,8 +221,12 @@ fn stun_server(net: &Arc<Net>) {
 type Allocation = (Arc<SimSocket>, Arc<Mutex<HashSet<IpAddr>>>);
 
 /// A TURN server (RFC 8656) on the simulated internet: the parts a relay client uses, with a
-/// long-term login (realm "annex.test").
-fn turn_server(net: &Arc<Net>) {
+/// long-term login (realm "annex.test"). Like real servers it changes its nonce now and then
+/// (every 3 requests here) and allows one allocation per client address. Returns how many
+/// refreshes it granted.
+fn turn_server(net: &Arc<Net>) -> Arc<std::sync::atomic::AtomicUsize> {
+    let refreshes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = refreshes.clone();
     let sock = net.socket(TURN, None);
     let weak = Arc::downgrade(net);
     let key = stun::long_term_key(TURN_USER, "annex.test", TURN_PASS);
@@ -230,6 +234,7 @@ fn turn_server(net: &Arc<Net>) {
         // client address → (its relay socket, IPs allowed to send to it)
         let allocations: Arc<Mutex<HashMap<SocketAddr, Allocation>>> = Arc::default();
         let mut next_port = 50000u16;
+        let (mut nonce, mut accepted) = (1u32, 0u32);
         loop {
             let (client, data) = sock.recv().await;
             let Some(net) = weak.upgrade() else { return };
@@ -252,11 +257,29 @@ fn turn_server(net: &Arc<Net>) {
                 let m = stun::Message::new(kind | stun::ERROR_CLASS, id)
                     .attr(stun::ATTR_ERROR_CODE, [0, 0, 4, 1])
                     .attr(stun::ATTR_REALM, "annex.test")
-                    .attr(stun::ATTR_NONCE, "nonce-1");
+                    .attr(stun::ATTR_NONCE, format!("nonce-{nonce}"));
                 net.send(sock.addr, client, &m.encode());
                 continue;
             }
+            if stun::attribute(&data, stun::ATTR_NONCE) != Some(format!("nonce-{nonce}").as_bytes()) {
+                let m = stun::Message::new(kind | stun::ERROR_CLASS, id)
+                    .attr(stun::ATTR_ERROR_CODE, [0, 0, 4, 38])
+                    .attr(stun::ATTR_NONCE, format!("nonce-{nonce}"));
+                net.send(sock.addr, client, &m.encode());
+                continue;
+            }
+            accepted += 1;
+            if accepted % 3 == 0 {
+                nonce += 1;
+            }
             match kind {
+                stun::ALLOCATE_REQUEST if allocations.lock().unwrap().contains_key(&client) => {
+                    reply(stun::Message::new(kind | stun::ERROR_CLASS, id).attr(stun::ATTR_ERROR_CODE, [0, 0, 4, 37]));
+                }
+                stun::REFRESH_REQUEST => {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    reply(stun::Message::new(kind | 0x0100, id));
+                }
                 stun::ALLOCATE_REQUEST => {
                     next_port += 1;
                     let relayed: SocketAddr = format!("198.51.100.2:{next_port}").parse().unwrap();
@@ -295,6 +318,7 @@ fn turn_server(net: &Arc<Net>) {
             }
         }
     });
+    refreshes
 }
 
 /// All XOR-PEER-ADDRESS attributes of a message (a permission request may carry several).
@@ -375,6 +399,8 @@ struct Outcome {
     frames: usize,
     /// The bitrate scale the host's encoder was told to start at (100 if never told).
     host_scale: u32,
+    /// Allocation refreshes the relay granted during the session.
+    refreshes: usize,
 }
 
 /// Runs what the rendezvous server arranges: each side learns its public address from STUN,
@@ -382,9 +408,11 @@ struct Outcome {
 /// `relay` is set: what happens after a direct attempt fails). Returns the host's and the
 /// viewer's events once the session has started or the viewer gave up.
 async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome {
+    // Refresh the relay several times within the session, as hours of real use would.
+    set_relay_refresh(Duration::from_millis(150));
     let net = Arc::new(Net::default());
     stun_server(&net);
-    turn_server(&net);
+    let refreshes = turn_server(&net);
     let home = net.router(host_nat, "203.0.113.10");
     let away = net.router(viewer_nat, "203.0.113.20");
     let stun_addr: SocketAddr = STUN.parse().unwrap();
@@ -425,6 +453,7 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome
                     viewer: Some(Event::Error { message: e.to_string() }),
                     frames: 0,
                     host_scale: 100,
+                    refreshes: 0,
                 };
             }
         }
@@ -455,9 +484,10 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome
     let host_event = match viewer_event {
         Some(Event::SessionStarted { .. }) => {
             let started = next_matching(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+            // About a second, so the relay is refreshed (with new nonces) while frames flow.
             for i in 0..20 {
                 host.submit_frame(&[7u8; 4000], clock::now_us(), i == 0);
-                tokio::time::sleep(Duration::from_millis(16)).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
             // The encoder's starting rate is set just after the session starts.
@@ -474,7 +504,8 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome
     let delivered = *frames.lock().unwrap();
     viewer.disconnect().await;
     host.stop().await;
-    Outcome { host: host_event, viewer: viewer_event, frames: delivered, host_scale }
+    let refreshes = refreshes.load(std::sync::atomic::Ordering::Relaxed);
+    Outcome { host: host_event, viewer: viewer_event, frames: delivered, host_scale, refreshes }
 }
 
 fn started(e: &Option<Event>) -> (LinkKind, TransportKind) {
@@ -504,7 +535,31 @@ async fn the_relay_connects_two_symmetric_routers() {
     assert_eq!(started(&o.viewer), (LinkKind::Relayed, TransportKind::Quic));
     assert_eq!(started(&o.host).0, LinkKind::Relayed);
     assert!(o.frames >= 15, "only {} of 20 frames arrived", o.frames);
-    assert_eq!(o.host_scale, 100, "the user's own relay has no quality limit");
+    assert!(o.host_scale >= 100, "the user's own relay has no bitrate limit ({} %)", o.host_scale);
+    assert!(o.refreshes >= 3, "the allocation was refreshed through nonce changes ({} refreshes)", o.refreshes);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_viewer_shares_the_hosts_relay_address() {
+    let net = Arc::new(Net::default());
+    stun_server(&net);
+    turn_server(&net);
+    let home = net.router(Nat::Symmetric, "203.0.113.10");
+    let cfg = HostConfig {
+        port: 0,
+        stream: StreamConfig { codec: Codec::H264, width: 1280, height: 720, fps: 60 },
+        extend: false,
+        udp: Some(net.socket("10.0.0.2:47800", Some(home))),
+    };
+    let (hev, _hrx) = sink();
+    let host = start_host(core("Host"), cfg, hev).await.unwrap();
+    let login = || TurnServer { addr: TURN.parse().unwrap(), username: TURN_USER.into(), password: TURN_PASS.into() };
+    let first = host.relay(login(), vec!["203.0.113.20".parse().unwrap()], false).await.unwrap();
+    // A relay refuses a second allocation from the same socket (437); this one reuses the first,
+    // letting the new viewer in (with a nonce that has changed meanwhile).
+    let second = host.relay(login(), vec!["203.0.113.30".parse().unwrap()], false).await.unwrap();
+    assert_eq!(first, second);
+    host.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -25,7 +25,13 @@ const STUN_TRY: Duration = Duration::from_millis(700);
 pub const PUNCH_FOR: Duration = Duration::from_secs(6);
 const PUNCH_EVERY: Duration = Duration::from_millis(200);
 /// TURN permissions last 5 minutes (RFC 8656 §9); renew them, and the allocation, before then.
-const RELAY_REFRESH: Duration = Duration::from_secs(240);
+static RELAY_REFRESH_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(240_000);
+
+/// Tests: refresh the relay this often instead (to see refreshes within a short test).
+#[doc(hidden)]
+pub fn set_relay_refresh(every: Duration) {
+    RELAY_REFRESH_MS.store(every.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// A relay (TURN server) and the login for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,11 +41,25 @@ pub struct TurnServer {
     pub password: String,
 }
 
+/// The login for a relay, once its realm and nonce are known.
+#[derive(Clone)]
+struct Login {
+    username: String,
+    realm: String,
+    nonce: Vec<u8>,
+    key: [u8; 16],
+}
+
 /// The relay this socket has an allocation on.
 struct Relay {
     server: SocketAddr,
+    /// This socket's address on the relay.
+    relayed: SocketAddr,
     /// Our relay, with its usage limits (sessions on it use less bandwidth), not the user's own.
     limited: bool,
+    login: Login,
+    /// IPs allowed to send through the relay (as `ip:0`), renewed with the allocation.
+    allowed: Vec<SocketAddr>,
     /// Peers whose packets arrived through the relay; packets to them go back the same way.
     peers: HashSet<SocketAddr>,
 }
@@ -116,17 +136,19 @@ impl PunchSocket {
     }
 
     /// Sends a STUN/TURN request (made by `build` for a transaction id) and returns the answer,
-    /// trying three times.
+    /// trying three times with the same id (so a server that already answered repeats itself
+    /// rather than acting twice).
     async fn transact(
         self: &Arc<Self>,
         to: SocketAddr,
         build: impl Fn(stun::TransactionId) -> Vec<u8>,
     ) -> io::Result<Vec<u8>> {
+        let id = rand_id();
+        let request = build(id);
         for _ in 0..3 {
-            let id = rand_id();
             let (tx, rx) = oneshot::channel();
             self.waiting.lock().unwrap().insert(id, tx);
-            let sent = self.send_raw(to, &build(id)).await;
+            let sent = self.send_raw(to, &request).await;
             let answer = match sent {
                 Ok(()) => tokio::time::timeout(STUN_TRY, rx).await.ok().and_then(Result::ok),
                 Err(e) => {
@@ -149,10 +171,48 @@ impl PunchSocket {
         Ok(SocketAddr::new(a.ip().to_canonical(), a.port()))
     }
 
+    /// A signed TURN request: `kind` with its own attributes (`allowed` for a permission), then
+    /// the login and MESSAGE-INTEGRITY. A stale nonce (438) is replaced and the request sent once
+    /// more; `login.nonce` keeps the new one.
+    async fn signed(
+        self: &Arc<Self>,
+        server: SocketAddr,
+        login: &mut Login,
+        kind: u16,
+        allowed: &[SocketAddr],
+    ) -> io::Result<Vec<u8>> {
+        for _ in 0..2 {
+            let l = login.clone();
+            let answer = self
+                .transact(server, |id| {
+                    let m = Message::new(kind, id);
+                    let m = match kind {
+                        stun::ALLOCATE_REQUEST => m.attr(stun::ATTR_REQUESTED_TRANSPORT, [17, 0, 0, 0]),
+                        stun::REFRESH_REQUEST => m.attr(stun::ATTR_LIFETIME, 600u32.to_be_bytes()),
+                        _ => allowed.iter().fold(m, |m, p| m.peer(stun::ATTR_XOR_PEER_ADDRESS, *p)),
+                    };
+                    m.attr(stun::ATTR_USERNAME, &l.username)
+                        .attr(stun::ATTR_REALM, &l.realm)
+                        .attr(stun::ATTR_NONCE, &l.nonce)
+                        .encode_signed(&l.key)
+                })
+                .await?;
+            match (stun::error_code(&answer), stun::attribute(&answer, stun::ATTR_NONCE)) {
+                (Some(438), Some(nonce)) => login.nonce = nonce.to_vec(),
+                _ => return Ok(answer),
+            }
+        }
+        Err(io::Error::other("the relay kept rejecting its own nonce"))
+    }
+
     /// Gets an address on `server` that relays to this socket, and lets `peers` (by IP address,
     /// any port) send to it. Keeps the allocation alive until the relay refuses (e.g. the login
     /// expired, which ends a relayed session: that's how our relay's time limit works) or this
     /// socket goes away. Returns the relayed address, for the peer to connect to.
+    ///
+    /// A relay allows one allocation per socket, so while one is live on the same server it's
+    /// shared: the new peers are let in and the same address is returned (it lasts as long as the
+    /// first login).
     pub async fn allocate_relay(
         self: &Arc<Self>,
         server: TurnServer,
@@ -160,12 +220,31 @@ impl PunchSocket {
         limited: bool,
     ) -> io::Result<SocketAddr> {
         let srv = canonical(server.addr);
+        let peers: Vec<SocketAddr> = peers.into_iter().map(|ip| SocketAddr::new(ip.to_canonical(), 0)).collect();
         let refused = |what: &str, r: &[u8]| {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 format!("the relay refused {what} ({})", stun::error_code(r).unwrap_or(0)),
             )
         };
+
+        let live = self.relay.lock().unwrap().as_mut().filter(|r| r.server == srv).map(|r| {
+            for p in &peers {
+                if !r.allowed.contains(p) {
+                    r.allowed.push(*p);
+                }
+            }
+            (r.login.clone(), r.allowed.clone(), r.relayed)
+        });
+        if let Some((mut login, allowed, relayed)) = live {
+            let answer = self.signed(srv, &mut login, stun::CREATE_PERMISSION_REQUEST, &allowed).await?;
+            self.keep_nonce(&login);
+            return match stun::error_code(&answer) {
+                None => Ok(relayed),
+                Some(_) => Err(refused("the other computer", &answer)),
+            };
+        }
+
         // The first request is unsigned; the 401 that comes back names the realm and a nonce.
         let challenge = self
             .transact(srv, |id| {
@@ -174,59 +253,44 @@ impl PunchSocket {
             .await?;
         let realm =
             String::from_utf8_lossy(stun::attribute(&challenge, stun::ATTR_REALM).unwrap_or_default()).into_owned();
-        let mut nonce = stun::attribute(&challenge, stun::ATTR_NONCE).unwrap_or_default().to_vec();
-        let key = stun::long_term_key(&server.username, &realm, &server.password);
-        let peers: Vec<SocketAddr> = peers.into_iter().map(|ip| SocketAddr::new(ip.to_canonical(), 0)).collect();
-        // A signed request: `kind` plus its own attributes, then the login and MESSAGE-INTEGRITY.
-        let signed = |kind: u16, nonce: &[u8]| {
-            let (realm, username, nonce, peers) =
-                (realm.clone(), server.username.clone(), nonce.to_vec(), peers.clone());
-            move |id| {
-                let m = Message::new(kind, id);
-                let m = match kind {
-                    stun::ALLOCATE_REQUEST => m.attr(stun::ATTR_REQUESTED_TRANSPORT, [17, 0, 0, 0]),
-                    stun::REFRESH_REQUEST => m.attr(stun::ATTR_LIFETIME, 600u32.to_be_bytes()),
-                    _ => peers.iter().fold(m, |m, p| m.peer(stun::ATTR_XOR_PEER_ADDRESS, *p)),
-                };
-                m.attr(stun::ATTR_USERNAME, &username)
-                    .attr(stun::ATTR_REALM, &realm)
-                    .attr(stun::ATTR_NONCE, &nonce)
-                    .encode_signed(&key)
-            }
+        let mut login = Login {
+            key: stun::long_term_key(&server.username, &realm, &server.password),
+            username: server.username,
+            realm,
+            nonce: stun::attribute(&challenge, stun::ATTR_NONCE).unwrap_or_default().to_vec(),
         };
-        let mut answer = self.transact(srv, signed(stun::ALLOCATE_REQUEST, &nonce)).await?;
-        if stun::error_code(&answer) == Some(438) {
-            // Stale nonce: use the new one.
-            nonce = stun::attribute(&answer, stun::ATTR_NONCE).unwrap_or_default().to_vec();
-            answer = self.transact(srv, signed(stun::ALLOCATE_REQUEST, &nonce)).await?;
-        }
-        if stun::message_type(&answer) != Some(stun::ALLOCATE_SUCCESS) || !stun::integrity_ok(&answer, &key) {
+        let answer = self.signed(srv, &mut login, stun::ALLOCATE_REQUEST, &[]).await?;
+        if stun::message_type(&answer) != Some(stun::ALLOCATE_SUCCESS) || !stun::integrity_ok(&answer, &login.key) {
             return Err(refused("the login", &answer));
         }
         let relayed = stun::xor_address_attr(&answer, stun::ATTR_XOR_RELAYED_ADDRESS)
             .ok_or_else(|| io::Error::other("the relay gave no address"))?;
-        *self.relay.lock().unwrap() = Some(Relay { server: srv, limited, peers: HashSet::new() });
-
-        let answer = self.transact(srv, signed(stun::CREATE_PERMISSION_REQUEST, &nonce)).await?;
+        let answer = self.signed(srv, &mut login, stun::CREATE_PERMISSION_REQUEST, &peers).await?;
         if stun::error_code(&answer).is_some() {
-            *self.relay.lock().unwrap() = None;
             return Err(refused("the other computer", &answer));
         }
+        *self.relay.lock().unwrap() =
+            Some(Relay { server: srv, relayed, limited, login, allowed: peers, peers: HashSet::new() });
 
-        // Keep it alive: refresh the allocation and the permission every few minutes.
+        // Keep it alive: refresh the allocation and the permissions every few minutes.
         let me = Arc::downgrade(self);
-        let refresh = signed(stun::REFRESH_REQUEST, &nonce);
-        let repermit = signed(stun::CREATE_PERMISSION_REQUEST, &nonce);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(RELAY_REFRESH).await;
+                let every = RELAY_REFRESH_MS.load(std::sync::atomic::Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(every)).await;
                 let Some(me) = me.upgrade() else { return };
-                let ok = match me.transact(srv, &refresh).await {
-                    Ok(r) if stun::error_code(&r).is_none() => {
-                        matches!(me.transact(srv, &repermit).await, Ok(r) if stun::error_code(&r).is_none())
-                    }
-                    _ => false,
+                let Some((mut login, allowed)) =
+                    me.relay.lock().unwrap().as_ref().map(|r| (r.login.clone(), r.allowed.clone()))
+                else {
+                    return;
                 };
+                let mut ok = matches!(me.signed(srv, &mut login, stun::REFRESH_REQUEST, &[]).await,
+                    Ok(r) if stun::error_code(&r).is_none());
+                if ok {
+                    ok = matches!(me.signed(srv, &mut login, stun::CREATE_PERMISSION_REQUEST, &allowed).await,
+                        Ok(r) if stun::error_code(&r).is_none());
+                }
+                me.keep_nonce(&login);
                 if !ok {
                     tracing::info!("the relay ended this computer's allocation");
                     *me.relay.lock().unwrap() = None;
@@ -235,6 +299,13 @@ impl PunchSocket {
             }
         });
         Ok(relayed)
+    }
+
+    /// Remembers the relay's latest nonce for the next request.
+    fn keep_nonce(&self, login: &Login) {
+        if let Some(r) = self.relay.lock().unwrap().as_mut() {
+            r.login.nonce = login.nonce.clone();
+        }
     }
 
     /// `Some(limited)` if `peer`'s packets come through the relay (`limited`: our relay).

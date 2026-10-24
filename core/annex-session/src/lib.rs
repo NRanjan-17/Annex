@@ -25,6 +25,8 @@ pub use host::{
     HostConfig, HostHandle, MAX_H264, MAX_SESSIONS, SessionId, SubmitResult, extend_stream_for, start_host,
 };
 pub use punch::TurnServer;
+#[doc(hidden)]
+pub use punch::set_relay_refresh;
 pub use stats::LatencyStats;
 pub use transport::is_link_local;
 pub use viewer::{InternetSocket, ViewerConfig, ViewerHandle, connect_viewer};

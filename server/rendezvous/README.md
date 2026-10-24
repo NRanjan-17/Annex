@@ -96,7 +96,7 @@ To turn it off again: `npx wrangler secret delete TURN_KEY_ID`.
 | `RELAY_TTL_SECONDS` | 1800 | Each login works 30 minutes; then Cloudflare drops the session. |
 | `RELAY_PER_DAY` | 8 | Logins a day in total (UTC). After that, no relay until tomorrow. |
 | `RELAY_PER_IP_PER_DAY` | 2 | Logins a day per sharing computer's address. |
-| Bitrate (in the app) | ~6 Mbit/s | Sessions on our relay are held to about 6 Mbit/s, whatever the screen size. |
+| Bitrate (in the app) | ~6 Mbit/s | Sessions on our relay are held to about 6 Mbit/s, whatever the screen size. Known gap: it's worked out when the session starts, so switching an Extend session to a bigger resolution afterwards goes over it. |
 
 Worst case with the defaults: 8 sessions × 30 minutes × 6 Mbit/s ≈ 11 GB a day, plus error
 correction (up to 40 %) ≈ 15 GB a day, about **460 GB a month**, under the 1,000 GB free allowance.
@@ -176,4 +176,5 @@ CI runs all of this on every push (`.github/workflows/ci.yml`, job `rendezvous`)
 | `curl` works but Annex says it can't reach the server | Use `wss://`, not `https://`, and no path after the domain. |
 | "too many attempts" | 10 wrong codes from one address in 10 minutes. Wait, or check the code. |
 | The code works but the computers never connect | One network blocks direct connections and no relay was available: set up your own (`--turn`), or turn on ours (above). |
+| "relaying through …" on the sharing computer, but the session never starts | The viewer's network uses more than one public address (some mobile carriers), so the relay drops its packets. No fix yet. |
 | "no relay available" on the sharing computer | Ours is off (no TURN secrets) or today's logins are used up. |
