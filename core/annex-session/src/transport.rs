@@ -77,7 +77,7 @@ fn quic_exporter(conn: &quinn::Connection) -> Result<[u8; 32], SessionError> {
 
 /// Host side of a QUIC connection: wait for the viewer's control stream.
 pub(crate) async fn accept_quic(incoming: quinn::Incoming) -> Result<Established, SessionError> {
-    let remote = incoming.remote_address();
+    let remote = canonical(incoming.remote_address());
     let conn = timeout(HANDSHAKE_TIMEOUT, incoming)
         .await
         .map_err(|_| SessionError::Timeout("quic handshake"))?
@@ -138,7 +138,7 @@ pub(crate) async fn connect_quic(
 /// Host side of a TCP connection.
 pub(crate) async fn accept_tcp(sock: TcpStream, tls: tokio_rustls::TlsAcceptor) -> Result<Established, SessionError> {
     let _ = sock.set_nodelay(true);
-    let remote = sock.peer_addr()?;
+    let remote = canonical(sock.peer_addr()?);
     let stream = timeout(HANDSHAKE_TIMEOUT, tls.accept(sock)).await.map_err(|_| SessionError::Timeout("tls"))??;
     let fingerprint = peer_fingerprint(stream.get_ref().1.peer_certificates())
         .ok_or_else(|| SessionError::Violation("peer sent no certificate".into()))?;
@@ -193,6 +193,12 @@ pub(crate) async fn connect_tcp(
     })
 }
 
+/// An IPv4 viewer on the host's dual-stack socket shows up as `::ffff:a.b.c.d`; this gives back
+/// `a.b.c.d`, so logs and the link check see the address the viewer used.
+pub(crate) fn canonical(addr: SocketAddr) -> SocketAddr {
+    SocketAddr::new(addr.ip().to_canonical(), addr.port())
+}
+
 /// True for addresses that only exist on a directly attached link (e.g. a USB-C/Thunderbolt or
 /// Ethernet cable between the two computers with no router): IPv4 169.254/16, IPv6 fe80::/10.
 pub fn is_link_local(addr: &SocketAddr) -> bool {
@@ -212,5 +218,8 @@ mod tests {
         assert!(is_link_local(&"[fe80::1%4]:1".parse().unwrap()));
         assert!(!is_link_local(&"192.168.1.2:1".parse().unwrap()));
         assert!(!is_link_local(&"[2001:db8::1]:1".parse().unwrap()));
+        // A cable's IPv4 address arriving on the dual-stack listener.
+        assert!(is_link_local(&canonical("[::ffff:169.254.10.2]:1".parse().unwrap())));
+        assert_eq!(canonical("[::ffff:192.168.1.2]:7".parse().unwrap()).to_string(), "192.168.1.2:7");
     }
 }
