@@ -26,6 +26,14 @@ final class ExtendSession {
     private let lastFrame = LockedBox<CVPixelBuffer>()
     /// Frames the encoder has produced since the last restart, for the log.
     private let encodedFrames = LockedBox<Int>()
+    /// Encoded frames the core couldn't send (no session, or its queue was full), for the log.
+    private let droppedFrames = LockedBox<Int>()
+    /// Which encoder to use: 0 = low-latency hardware, 1 = plain hardware, 2 = software. Moves up
+    /// when one is created fine but encodes nothing (seen at 4096×2304 on a MacBook Air).
+    private var encoderTier = 0
+    /// The last capture started before macOS gave the display a mode (it sized from the viewer
+    /// instead), so it is restarted once the mode arrives.
+    private var startedWithoutMode = false
     private var generation = 0
     private var stopped = false
 
@@ -128,15 +136,22 @@ final class ExtendSession {
     /// The largest picture H.264 can carry (level 5.1/5.2): VideoToolbox rejects every frame of
     /// a bigger one, such as a 4.5K iMac's 4480×2520.
     nonisolated static let maxEncodeSize = (4096, 2304)
+    /// Level 5.2's macroblocks per second. Above it the low-latency hardware encoder takes the
+    /// frames and returns none, with no error (4096×2304 at 60 fps, measured on an M4).
+    nonisolated static let maxMacroblocksPerSecond = 2_073_600
 
     /// What to stream for a display mode: its pixels, scaled down to fit the viewer's screen and
-    /// what H.264 can carry.
-    nonisolated static func streamSize(pixels: (Int, Int), viewer: (Int, Int)) -> (Int, Int) {
+    /// what H.264 can carry at `fps`.
+    nonisolated static func streamSize(pixels: (Int, Int), viewer: (Int, Int), fps: Int) -> (Int, Int) {
         let (pw, ph) = (max(pixels.0, 2), max(pixels.1, 2))
         let box = (min(viewer.0, maxEncodeSize.0), min(viewer.1, maxEncodeSize.1))
-        guard pw > box.0 || ph > box.1 else { return (pw & ~1, ph & ~1) }
-        let k = min(Double(box.0) / Double(pw), Double(box.1) / Double(ph))
-        return (Int((Double(pw) * k).rounded()) & ~1, Int((Double(ph) * k).rounded()) & ~1)
+        var k = min(1, Double(box.0) / Double(pw), Double(box.1) / Double(ph))
+        func size(_ k: Double) -> (Int, Int) {
+            (Int((Double(pw) * k).rounded()) & ~1, Int((Double(ph) * k).rounded()) & ~1)
+        }
+        func macroblocks(_ s: (Int, Int)) -> Int { ((s.0 + 15) / 16) * ((s.1 + 15) / 16) }
+        while k > 0.1 && macroblocks(size(k)) * max(fps, 1) > maxMacroblocksPerSecond { k *= 0.99 }
+        return size(k)
     }
 
     /// Stable 32-bit serial from the viewer's certificate fingerprint.
@@ -175,8 +190,12 @@ final class ExtendSession {
     /// Called when the display's mode may have changed.
     func reconfigured() {
         guard !stopped, let mode = CGDisplayCopyDisplayMode(display.displayID) else { return }
-        let size = Self.streamSize(pixels: (mode.pixelWidth, mode.pixelHeight), viewer: viewerPixels)
-        if size != pixelSize || Self.rate(of: mode, fallback: fps) != fps { restartCapture() }
+        let size = Self.streamSize(pixels: (mode.pixelWidth, mode.pixelHeight), viewer: viewerPixels,
+                                   fps: Self.rate(of: mode, fallback: fps))
+        if startedWithoutMode || size != pixelSize || Self.rate(of: mode, fallback: fps) != fps {
+            Annex.log("extend: display now \(mode.pixelWidth)×\(mode.pixelHeight) pixels at \(Int(mode.refreshRate.rounded())) Hz; restarting capture")
+            restartCapture()
+        }
     }
 
     nonisolated static func rate(of mode: CGDisplayMode?, fallback: Int) -> Int {
@@ -190,22 +209,37 @@ final class ExtendSession {
         let gen = generation
         let id = display.displayID
         let mode = CGDisplayCopyDisplayMode(id)
-        let size = Self.streamSize(pixels: (mode?.pixelWidth ?? viewerPixels.0, mode?.pixelHeight ?? viewerPixels.1),
-                                   viewer: viewerPixels)
-        pixelSize = size
         fps = Self.rate(of: mode, fallback: fps)
+        let size = Self.streamSize(pixels: (mode?.pixelWidth ?? viewerPixels.0, mode?.pixelHeight ?? viewerPixels.1),
+                                   viewer: viewerPixels, fps: fps)
+        pixelSize = size
+        startedWithoutMode = mode == nil
+        if mode == nil {
+            // A new display gets its mode a moment later. The reconfiguration callback should
+            // restart capture then; check again in a second in case it doesn't come.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, gen == self.generation else { return }
+                self.reconfigured()
+            }
+        }
         capturer.onFrame = nil
         encoder?.invalidate()
         encoder = nil
         host.setStream(session: sessionID, width: size.0, height: size.1, fps: fps)
         Annex.log("extend: display mode \(mode?.width ?? 0)×\(mode?.height ?? 0) points, "
                   + "\(mode?.pixelWidth ?? 0)×\(mode?.pixelHeight ?? 0) pixels; streaming \(size.0)×\(size.1) at \(fps) fps")
-        let (fps, preferHardware, capturer) = (self.fps, self.preferHardware, self.capturer)
+        let (fps, capturer) = (self.fps, self.capturer)
+        let preferHardware = preferHardware && encoderTier < 2
+        let lowLatency = encoderTier == 0
         // Frames get more alike as the rate goes up, so above 60 fps the bitrate grows half as fast.
         let bitrate = max(6_000_000, size.0 * size.1 * (min(fps, 60) + max(fps - 60, 0) / 2) / 8)
         baseBitrate = bitrate
         Task.detached(priority: .userInitiated) { [weak self] in
-            let result = Result { try H264Encoder(width: size.0, height: size.1, fps: fps, bitrate: bitrate, preferHardware: preferHardware) }
+            let result = Result {
+                try H264Encoder(width: size.0, height: size.1, fps: fps, bitrate: bitrate,
+                                preferHardware: preferHardware, lowLatency: lowLatency)
+            }
             await self?.encoderReady(result, generation: gen, size: size, capturer: capturer, displayID: id)
         }
     }
@@ -223,13 +257,16 @@ final class ExtendSession {
         }
         Annex.log("extend: encoder ready (\(enc.usingHardware ? "hardware" : "software"))")
         encodedFrames.value = 0
+        droppedFrames.value = 0
         hardwareEncoder = enc.usingHardware
         if bitrateScale != 100 { enc.setBitrate(baseBitrate * bitrateScale / 100) }
         let (host, session) = (self.host, sessionID)
-        let encodedFrames = self.encodedFrames
+        let (encodedFrames, droppedFrames) = (self.encodedFrames, self.droppedFrames)
         enc.onEncoded = { data, key, ts in
             encodedFrames.update { $0 = ($0 ?? 0) + 1 }
-            host.submit(data, session: session, captureMicros: ts, keyframe: key)
+            if host.submit(data, session: session, captureMicros: ts, keyframe: key) != .sent {
+                droppedFrames.update { $0 = ($0 ?? 0) + 1 }
+            }
         }
         enc.onFailure = { [weak self] status in
             Task { @MainActor in
@@ -271,11 +308,25 @@ extension ExtendSession {
             try? await Task.sleep(nanoseconds: 6_000_000_000)
             guard let self, gen == self.generation, !self.stopped else { return }
             let encoded = self.encodedFrames.value ?? 0
-            guard self.lastFrame.value == nil else {
-                Annex.log("extend: picture arriving, \(encoded) frames encoded in the first 6 s")
+            let dropped = self.droppedFrames.value ?? 0
+            guard self.lastFrame.value != nil else {
+                self.onError?("The extended display sent no picture. Check Screen Recording for Annex in System Settings.")
                 return
             }
-            self.onError?("The extended display sent no picture. Check Screen Recording for Annex in System Settings.")
+            if encoded > 0 {
+                Annex.log("extend: picture arriving, \(encoded) frames encoded in the first 6 s, \(dropped) not sent")
+                return
+            }
+            // Frames were captured but the encoder turned none into video: the viewer would stay
+            // black. Try the next encoder before giving up.
+            guard self.preferHardware, self.encoderTier < 2 else {
+                self.onError?("The video encoder produced no picture for the extended display.")
+                return
+            }
+            self.encoderTier += 1
+            Annex.log("extend: frames captured but none encoded; retrying with the "
+                      + (self.encoderTier == 1 ? "plain hardware" : "software") + " encoder", error: true)
+            self.restartCapture()
         }
     }
 }
