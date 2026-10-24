@@ -151,7 +151,7 @@ internal sealed partial class TrayMenu : Window
         nearbyHead.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         nearbyHead.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         nearbyHead.Children.Add(Ui.Eyebrow("Nearby"));
-        var looking = new ProgressRing { IsActive = true, Width = 12, Height = 12, Foreground = Ui.White(0.6) };
+        var looking = Ui.Spinner();
         Grid.SetColumn(looking, 1);
         nearbyHead.Children.Add(looking);
         stack.Children.Add(nearbyHead);

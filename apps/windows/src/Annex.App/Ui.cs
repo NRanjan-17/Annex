@@ -302,6 +302,20 @@ internal static class Ui
         return b;
     }
 
+    /// <summary>A small white spinner. The faint full ring behind the moving arc keeps it visible at
+    /// every moment; a bare ring this small is only a speck between sweeps. 16 is WinUI's minimum.</summary>
+    public static ProgressRing Spinner(double size = 16) => new()
+    {
+        IsActive = true,
+        Width = size,
+        Height = size,
+        MinWidth = size,
+        MinHeight = size,
+        Foreground = White(0.9),
+        Background = White(0.14),
+        VerticalAlignment = VerticalAlignment.Center,
+    };
+
     /// <summary>A green dot: something live.</summary>
     public static Microsoft.UI.Xaml.Shapes.Ellipse LiveDot(double size = 8) => new()
     {

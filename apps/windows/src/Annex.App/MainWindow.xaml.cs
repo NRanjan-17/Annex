@@ -481,7 +481,7 @@ public sealed partial class MainWindow : Window
     {
         var refreshing = DateTimeOffset.UtcNow < _refreshingUntil;
         var content = refreshing
-            ? (UIElement)new ProgressRing { IsActive = true, Width = 14, Height = 14, Foreground = Ui.White(0.8) }
+            ? (UIElement)Ui.Spinner()
             : Ui.Glyph("\uE72C", 14);
         var b = Ui.Flat(content, Ui.White(0.1), Ui.White(0.16), Ui.White(1), RefreshNearby, radius: 18);
         b.Width = 40;
@@ -685,7 +685,7 @@ public sealed partial class MainWindow : Window
     /// <summary>One line over the list: Annex is always looking, so say so, and say where.</summary>
     private StackPanel SearchStatus(int found)
     {
-        var ring = new ProgressRing { IsActive = true, Width = 12, Height = 12, Foreground = Ui.White(0.7) };
+        var ring = Ui.Spinner();
         var text = found switch
         {
             0 => "Waiting for computers · looking on your network and over cables",
