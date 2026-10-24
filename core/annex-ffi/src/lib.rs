@@ -335,6 +335,21 @@ pub extern "C" fn annex_set_log_enabled(enabled: bool) {
     }
 }
 
+/// Writes one line from the app to the log (while it's on): `level` 0 = info, 1 = warning,
+/// 2 = error. The app's own steps (capture, encoding, virtual displays) explain what the core can't.
+///
+/// # Safety
+/// `message` must be a valid NUL-terminated string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_log(level: i32, message: *const c_char) {
+    let Ok(message) = (unsafe { str_arg(message, "message") }) else { return };
+    match level {
+        2 => tracing::error!(target: "app", "{message}"),
+        1 => tracing::warn!(target: "app", "{message}"),
+        _ => tracing::info!(target: "app", "{message}"),
+    }
+}
+
 fn new_core(core: Arc<Core>, out: *mut *mut AnnexCore) -> Result<i32, (i32, String)> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

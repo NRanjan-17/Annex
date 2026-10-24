@@ -24,6 +24,8 @@ final class ExtendSession {
     private let capturer = ScreenCapturer()
     private var encoder: H264Encoder?
     private let lastFrame = LockedBox<CVPixelBuffer>()
+    /// Frames the encoder has produced since the last restart, for the log.
+    private let encodedFrames = LockedBox<Int>()
     private var generation = 0
     private var stopped = false
 
@@ -68,6 +70,8 @@ final class ExtendSession {
             d.invalidate()
             throw AnnexError(message: "macOS rejected the virtual display's modes.")
         }
+        Annex.log("extend: virtual display \(d.displayID) for a \(viewer.widthPx)×\(viewer.heightPx) screen at "
+                  + "\(viewer.scalePercent) %, \(plan.modes.count) sizes × rates \(plan.rates)")
         DisplayReconfiguration.shared.observe(display: d.displayID, owner: self)
         restartCapture()
     }
@@ -194,6 +198,8 @@ final class ExtendSession {
         encoder?.invalidate()
         encoder = nil
         host.setStream(session: sessionID, width: size.0, height: size.1, fps: fps)
+        Annex.log("extend: display mode \(mode?.width ?? 0)×\(mode?.height ?? 0) points, "
+                  + "\(mode?.pixelWidth ?? 0)×\(mode?.pixelHeight ?? 0) pixels; streaming \(size.0)×\(size.1) at \(fps) fps")
         let (fps, preferHardware, capturer) = (self.fps, self.preferHardware, self.capturer)
         // Frames get more alike as the rate goes up, so above 60 fps the bitrate grows half as fast.
         let bitrate = max(6_000_000, size.0 * size.1 * (min(fps, 60) + max(fps - 60, 0) / 2) / 8)
@@ -215,10 +221,16 @@ final class ExtendSession {
         case .success(let e): enc = e
         case .failure(let e): onError?(e.localizedDescription); return
         }
+        Annex.log("extend: encoder ready (\(enc.usingHardware ? "hardware" : "software"))")
+        encodedFrames.value = 0
         hardwareEncoder = enc.usingHardware
         if bitrateScale != 100 { enc.setBitrate(baseBitrate * bitrateScale / 100) }
         let (host, session) = (self.host, sessionID)
-        enc.onEncoded = { data, key, ts in host.submit(data, session: session, captureMicros: ts, keyframe: key) }
+        let encodedFrames = self.encodedFrames
+        enc.onEncoded = { data, key, ts in
+            encodedFrames.update { $0 = ($0 ?? 0) + 1 }
+            host.submit(data, session: session, captureMicros: ts, keyframe: key)
+        }
         enc.onFailure = { [weak self] status in
             Task { @MainActor in
                 guard let self, gen == self.generation, !self.stopped else { return }
@@ -238,6 +250,7 @@ final class ExtendSession {
             guard gen == generation, !stopped else { return }
             do {
                 try await capturer.start(displayID: displayID, width: size.0, height: size.1, fps: fps)
+                Annex.log("extend: capture started")
                 expectFirstFrame(generation: gen)
                 return
             } catch {
@@ -255,7 +268,12 @@ extension ExtendSession {
         lastFrame.value = nil
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 6_000_000_000)
-            guard let self, gen == self.generation, !self.stopped, self.lastFrame.value == nil else { return }
+            guard let self, gen == self.generation, !self.stopped else { return }
+            let encoded = self.encodedFrames.value ?? 0
+            guard self.lastFrame.value == nil else {
+                Annex.log("extend: picture arriving, \(encoded) frames encoded in the first 6 s")
+                return
+            }
             self.onError?("The extended display sent no picture. Check Screen Recording for Annex in System Settings.")
         }
     }

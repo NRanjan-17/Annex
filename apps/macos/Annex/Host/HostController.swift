@@ -43,7 +43,12 @@ final class HostController {
     private let injector = InputInjector()
     /// Extend sessions' virtual displays, read on the core's thread for input injection.
     private let extendDisplays = LockedBox<[UInt64: CGDirectDisplayID]>()
-    private(set) var status = Status() { didSet { onStatus?(status) } }
+    private(set) var status = Status() {
+        didSet {
+            if let e = status.error, e != oldValue.error { Annex.log("host: \(e)", error: true) }
+            onStatus?(status)
+        }
+    }
 
     var onStatus: ((Status) -> Void)?
     /// Pairing and other events the UI must handle.
