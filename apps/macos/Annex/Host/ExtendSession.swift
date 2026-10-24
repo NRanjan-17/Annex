@@ -136,15 +136,22 @@ final class ExtendSession {
     /// The largest picture H.264 can carry (level 5.1/5.2): VideoToolbox rejects every frame of
     /// a bigger one, such as a 4.5K iMac's 4480×2520.
     nonisolated static let maxEncodeSize = (4096, 2304)
+    /// Level 5.2's macroblocks per second. Above it the low-latency hardware encoder takes the
+    /// frames and returns none, with no error (4096×2304 at 60 fps, measured on an M4).
+    nonisolated static let maxMacroblocksPerSecond = 2_073_600
 
     /// What to stream for a display mode: its pixels, scaled down to fit the viewer's screen and
-    /// what H.264 can carry.
-    nonisolated static func streamSize(pixels: (Int, Int), viewer: (Int, Int)) -> (Int, Int) {
+    /// what H.264 can carry at `fps`.
+    nonisolated static func streamSize(pixels: (Int, Int), viewer: (Int, Int), fps: Int) -> (Int, Int) {
         let (pw, ph) = (max(pixels.0, 2), max(pixels.1, 2))
         let box = (min(viewer.0, maxEncodeSize.0), min(viewer.1, maxEncodeSize.1))
-        guard pw > box.0 || ph > box.1 else { return (pw & ~1, ph & ~1) }
-        let k = min(Double(box.0) / Double(pw), Double(box.1) / Double(ph))
-        return (Int((Double(pw) * k).rounded()) & ~1, Int((Double(ph) * k).rounded()) & ~1)
+        var k = min(1, Double(box.0) / Double(pw), Double(box.1) / Double(ph))
+        func size(_ k: Double) -> (Int, Int) {
+            (Int((Double(pw) * k).rounded()) & ~1, Int((Double(ph) * k).rounded()) & ~1)
+        }
+        func macroblocks(_ s: (Int, Int)) -> Int { ((s.0 + 15) / 16) * ((s.1 + 15) / 16) }
+        while k > 0.1 && macroblocks(size(k)) * max(fps, 1) > maxMacroblocksPerSecond { k *= 0.99 }
+        return size(k)
     }
 
     /// Stable 32-bit serial from the viewer's certificate fingerprint.
@@ -183,7 +190,8 @@ final class ExtendSession {
     /// Called when the display's mode may have changed.
     func reconfigured() {
         guard !stopped, let mode = CGDisplayCopyDisplayMode(display.displayID) else { return }
-        let size = Self.streamSize(pixels: (mode.pixelWidth, mode.pixelHeight), viewer: viewerPixels)
+        let size = Self.streamSize(pixels: (mode.pixelWidth, mode.pixelHeight), viewer: viewerPixels,
+                                   fps: Self.rate(of: mode, fallback: fps))
         if startedWithoutMode || size != pixelSize || Self.rate(of: mode, fallback: fps) != fps {
             Annex.log("extend: display now \(mode.pixelWidth)×\(mode.pixelHeight) pixels at \(Int(mode.refreshRate.rounded())) Hz; restarting capture")
             restartCapture()
@@ -201,10 +209,10 @@ final class ExtendSession {
         let gen = generation
         let id = display.displayID
         let mode = CGDisplayCopyDisplayMode(id)
-        let size = Self.streamSize(pixels: (mode?.pixelWidth ?? viewerPixels.0, mode?.pixelHeight ?? viewerPixels.1),
-                                   viewer: viewerPixels)
-        pixelSize = size
         fps = Self.rate(of: mode, fallback: fps)
+        let size = Self.streamSize(pixels: (mode?.pixelWidth ?? viewerPixels.0, mode?.pixelHeight ?? viewerPixels.1),
+                                   viewer: viewerPixels, fps: fps)
+        pixelSize = size
         startedWithoutMode = mode == nil
         if mode == nil {
             // A new display gets its mode a moment later. The reconfiguration callback should
