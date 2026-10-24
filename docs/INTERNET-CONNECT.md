@@ -66,7 +66,8 @@ into the app. Effort and cost depend on the library; not estimated yet.
 ## Conflict with the plan
 
 [PLAN.md](PLAN.md) (principles) says: *"No cloud, accounts, telemetry, or relays. Discovery
-and connections stay on local links. The app does no outbound internet traffic of its own."*
+and connections stay on local links. The only internet traffic of its own is the update check…"*
+(GitHub's releases list, on by default.)
 
 Options 1–3 all break that rule: they need a server Annex talks to. Decide this before any
 building:
@@ -85,7 +86,97 @@ building:
    (which needs it registered all the time)?
 4. Does Windows need the same feature at launch?
 
+## Plan for Option 1 (relay)
+
+Written 2026-10-25 against the core as it is: QUIC (quinn) with self-signed Ed25519 identities,
+certificate pinning and PIN pairing bound to the TLS exporter (`core/annex-session/src/transport.rs`).
+Nothing here is built. It needs a yes on "Conflict with the plan" first.
+
+### What the user sees
+
+1. **Sharing computer:** This Mac / This PC → **Share over the internet** (off by default). Turning it
+   on shows a code like `K7P-4QX` and "Waiting for the other computer…". The code lasts 10 minutes
+   and works once.
+2. **Viewing computer:** Nearby → **Connect by Code…**, type the code, choose Extend or Show Its
+   Screen.
+3. **First time only:** the usual PIN. The two people read it to each other (phone, chat).
+4. The session bar says **Direct** or **Relayed** next to the delay, so a slow session explains itself.
+5. **Later (phase 3):** a paired computer with "Stay reachable over the internet" on shows up in
+   Nearby as "Away · over the internet", with no code.
+
+### Why the server can't see or take over a session
+
+- The picture, input and pairing are inside the same TLS 1.3 session as on a LAN. The relay
+  forwards UDP packets it can't read.
+- A paired viewer still pins the host's certificate, so a server that hands out the wrong address
+  only gets a failed handshake.
+- A new pairing still needs the PIN, which is bound to the TLS exporter. A server in the middle
+  would hold two different TLS sessions, so the PINs wouldn't match.
+- The code itself only finds the computer. Guessing one gets a stranger to the PIN prompt, not the
+  screen; the server also limits code attempts per address.
+- The server sees: both public addresses, a hash of each computer's identity, when sessions start
+  and end, and on the relay how many bytes passed. Never content. This list goes into SECURITY.md.
+
+### Pieces
+
+| Piece | Where | What it does |
+|---|---|---|
+| `annex-rendezvous` | new crate + small server binary | Holds registrations (code → host), tells each side the other's public and local addresses, rate-limits codes. QUIC, so it sees the session socket's own public address (STUN's job, no STUN server needed). |
+| `annex-relay` | same binary, separate port range | TURN-style: gives each session two relay addresses and forwards packets between them unchanged. |
+| Punching socket | `annex-session`, a custom `quinn::AsyncUdpSocket` | The session socket also talks to the rendezvous server and sends the small "punch" packets that open home routers. quinn supports custom sockets, so QUIC itself is unchanged. |
+| `connect_internet(code)` | `annex-session` viewer, plus the host's registration | Ask for the peer, punch for about 3 seconds, then fall back to the relay. Uses the existing `Established` path, so everything after the handshake is untouched. |
+| UI | Mac and Windows | The switch and code above, Connect by Code…, Direct/Relayed in the session bar. |
+
+TCP fallback stays LAN-only; internet sessions are QUIC only.
+
+### Phases
+
+| Phase | Scope | Time | Done when |
+|---|---|---|---|
+| 1 | Rendezvous server, codes, hole punching, Mac + Windows UI | about 1 week | Two computers on different home networks connect directly by code. |
+| 2 | Relay fallback | 3–4 days | A computer behind carrier-grade NAT (a phone hotspot) connects through the relay. |
+| 3 | Paired computers stay reachable (no code) | about 3 days | A paired computer shows in Nearby while it's away. |
+
+Phase 1 without phase 2 is Option 2. It's a working stopping point if relay costs are a worry.
+
+### Tests
+
+- **Core:** loopback tests with a fake NAT between the computers, like the lossy proxy in
+  `tests/loopback.rs`: one that allows punching (expect Direct) and one "symmetric" that doesn't
+  (expect Relayed). Plus tests for codes (expiry, single use, rate limit) and a server that lies
+  about addresses (expect a failed handshake).
+- **By hand:** two home networks; a phone hotspot (carrier-grade NAT); an office or guest network.
+  Record delay for Direct and Relayed in TESTING.md.
+
+### Running it
+
+- **Bandwidth is the cost.** The apps' normal rates are about 12 Mbit/s mirroring 1080p60 and
+  about 30 Mbit/s extending 2560×1600 at 60 Hz, so a relayed session moves roughly 5–14 GB an hour.
+  **Quality → Fast** lowers that.
+- Only relayed sessions cost much (expect 10–20% of internet sessions). Rendezvous traffic is tiny.
+- **Pick a host that includes bandwidth.** Big-cloud egress (roughly $0.05–0.09/GB) would make one
+  relayed hour cost around $0.50–1. Plans that include tens of TB a month cost a few euros a month
+  for a small server.
+- **Self-hosting:** the server is one binary, and the server address is a setting, so a company or
+  a careful user can run their own and never touch ours.
+- One region to start; the relay adds the trip to it, so choose one near most users.
+
+### Doc changes before building
+
+- PLAN.md: replace "No cloud, accounts, telemetry, or relays…" with: internet connections are
+  opt-in, the server and relay see addresses and timing but never content, and LAN use never
+  contacts them.
+- SECURITY.md: what the server sees, code rate limits, and why the PIN still protects a new pairing.
+- REMOTE.md: keep the Tailscale route as the no-server option.
+
+### Decisions needed
+
+1. **Change the "no servers" rule?** Yes or no; the rest waits on it.
+2. **Who runs and pays for the server**, and in which region.
+3. **Phase 2 now or later.** Without it, about 1 network in 5 still needs Tailscale.
+4. **Windows at launch**, or Mac first. Plan above assumes both, which adds about 2 days.
+
 ## Next step
 
-Test the Tailscale route end to end between two Macs on different networks and note the delay.
-REMOTE.md's Status section says it hasn't been tested yet.
+Answer decision 1. Separately, test the Tailscale route end to end between two Macs on different
+networks and note the delay; REMOTE.md's Status section says it hasn't been tested yet.
