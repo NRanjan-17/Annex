@@ -19,11 +19,7 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Replaces any running capture. Returns without capturing if `stop()` or another `start` was
     /// called meanwhile, so a stop during start can never leave capture running.
     func start(displayID: CGDirectDisplayID, width: Int, height: Int, fps: Int) async throws {
-        let (gen, old) = lock.withLock { () -> (Int, SCStream?) in
-            generation += 1
-            defer { stream = nil }
-            return (generation, stream)
-        }
+        let (gen, old) = begin()
         if let old { try? await old.stopCapture() }
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
@@ -49,25 +45,40 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
             if isCurrent(gen) { throw error }
             return
         }
-        let current = lock.withLock { () -> Bool in
-            guard gen == generation else { return false }
-            self.stream = stream
-            return true
-        }
-        if !current { try? await stream.stopCapture() }
+        if !adopt(stream, generation: gen) { try? await stream.stopCapture() }
     }
 
     func stop() async {
-        let stream = lock.withLock { () -> SCStream? in
-            generation += 1
-            defer { self.stream = nil }
-            return self.stream
-        }
+        let (_, stream) = begin()
         try? await stream?.stopCapture()
     }
 
+    // Plain lock/unlock in synchronous helpers: Swift 6.3's type checker crashes on the
+    // equivalent `withLock` closures inside the async `start`.
+
+    /// Starts a new generation and takes the current stream (the caller stops it).
+    private func begin() -> (Int, SCStream?) {
+        lock.lock()
+        defer { lock.unlock() }
+        generation += 1
+        let old = stream
+        stream = nil
+        return (generation, old)
+    }
+
+    /// Keeps `stream` if no `stop()` or newer `start` came since `gen`.
+    private func adopt(_ stream: SCStream, generation gen: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard gen == generation else { return false }
+        self.stream = stream
+        return true
+    }
+
     private func isCurrent(_ gen: Int) -> Bool {
-        lock.withLock { gen == generation }
+        lock.lock()
+        defer { lock.unlock() }
+        return gen == generation
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
