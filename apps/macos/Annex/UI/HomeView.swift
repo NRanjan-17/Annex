@@ -448,14 +448,12 @@ private struct PeerCard: View {
 
             Divider().opacity(0.5)
             VStack(alignment: .leading, spacing: 12) {
-                Toggle(isOn: $model.useDirectWiFi) {
-                    Detail(title: "Direct Wi-Fi first", text: "Join a Windows PC's hotspot. Less lag.")
-                }
-                .disabled(model.isViewing)
+                SwitchRow(title: "Direct Wi-Fi first", text: "Join a Windows PC's hotspot. Less lag.",
+                          isOn: $model.useDirectWiFi)
+                    .disabled(model.isViewing)
                 if let trusted {
-                    Toggle(isOn: Binding(get: { trusted.allowInput }, set: { model.setAllowInput(trusted, $0) })) {
-                        Detail(title: "Can use this Mac's mouse and keyboard", text: "When it shows this Mac's screen.")
-                    }
+                    SwitchRow(title: "Can use this Mac's mouse and keyboard", text: "When it shows this Mac's screen.",
+                              isOn: Binding(get: { trusted.allowInput }, set: { model.setAllowInput(trusted, $0) }))
                     HStack {
                         Text(lastConnected(trusted)).font(.system(size: 11)).foregroundStyle(.secondary)
                         Spacer()
@@ -498,6 +496,23 @@ private struct Detail: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.system(size: 12.5, weight: .medium))
             Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// A setting with its switch in a column on the right, centred on the text, so every switch in the
+/// card lines up however long its title is. (A plain Toggle puts the switch right after the label.)
+private struct SwitchRow: View {
+    let title: String
+    let text: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Detail(title: title, text: text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Toggle(title, isOn: $isOn)
+                .labelsHidden()
         }
     }
 }

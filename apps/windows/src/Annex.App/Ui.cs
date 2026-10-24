@@ -280,8 +280,11 @@ internal static class Ui
         b.Resources["ButtonBackgroundPressed"] = fill;
         b.Resources["ButtonForegroundPointerOver"] = text;
         b.Resources["ButtonForegroundPressed"] = text;
+        // Disabled keeps its own colours and fades as a whole: the secondary grey that WinUI would
+        // use for the text can't be read on a white button.
         b.Resources["ButtonBackgroundDisabled"] = fill;
-        b.Resources["ButtonForegroundDisabled"] = Secondary;
+        b.Resources["ButtonForegroundDisabled"] = text;
+        b.IsEnabledChanged += (_, _) => b.Opacity = b.IsEnabled ? 1 : 0.4;
         b.Resources["ButtonBorderBrushPointerOver"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         b.Resources["ButtonBorderBrushPressed"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         b.Resources["ButtonBorderBrushDisabled"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);

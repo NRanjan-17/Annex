@@ -392,19 +392,27 @@ final class AppModel: ObservableObject {
         // This viewer's own sessionEnded is ignored from here on (see viewerGeneration), so reset
         // what it would have reset.
         viewerGeneration += 1
+        // The window goes first: freeing the connection waits for the bye to go out.
         let w = viewerWindow
         viewerWindow = nil
-        viewer?.disconnect()
+        w?.onClose = nil
+        w?.close()
+        release(viewer)
         viewer = nil
         peerToPeerTunnel?.stop()
         peerToPeerTunnel = nil
-        w?.onClose = nil
-        w?.close()
         latency = nil
         controllingHost = false
         viewerStatus = nil
         onDirectWiFi = false
         holdingWindow = false
+    }
+
+    /// Frees a viewer connection off the main thread: it sends the bye and waits up to 300 ms for
+    /// it to arrive, which would otherwise hold up closing the window.
+    private func release(_ handle: ViewerHandle?) {
+        guard let handle else { return }
+        DispatchQueue.global(qos: .userInitiated).async { handle.disconnect() }
     }
 
     private func handleViewerEvent(_ e: CoreEvent) {
@@ -464,13 +472,14 @@ final class AppModel: ObservableObject {
                 }
                 viewerStatus = reason == "user" ? nil : Self.friendlyReason(reason, peer: viewerPeerName)
             }
-            viewer = nil
-            peerToPeerTunnel?.stop()
-            peerToPeerTunnel = nil
             let w = viewerWindow
             viewerWindow = nil
             w?.onClose = nil
             w?.close()
+            release(viewer)
+            viewer = nil
+            peerToPeerTunnel?.stop()
+            peerToPeerTunnel = nil
             latency = nil
             controllingHost = false
             holdingWindow = false

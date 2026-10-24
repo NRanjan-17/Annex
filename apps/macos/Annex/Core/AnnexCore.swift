@@ -315,7 +315,8 @@ final class ViewerHandle {
         if let raw { annex_viewer_send_key(raw, UInt32(macKeyCode), down) }
     }
 
-    /// Sends Bye and waits for the session to end. Call from the main thread.
+    /// Sends Bye and waits for the session to end (up to ~300 ms), so AppModel calls it off the main
+    /// thread. Call it once, after the window showing this viewer has closed.
     func disconnect() {
         if let raw {
             annex_viewer_free(raw)

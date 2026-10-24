@@ -186,10 +186,9 @@ internal sealed partial class TrayMenu : Window
         var version = Ui.Text($"Annex {AnnexNative.Version}", "CaptionTextBlockStyle", Ui.Tertiary, wrap: false);
         version.VerticalAlignment = VerticalAlignment.Center;
         footer.Children.Add(version);
-        var quitLabel = Ui.Text("Quit Annex", "CaptionTextBlockStyle", wrap: false);
-        var quit = Ui.Flat(quitLabel, new SolidColorBrush(Microsoft.UI.Colors.Transparent), Ui.White(0.06), Ui.White(0.7),
-            () => { Hide(); a.Quit(); }, radius: 8);
-        quit.Padding = new Thickness(8, 4, 8, 4);
+        // A faint capsule like View on each computer: plain text here got lost on the acrylic.
+        var quit = Ui.Pill("Quit Annex", () => { Hide(); a.Quit(); }, prominent: false);
+        quit.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(quit, 1);
         footer.Children.Add(quit);
         stack.Children.Add(footer);
