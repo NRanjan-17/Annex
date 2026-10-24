@@ -88,6 +88,9 @@ building:
 
 ## Plan for Option 1 (relay)
 
+**Running the server:** deploy steps, free-plan limits and what it stores are in
+[server/rendezvous/README.md](../server/rendezvous/README.md).
+
 Written 2026-10-25 against the core as it is: QUIC (quinn) with self-signed Ed25519 identities,
 certificate pinning and PIN pairing bound to the TLS exporter (`core/annex-session/src/transport.rs`).
 Nothing here is built. Decision 1 is made (2026-10-25): the "no servers" rule is dropped for this
