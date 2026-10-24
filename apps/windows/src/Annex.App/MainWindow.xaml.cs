@@ -49,7 +49,7 @@ public sealed partial class MainWindow : Window
     private bool _extend;
     private string _viewingName = "";
     private string? _viewerStatus;
-    private string? _latency;
+    private LatencyStats? _lat;
     private bool _controlling;
     private string? _viewerFingerprint;
     private bool _viewerExtend;
@@ -71,17 +71,19 @@ public sealed partial class MainWindow : Window
     private readonly Updater _updater = new();
 
     // UI.
-    private readonly NavigationView _nav = new();
+    private readonly StackPanel _sidebarItems = new() { Spacing = 2 };
+    private readonly StackPanel _sidebarFooter = new() { Spacing = 2 };
     private readonly ContentControl _page = new()
     {
         HorizontalContentAlignment = HorizontalAlignment.Stretch,
         VerticalContentAlignment = VerticalAlignment.Stretch,
     };
-    private NavigationViewItem? _shareItem;
-    private string _pane = "share";
-    private bool _buildingNav;
+    private string _pane = "home";
+    /// <summary>Nearby: the computer whose card is open (its instance).</summary>
+    private string? _selected;
+    private bool _showNotSharing;
     // Text boxes survive page rebuilds so typing isn't interrupted by status updates.
-    private readonly TextBox _addressBox = new() { PlaceholderText = "192.168.1.20 or host:port", Width = 240 };
+    private readonly TextBox _addressBox = new() { PlaceholderText = "192.168.1.20 or host:port" };
     private readonly TextBox _nameBox = new() { Width = 240 };
 
     public static string DataDirectory =>
@@ -92,8 +94,9 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         _ui = DispatcherQueue.GetForCurrentThread();
         _extend = _settings.ExtendByDefault;
-        SystemBackdrop = new MicaBackdrop();
+        SystemBackdrop = new DesktopAcrylicBackdrop();
         ExtendsContentIntoTitleBar = true;
+        StyleCaptionButtons();
         SizeWindow();
         AppWindow.SetIcon(Ui.AssetPath("Annex.ico"));
         Closed += (_, _) => Shutdown();
@@ -147,14 +150,14 @@ public sealed partial class MainWindow : Window
     /// writes selftest-ok to the data folder. Any exception lands in crash.log instead.</summary>
     private void SelfTest()
     {
-        foreach (var pane in new[] { "share", "connect", "settings", "devices", "about", "connect", "settings", "about", "share" })
+        foreach (var pane in new[] { "home", "share", "settings", "devices", "about", "home", "settings", "about", "share" })
             Go(pane);
         // Settings again with technical details flipped, then back as it was.
         var tech = _settings.ShowTechnicalDetails;
         _settings.ShowTechnicalDetails = !tech;
         Go("settings");
         _settings.ShowTechnicalDetails = tech;
-        Go("share");
+        Go("home");
         ShowTrayMenu();
         _trayMenu?.Hide();
         var x = TryExtendStatus();
@@ -203,107 +206,126 @@ public sealed partial class MainWindow : Window
 
     private void BuildShell()
     {
-        RootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(40) });
+        // Black and glass, like the Mac app: the window is desktop acrylic under a dark layer. The
+        // sidebar lets a little of it through; the page sits on a near-solid layer with a rounded
+        // corner (Windows Settings' two-tone layout, in black).
+        RootGrid.RequestedTheme = ElementTheme.Dark;
+        RootGrid.Background = Ui.Black(0.6);
+        RootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(236) });
+        RootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        RootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
         RootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        var title = Ui.Row(Ui.AppIcon(18), Ui.Text("Annex", "CaptionTextBlockStyle", wrap: false));
-        title.Spacing = 10;
-        title.Margin = new Thickness(16, 0, 0, 0);
-        title.VerticalAlignment = VerticalAlignment.Center;
+        var brandName = Ui.Text("Annex", wrap: false);
+        brandName.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        brandName.VerticalAlignment = VerticalAlignment.Center;
+        var brand = Ui.Row(Ui.AppIcon(22), brandName);
+        brand.Spacing = 10;
+        brand.Margin = new Thickness(20, 0, 0, 0);
+        brand.VerticalAlignment = VerticalAlignment.Center;
         var titleBar = new Grid { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
-        titleBar.Children.Add(title);
+        Grid.SetColumnSpan(titleBar, 2);
+        titleBar.Children.Add(brand);
         RootGrid.Children.Add(titleBar);
         SetTitleBar(titleBar);
 
-        // WinUI's own two-tone layout, like Windows Settings: the sidebar on Mica, the pages on a
-        // raised layer with a rounded corner; the menu button folds the sidebar to icons.
-        // Auto with no thresholds: always the full sidebar, and the menu button folds it to icons. (In
-        // fixed Left mode a folded sidebar left the page laid out at the open width, so it was pushed
-        // right and cut off.)
-        _nav.PaneDisplayMode = NavigationViewPaneDisplayMode.Auto;
-        _nav.CompactModeThresholdWidth = 0;
-        _nav.ExpandedModeThresholdWidth = 0;
-        _nav.IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed;
-        _nav.IsPaneToggleButtonVisible = true;
-        _nav.IsTitleBarAutoPaddingEnabled = false;
-        _nav.IsSettingsVisible = true;
-        _nav.OpenPaneLength = 248;
-        _nav.Content = _page;
-        _nav.ItemInvoked += (_, args) =>
+        var sidebar = new Grid { Padding = new Thickness(10, 6, 10, 12) };
+        sidebar.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        sidebar.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        sidebar.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(_sidebarFooter, 2);
+        sidebar.Children.Add(_sidebarItems);
+        sidebar.Children.Add(_sidebarFooter);
+        Grid.SetRow(sidebar, 1);
+        RootGrid.Children.Add(sidebar);
+
+        var content = new Border
         {
-            if (args.InvokedItemContainer?.Tag as string == RefreshTag) RefreshNearby();
+            Background = Ui.Black(0.88),
+            BorderBrush = Ui.White(0.07),
+            BorderThickness = new Thickness(1, 1, 0, 0),
+            CornerRadius = new CornerRadius(12, 0, 0, 0),
+            Child = _page,
         };
-        _nav.SelectionChanged += (_, args) =>
-        {
-            if (_buildingNav) return;
-            if (args.IsSettingsSelected)
-            {
-                _pane = "settings";
-                Render();
-                return;
-            }
-            if (args.SelectedItemContainer?.Tag is not string tag) return;
-            _pane = tag;
-            Render();
-        };
-        Grid.SetRow(_nav, 1);
-        RootGrid.Children.Add(_nav);
+        Grid.SetRow(content, 1);
+        Grid.SetColumn(content, 1);
+        RootGrid.Children.Add(content);
         BuildNav();
         Render();
     }
 
-    /// <summary>A dot on "Share this PC" while this PC is sharing.</summary>
-    private void UpdateDeviceCard()
+    /// <summary>The window buttons (minimise, maximise, close): white on the black title bar.</summary>
+    private void StyleCaptionButtons()
     {
-        if (_shareItem is not null) _shareItem.InfoBadge = _host is not null ? new InfoBadge() : null;
+        var bar = AppWindow.TitleBar;
+        bar.PreferredHeightOption = Microsoft.UI.Windowing.TitleBarHeightOption.Tall;
+        bar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+        bar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+        bar.ButtonForegroundColor = Microsoft.UI.Colors.White;
+        bar.ButtonInactiveForegroundColor = Windows.UI.Color.FromArgb(140, 255, 255, 255);
+        bar.ButtonHoverBackgroundColor = Windows.UI.Color.FromArgb(28, 255, 255, 255);
+        bar.ButtonHoverForegroundColor = Microsoft.UI.Colors.White;
+        bar.ButtonPressedBackgroundColor = Windows.UI.Color.FromArgb(46, 255, 255, 255);
+        bar.ButtonPressedForegroundColor = Microsoft.UI.Colors.White;
     }
 
-    private static NavigationViewItem NavItem(string text, string glyph, string tag, string? info = null)
+    /// <summary>The sidebar shows which page is open and whether this PC is sharing.</summary>
+    private void UpdateDeviceCard() => BuildNav();
+
+    /// <summary>A sidebar entry: white with black text when it's the open page.</summary>
+    private Button NavItem(string text, string glyph, string tag, int? badge = null, bool live = false)
     {
-        var item = new NavigationViewItem { Content = text, Icon = Ui.Glyph(glyph), Tag = tag };
-        if (info is not null) item.InfoBadge = new InfoBadge { Value = int.TryParse(info, out var n) ? n : -1 };
-        return item;
+        var selected = _pane == tag;
+        var grid = new Grid { ColumnSpacing = 12 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var icon = Ui.Glyph(glyph, 15);
+        icon.VerticalAlignment = VerticalAlignment.Center;
+        grid.Children.Add(icon);
+        var label = Ui.Text(text, wrap: false);
+        label.VerticalAlignment = VerticalAlignment.Center;
+        if (selected) label.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        Grid.SetColumn(label, 1);
+        grid.Children.Add(label);
+        FrameworkElement? trailing = live ? Ui.LiveDot(7)
+            : badge is { } n ? Ui.Text(n.ToString(), "CaptionTextBlockStyle", selected ? Ui.Black(0.55) : Ui.Secondary, wrap: false)
+            : null;
+        if (trailing is not null)
+        {
+            trailing.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(trailing, 2);
+            grid.Children.Add(trailing);
+        }
+        var b = Ui.Flat(grid,
+            selected ? Ui.White(0.92) : new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            selected ? Ui.White(0.92) : Ui.White(0.06),
+            selected ? Ui.Black(1) : Ui.White(0.92),
+            () => Go(tag));
+        b.HorizontalAlignment = HorizontalAlignment.Stretch;
+        b.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        b.Padding = new Thickness(12, 9, 12, 9);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, text);
+        return b;
     }
 
-    /// <summary>Rebuilds the sidebar (nearby computers come and go) and keeps the selection.</summary>
+    /// <summary>Three places (Nearby, This PC, Paired devices), then Settings and About at the bottom.</summary>
     private void BuildNav()
     {
-        _buildingNav = true;
-        var items = _nav.MenuItems;
-        items.Clear();
-        items.Add(_shareItem = NavItem("Share this PC", "", "share"));
-        items.Add(NavItem("Connect", "", "connect"));
-        // Sidebar headers only show text, so refreshing is an entry at the end of the list.
-        items.Add(new NavigationViewItemHeader { Content = "Nearby" });
-        if (_hosts.Count == 0)
-            items.Add(new NavigationViewItem { Content = "Searching…", Icon = Ui.Glyph(""), IsEnabled = false, SelectsOnInvoked = false });
-        foreach (var h in _hosts)
-            items.Add(NavItem(h.Name, "", "peer:" + h.Instance));
-        var refreshing = DateTimeOffset.UtcNow < _refreshingUntil;
-        items.Add(new NavigationViewItem
-        {
-            Content = refreshing ? "Refreshing…" : "Refresh",
-            Icon = Ui.Glyph("\uE72C"),
-            Tag = RefreshTag,
-            SelectsOnInvoked = false,
-            IsEnabled = !refreshing,
-            Foreground = Ui.Secondary,
-        });
-        var footer = _nav.FooterMenuItems;
-        footer.Clear();
-        footer.Add(NavItem("Paired devices", "\uE716", "devices"));
-        footer.Add(NavItem("About", "\uE946", "about"));
-        if (_pane.StartsWith("peer:", StringComparison.Ordinal) && !_hosts.Any(h => "peer:" + h.Instance == _pane))
-            _pane = "connect";
-        _nav.SelectedItem = _pane == "settings" ? _nav.SettingsItem
-            : items.Concat(footer).OfType<NavigationViewItem>().FirstOrDefault(i => (string?)i.Tag == _pane);
-        UpdateDeviceCard();
-        _buildingNav = false;
+        var sharing = _hosts.Count(h => h.Sharing);
+        _sidebarItems.Children.Clear();
+        _sidebarItems.Children.Add(NavItem("Nearby", "", "home", badge: sharing > 0 ? sharing : null));
+        _sidebarItems.Children.Add(NavItem("This PC", "", "share", live: _host is not null));
+        _sidebarItems.Children.Add(NavItem("Paired devices", "", "devices"));
+        _sidebarFooter.Children.Clear();
+        _sidebarFooter.Children.Add(NavItem("Settings", "", "settings"));
+        _sidebarFooter.Children.Add(NavItem("About", "", "about"));
     }
 
     private void Go(string pane)
     {
-        _pane = pane;
+        // The old Connect and per-computer pages are now Nearby.
+        _pane = pane is "connect" || pane.StartsWith("peer:", StringComparison.Ordinal) ? "home" : pane;
         BuildNav();
         Render();
     }
@@ -311,21 +333,21 @@ public sealed partial class MainWindow : Window
     /// <summary>Rebuilds the current page from state.</summary>
     private void Render()
     {
-        UpdateDeviceCard();
+        BuildNav();
+        if (_pane == "home")
+        {
+            _page.Content = HomePage();
+            return;
+        }
         var stack = Ui.Page(out var scroller);
         if (_startupError is not null)
             stack.Children.Add(Ui.Info("Annex couldn't start", _startupError, InfoBarSeverity.Error));
         switch (_pane)
         {
             case "share": SharePage(stack); break;
-            case "connect": ConnectPage(stack); break;
             case "settings": SettingsPage(stack); break;
             case "devices": DevicesPage(stack); break;
             case "about": AboutPage(stack); break;
-            default:
-                var peer = _hosts.FirstOrDefault(h => "peer:" + h.Instance == _pane);
-                if (peer is not null) PeerPage(stack, peer); else ConnectPage(stack);
-                break;
         }
         Ui.JoinRows(stack);
         _page.Content = scroller;
@@ -334,7 +356,9 @@ public sealed partial class MainWindow : Window
     private void RenderIf(params string[] panes)
     {
         UpdateKeepAwake();
-        if (panes.Contains(_pane) || (_pane.StartsWith("peer:", StringComparison.Ordinal) && panes.Contains("peer"))) Render();
+        // Viewer and nearby state used to live on Connect and the per-computer pages; it's on Nearby now.
+        var home = panes.Contains("home") || panes.Contains("connect") || panes.Contains("peer");
+        if (panes.Contains(_pane) || (home && _pane == "home")) Render();
         else UpdateDeviceCard();
     }
 
@@ -342,45 +366,44 @@ public sealed partial class MainWindow : Window
 
     private void SharePage(StackPanel p)
     {
-        p.Children.Add(Ui.Hero("", "Share this PC",
-            "Let another computer show this screen, or extend this display onto it."));
+        p.Children.Add(Ui.Hero("", "This PC",
+            "Let another computer show this screen, or use this PC as its extra display."));
         UpdateBanner(p);
-        var action = _host is null
-            ? Ui.Button("Start sharing", () => SetHosting(true), accent: true)
-            : Ui.Button("Stop sharing", () => SetHosting(false));
-        action.MinWidth = 140;
-        p.Children.Add(Ui.Card(_host is null ? "" : "", _host is null ? "Sharing is off" : "Sharing is on", ShareStatus(), action));
+        p.Children.Add(Ui.Card("", "Share this PC", ShareStatus(), Ui.Switch(_host is not null, on => SetHosting(on))));
         if (_monitors.Count > 1)
         {
             var box = new ComboBox { ItemsSource = _monitors.Select(m => m.Label).ToList(), SelectedIndex = _monitorIndex, MinWidth = 220, IsEnabled = _host is null };
             box.SelectionChanged += (_, _) => _monitorIndex = Math.Max(0, box.SelectedIndex);
-            p.Children.Add(Ui.Card("", "Screen to share", _host is null ? null : "Stop sharing to pick another screen.", box));
+            p.Children.Add(Ui.Card("", "Screen to share", _host is null ? null : "Stop sharing to pick another screen.", box));
         }
         if (_hostError is not null)
             p.Children.Add(Ui.Info("Sharing problem", _hostError, InfoBarSeverity.Warning));
         ExtendCard(p);
-        p.Children.Add(Ui.Card("", "Direct Wi-Fi",
+        p.Children.Add(Ui.Card("", "Direct Wi-Fi",
             _hotspot.IsOn
                 ? $"Network “{_hotspot.Ssid}”, password {_hotspot.Passphrase}. Other computers can join it for less lag."
                 : "Runs a hotspot on this PC so another computer connects straight to it. Less lag.",
             Ui.Switch(_hotspot.IsOn, on => _ = SetHotspotAsync(on))));
 
-        if (_host is not null)
+        if (_host is null)
+        {
+            p.Children.Add(Ui.Section("How it works"));
+            p.Children.Add(Ui.Card("", "1. Turn on sharing here."));
+            p.Children.Add(Ui.Card("", "2. Open Annex on the other computer.", "This PC shows up under Nearby there."));
+            p.Children.Add(Ui.Card("", "3. Pick Extend or Show its screen.", "The first time, type the PIN this PC shows."));
+        }
+        else
         {
             p.Children.Add(Ui.Section("Connect from another computer"));
-            p.Children.Add(Ui.Card("", $"1. Open Annex on the other computer and choose “{_core?.DeviceName}”."));
-            p.Children.Add(Ui.Card("", "2. Pick Show its screen or Extend display."));
-            p.Children.Add(Ui.Card("", "3. Enter the PIN shown here (first time only).", ShowTech ? $"Identity code: {Fingerprint}" : null));
+            p.Children.Add(Ui.Card("", $"1. Open Annex on the other computer and choose “{_core?.DeviceName}”."));
+            p.Children.Add(Ui.Card("", "2. Pick Show its screen or Extend display."));
+            p.Children.Add(Ui.Card("", "3. Enter the PIN shown here (first time only).", ShowTech ? $"Identity code: {Fingerprint}" : null));
             var addresses = LocalAddresses();
-            p.Children.Add(Ui.Card("", addresses.Count == 0 ? "This PC isn't on a network." : "Not listed there? Connect by address:",
+            p.Children.Add(Ui.Card("", addresses.Count == 0 ? "This PC isn't on a network." : "Not listed there? Connect by address:",
                 addresses.Count == 0 ? "Connect it to Wi-Fi, Ethernet or a cable." : null));
             foreach (var (ip, direct) in addresses)
             {
                 var text = _host.Port == DefaultPort ? ip : $"{ip}:{_host.Port}";
-                var value = Ui.Text(text, "BodyStrongTextBlockStyle", wrap: false);
-                value.FontFamily = new FontFamily("Consolas");
-                value.FontSize = 16;
-                value.IsTextSelectionEnabled = true;
                 var copy = new Button { Content = "Copy" };
                 copy.Click += (_, _) =>
                 {
@@ -389,8 +412,7 @@ public sealed partial class MainWindow : Window
                     Clipboard.SetContent(data);
                     copy.Content = "Copied";
                 };
-                var card = Ui.Card(direct ? "" : "", text, direct ? "Cable" : "Network", copy);
-                card.Margin = new Thickness(36, 0, 0, 2);
+                var card = Ui.Card(direct ? "" : "", text, direct ? "Cable" : "Network", copy);
                 p.Children.Add(card);
             }
         }
@@ -404,10 +426,9 @@ public sealed partial class MainWindow : Window
                 var detail = s.Mode == "extend" ? "Arrange it in Settings → System → Display" :
                     ShowTech && _hostStream is { } st ? $"{st.Width}×{st.Height} at {st.Fps} fps" : null;
                 if (s.Input) detail = (detail is null ? "" : detail + " · ") + "using your mouse and keyboard";
-                p.Children.Add(Ui.Card(s.Mode == "extend" ? "" : "", title, detail, Ui.Button("Switch to direct Wi-Fi", () => _ = OfferDirectWifiToViewerAsync(id, s.Name))));
+                p.Children.Add(Ui.Card("", title, detail, Ui.Button("Switch to direct Wi-Fi", () => _ = OfferDirectWifiToViewerAsync(id, s.Name))));
             }
         }
-
     }
 
     private static List<GpuInfo> TryGpus()
@@ -453,15 +474,22 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    /// <summary>Tag of the sidebar's Refresh entry under Nearby.</summary>
-    private const string RefreshTag = "refresh-nearby";
-
     /// <summary>Refresh button for Nearby, or a small spinner while the list is being re-checked.</summary>
     private FrameworkElement RefreshControl()
     {
-        if (DateTimeOffset.UtcNow < _refreshingUntil)
-            return new ProgressRing { IsActive = true, Width = 16, Height = 16, Margin = new Thickness(6) };
-        return Ui.IconButton("\uE72C", "Refresh", RefreshNearby);
+        var refreshing = DateTimeOffset.UtcNow < _refreshingUntil;
+        var content = refreshing
+            ? (UIElement)new ProgressRing { IsActive = true, Width = 14, Height = 14, Foreground = Ui.White(0.8) }
+            : Ui.Glyph("\uE72C", 14);
+        var b = Ui.Flat(content, Ui.White(0.1), Ui.White(0.16), Ui.White(1), RefreshNearby, radius: 18);
+        b.Width = 40;
+        b.Height = 36;
+        b.Padding = new Thickness(0);
+        b.HorizontalContentAlignment = HorizontalAlignment.Center;
+        b.IsEnabled = !refreshing;
+        ToolTipService.SetToolTip(b, "Look again");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, "Refresh Nearby");
+        return b;
     }
 
     private void RefreshNearby()
@@ -487,26 +515,6 @@ public sealed partial class MainWindow : Window
         if (_sessions.Count > 0) return $"Connected to {string.Join(", ", _sessions.Values.Select(s => s.Name).Distinct())}.";
         return "Waiting for a connection.";
     }
-
-    /// The two things you can do with another computer, as buttons that say what happens.
-    private StackPanel ConnectButtons(Action<bool> connect, PeerInfo? peer = null)
-    {
-        var show = Ui.Button("Show its screen here", () => connect(false), accent: true);
-        var extend = Ui.Button("Extend display", () => connect(true));
-        ToolTipService.SetToolTip(show, "Use the other computer's screen on this PC.");
-        ToolTipService.SetToolTip(extend, peer?.Extend == false
-            ? "Extend isn't set up on that computer."
-            : "This PC becomes a second screen for it.");
-        var sharing = peer?.Sharing ?? true;
-        show.IsEnabled = _viewer is null && sharing;
-        extend.IsEnabled = _viewer is null && sharing && peer?.Extend != false;
-        return Ui.Row(show, extend);
-    }
-
-    private string PeerSubtitle(PeerInfo h) =>
-        !h.Sharing ? "Not sharing"
-        : (IsPaired(h) ? "Paired" : "New · PIN needed")
-          + (h.Extend == false ? " · Extend unavailable" : "");
 
     /// <summary>Shown while nothing (or nothing sharing) is found: what usually blocks discovery.</summary>
     private void NotShowingUp(StackPanel p)
@@ -580,50 +588,531 @@ public sealed partial class MainWindow : Window
         _ => reason,
     };
 
-    private void ConnectPage(StackPanel p)
+    // ---- Nearby -----------------------------------------------------------------------
+
+    /// <summary>Nearby: the computers around this PC, as a list. Click one for its card; double-click
+    /// uses the default action (Settings → Viewing → Extend display by default). While nothing is
+    /// found, a waiting panel says what to do on the other computer.</summary>
+    private UIElement HomePage()
     {
-        p.Children.Add(Ui.Hero("", "Connect",
-            "Show another computer's screen here, or extend its display onto this one."));
-        UpdateBanner(p);
-        ViewerStatus(p);
+        var root = new Grid { Padding = new Thickness(32, 22, 32, 24), RowSpacing = 16 };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        p.Children.Add(Ui.Section("Nearby", RefreshControl()));
-        if (_hosts.Count == 0)
-            p.Children.Add(Ui.Card("", "Looking for computers…",
-                "Start sharing on the other computer.",
-                new ProgressRing { IsActive = true, Width = 20, Height = 20 }));
-        foreach (var h in _hosts)
-            p.Children.Add(Ui.Card("", h.Name, PeerSubtitle(h),
-                ConnectButtons(extend => { _extend = extend; ConnectToPeer(h); }, h)));
-        if (_hosts.Count == 0 || _hosts.All(h => !h.Sharing))
-            NotShowingUp(p);
+        // Header: a plain title; the two controls on its right.
+        var header = new Grid { ColumnSpacing = 12 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var titles = new StackPanel { Spacing = 4 };
+        titles.Children.Add(Ui.Title("Nearby"));
+        titles.Children.Add(Ui.Text("Click a computer for options. Double-click to connect.", "BodyTextBlockStyle", Ui.Secondary));
+        header.Children.Add(titles);
+        var connectByAddress = Ui.Flat(Ui.Text("Connect by address…", wrap: false), Ui.White(0.1), Ui.White(0.16), Ui.White(1),
+            () => _ = ShowConnectDialogAsync(), radius: 18);
+        connectByAddress.Padding = new Thickness(16, 7, 16, 8);
+        var actions = Ui.Row(RefreshControl(), connectByAddress);
+        actions.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(actions, 1);
+        header.Children.Add(actions);
+        root.Children.Add(header);
 
-        p.Children.Add(Ui.Section("Connect by address"));
-        p.Children.Add(Ui.Card("", "Address", "Use this if the computer isn't listed.",
-            Ui.Reuse(_addressBox)));
-        var buttons = ConnectButtons(extend => { _extend = extend; ConnectManual(); });
-        buttons.HorizontalAlignment = HorizontalAlignment.Right;
-        buttons.Margin = new Thickness(0, 4, 0, 0);
-        p.Children.Add(buttons);
+        var notes = new StackPanel { Spacing = 8 };
+        if (_startupError is not null)
+            notes.Children.Add(Ui.Info("Annex couldn't start", _startupError, InfoBarSeverity.Error));
+        UpdateBanner(notes);
+        if (_directStatus is not null)
+            notes.Children.Add(Ui.Card("", "Direct Wi-Fi", _directStatus));
+        if (_viewer is null && _viewerStatus is not null)
+            notes.Children.Add(Ui.Card("", _viewerStatus));
+        Grid.SetRow(notes, 1);
+        root.Children.Add(notes);
+
+        var visible = _showNotSharing ? _hosts : [.. _hosts.Where(h => h.Sharing)];
+        var notSharing = _hosts.Count(h => !h.Sharing);
+        if (_selected is not null && !_hosts.Any(h => h.Instance == _selected)) _selected = null;
+
+        var body = new Grid { ColumnSpacing = 18 };
+        body.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        body.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var left = new Grid { RowSpacing = 10 };
+        left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        left.Children.Add(SearchStatus(visible.Count));
+        UIElement list;
+        if (visible.Count == 0)
+        {
+            list = new ScrollViewer { Content = Waiting(), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        }
+        else
+        {
+            var rows = new StackPanel { Spacing = 6 };
+            foreach (var h in visible) rows.Children.Add(PeerRow(h));
+            list = new ScrollViewer { Content = rows, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        }
+        Grid.SetRow((FrameworkElement)list, 1);
+        left.Children.Add(list);
+        if (notSharing > 0)
+        {
+            var toggle = Ui.Pill(_showNotSharing ? "Hide computers that aren't sharing" : $"+{notSharing} not sharing",
+                () => { _showNotSharing = !_showNotSharing; Render(); }, prominent: false);
+            toggle.HorizontalAlignment = HorizontalAlignment.Left;
+            Grid.SetRow(toggle, 2);
+            left.Children.Add(toggle);
+        }
+        body.Children.Add(left);
+        if (_selected is not null && _hosts.FirstOrDefault(h => h.Instance == _selected) is { } peer)
+        {
+            var card = PeerCard(peer);
+            Grid.SetColumn(card, 1);
+            body.Children.Add(card);
+        }
+        Grid.SetRow(body, 2);
+        root.Children.Add(body);
+
+        if (SessionStrip() is { } strip)
+        {
+            Grid.SetRow(strip, 3);
+            root.Children.Add(strip);
+        }
+        return root;
     }
 
-    private void ViewerStatus(StackPanel p)
+    /// <summary>One line over the list: Annex is always looking, so say so, and say where.</summary>
+    private StackPanel SearchStatus(int found)
     {
-        if (_directStatus is not null)
-            p.Children.Add(Ui.Card("", "Direct Wi-Fi", _directStatus));
-        if (_viewerStatus is null) return;
-        p.Children.Add(Ui.Card(_viewer is not null ? "" : "", _viewerStatus, ShowTech ? _latency : null,
-            _viewer is not null ? Ui.Button("Disconnect", Disconnect) : null));
-        if (_viewer is not null && _controlling)
-            p.Children.Add(Ui.Card("", "You're in control", "Press Ctrl+Alt+Shift+Q to leave."));
-        else if (_viewer is not null)
-            p.Children.Add(Ui.Card("", "Press Esc to leave the viewer."));
-        if (_viewer is not null && _onDirectWifi)
-            p.Children.Add(Ui.Card("", "On direct Wi-Fi", $"Connected through this PC's hotspot “{_hotspot.Ssid}”."));
-        else if (_viewer is not null && _directPending is null)
-            p.Children.Add(Ui.Card("", "Switch to direct Wi-Fi",
-                "Less lag: the other computer joins this PC's hotspot.",
-                Ui.Button("Switch", () => _ = SwitchToDirectWifiAsync())));
+        var ring = new ProgressRing { IsActive = true, Width = 12, Height = 12, Foreground = Ui.White(0.7) };
+        var text = found switch
+        {
+            0 => "Waiting for computers · looking on your network and over cables",
+            1 => "1 computer · still looking",
+            _ => $"{found} computers · still looking",
+        };
+        var row = Ui.Row(ring, Ui.Text(text, "CaptionTextBlockStyle", Ui.Secondary, wrap: false));
+        row.Spacing = 10;
+        row.Margin = new Thickness(4, 0, 0, 0);
+        return row;
+    }
+
+    /// <summary>Nothing found yet: what to do on the other computer, and what usually hides it.</summary>
+    private StackPanel Waiting()
+    {
+        var art = new Grid { Width = 168, Height = 168, HorizontalAlignment = HorizontalAlignment.Center };
+        foreach (var (size, alpha) in new[] { (168.0, 0.06), (128.0, 0.1), (92.0, 0.16) })
+            art.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
+            {
+                Width = size,
+                Height = size,
+                Stroke = Ui.White(alpha),
+                StrokeThickness = 1,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        var icon = Ui.AppIcon(60);
+        icon.HorizontalAlignment = HorizontalAlignment.Center;
+        icon.VerticalAlignment = VerticalAlignment.Center;
+        art.Children.Add(icon);
+
+        var panel = new StackPanel { Spacing = 8, HorizontalAlignment = HorizontalAlignment.Stretch };
+        panel.Children.Add(art);
+        var title = Ui.Text("Waiting for a computer…", wrap: false);
+        title.FontSize = 18;
+        title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        title.HorizontalAlignment = HorizontalAlignment.Center;
+        panel.Children.Add(title);
+        var hint = Ui.Text("Open Annex on the other computer and turn on sharing.\nIt shows up here by itself.", "BodyTextBlockStyle", Ui.Secondary);
+        hint.TextAlignment = TextAlignment.Center;
+        hint.HorizontalAlignment = HorizontalAlignment.Center;
+        panel.Children.Add(hint);
+        var connect = Ui.Pill("Connect by address…", () => _ = ShowConnectDialogAsync(), prominent: false);
+        connect.HorizontalAlignment = HorizontalAlignment.Center;
+        connect.Margin = new Thickness(0, 6, 0, 0);
+        panel.Children.Add(connect);
+
+        var outer = new StackPanel { Spacing = 0 };
+        outer.Children.Add(Ui.Panel(panel, radius: 18, fill: 0.03, padding: new Thickness(24, 28, 24, 28)));
+        var help = new StackPanel { MaxWidth = 720 };
+        NotShowingUp(help);
+        Ui.JoinRows(help);
+        outer.Children.Add(help);
+        return outer;
+    }
+
+    /// <summary>How this PC would reach a computer, from the addresses it announced.</summary>
+    internal static (string Label, string Glyph) LinkKind(PeerInfo h) =>
+        h.Addresses.Any(a => a.StartsWith("169.254.", StringComparison.Ordinal) || a.StartsWith("fe80", StringComparison.OrdinalIgnoreCase))
+            ? ("Cable", "")
+            : h.Addresses.Any(a => a.StartsWith("192.168.137.", StringComparison.Ordinal))
+                ? ("Direct Wi-Fi", "")
+                : ("Network", "");
+
+    private static string PeerGlyph(PeerInfo h)
+    {
+        var n = h.Name.ToLowerInvariant();
+        return n.Contains("book") || n.Contains("laptop") ? "" : "";
+    }
+
+    private string PeerStatus(PeerInfo h) =>
+        !h.Sharing ? "Not sharing"
+        : (IsPaired(h) ? "Paired" : "New · PIN needed")
+          + (h.Extend == false ? " · Extend unavailable" : "");
+
+    /// <summary>A small chip: how the computer is reached.</summary>
+    private static Border LinkChip(PeerInfo h, bool onWhite = false)
+    {
+        var (label, glyph) = LinkKind(h);
+        var icon = Ui.Glyph(glyph, 10);
+        var text = Ui.Text(label, wrap: false);
+        text.FontSize = 11;
+        var brush = onWhite ? Ui.Black(0.6) : Ui.Secondary;
+        icon.Foreground = brush;
+        text.Foreground = brush;
+        var row = Ui.Row(icon, text);
+        row.Spacing = 5;
+        return new Border
+        {
+            Child = row,
+            Padding = new Thickness(8, 2, 8, 3),
+            CornerRadius = new CornerRadius(9),
+            Background = onWhite ? Ui.Black(0.06) : Ui.White(0.07),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+    }
+
+    /// <summary>One computer. Click selects (its card opens), double-click connects.</summary>
+    private Border PeerRow(PeerInfo h)
+    {
+        var selected = _selected == h.Instance;
+        var grid = new Grid { ColumnSpacing = 14 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var glyph = Ui.Glyph(PeerGlyph(h), 17);
+        glyph.Foreground = selected ? Ui.Black(1) : h.Sharing ? Ui.White(0.95) : Ui.Secondary;
+        grid.Children.Add(new Border
+        {
+            Width = 38,
+            Height = 38,
+            CornerRadius = new CornerRadius(10),
+            Background = selected ? Ui.Black(0.07) : Ui.White(0.07),
+            Child = glyph,
+        });
+        var text = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
+        var name = Ui.Text(h.Name, wrap: false);
+        name.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        name.Foreground = selected ? Ui.Black(1) : Ui.White(0.95);
+        text.Children.Add(name);
+        text.Children.Add(Ui.Text(PeerStatus(h), "CaptionTextBlockStyle", selected ? Ui.Black(0.6) : Ui.Secondary, wrap: false));
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+        if (h.Sharing)
+        {
+            var trailing = Ui.Row(Ui.LiveDot(7), LinkChip(h, onWhite: selected));
+            trailing.Spacing = 10;
+            trailing.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(trailing, 2);
+            grid.Children.Add(trailing);
+        }
+        var idle = selected ? Ui.White(0.92) : Ui.White(0.035);
+        var row = new Border
+        {
+            Child = grid,
+            Padding = new Thickness(12, 9, 14, 9),
+            CornerRadius = new CornerRadius(14),
+            Background = idle,
+        };
+        row.PointerEntered += (_, _) => { if (!selected) row.Background = Ui.White(0.07); };
+        row.PointerExited += (_, _) => row.Background = idle;
+        // A click rebuilds the page, so WinUI's DoubleTapped never reaches the new row: two clicks on
+        // the same computer within the double-click time count as one double-click.
+        row.Tapped += (_, _) =>
+        {
+            var now = Environment.TickCount64;
+            if (_lastTap.Instance == h.Instance && now - _lastTap.At <= GetDoubleClickTime())
+            {
+                _lastTap = (null, 0);
+                _selected = h.Instance;
+                ConnectDefault(h);
+                return;
+            }
+            _lastTap = (h.Instance, now);
+            _selected = selected ? null : h.Instance;
+            Render();
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, $"{h.Name}, {PeerStatus(h)}");
+        return row;
+    }
+
+    private (string? Instance, long At) _lastTap;
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    private static partial uint GetDoubleClickTime();
+
+    /// <summary>Double-click: the default action, straight away.</summary>
+    private void ConnectDefault(PeerInfo h)
+    {
+        if (!h.Sharing || _viewer is not null)
+        {
+            _selected = h.Instance;
+            Render();
+            return;
+        }
+        _extend = _settings.ExtendByDefault && h.Extend != false;
+        ConnectToPeer(h);
+    }
+
+    /// <summary>The selected computer: its two actions, and its settings. Floats beside the list.</summary>
+    private Border PeerCard(PeerInfo peer)
+    {
+        var stack = new StackPanel { Spacing = 14 };
+
+        var top = new Grid();
+        top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        top.Children.Add(new Border
+        {
+            Width = 48,
+            Height = 48,
+            CornerRadius = new CornerRadius(14),
+            Background = Ui.White(0.08),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Child = Ui.Glyph(PeerGlyph(peer), 22),
+        });
+        var close = Ui.Flat(Ui.Glyph("", 10), Ui.White(0.08), Ui.White(0.14), Ui.White(0.9), () => { _selected = null; Render(); }, radius: 13);
+        close.Width = 26;
+        close.Height = 26;
+        close.Padding = new Thickness(0);
+        close.HorizontalContentAlignment = HorizontalAlignment.Center;
+        close.VerticalAlignment = VerticalAlignment.Top;
+        ToolTipService.SetToolTip(close, "Close");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(close, "Close");
+        Grid.SetColumn(close, 1);
+        top.Children.Add(close);
+        stack.Children.Add(top);
+
+        var heading = new StackPanel { Spacing = 6 };
+        var name = Ui.Text(peer.Name);
+        name.FontSize = 22;
+        name.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        heading.Children.Add(name);
+        var status = Ui.Row(Ui.Text(IsPaired(peer) ? "Paired" : "New · asks for a PIN the first time", "CaptionTextBlockStyle", Ui.Secondary, wrap: false));
+        if (peer.Sharing) status.Children.Add(LinkChip(peer));
+        heading.Children.Add(status);
+        stack.Children.Add(heading);
+
+        if (!peer.Sharing)
+            stack.Children.Add(Ui.Text($"Turn on sharing on {peer.Name} to connect.", "CaptionTextBlockStyle", Ui.Secondary));
+
+        var extend = ActionButton("Extend", "This PC becomes a second screen for it.", "", prominent: true,
+            () => { _extend = true; ConnectToPeer(peer); });
+        extend.IsEnabled = _viewer is null && peer.Sharing && peer.Extend != false;
+        var show = ActionButton("Show its screen", "Use its screen here, in a window.", "", prominent: false,
+            () => { _extend = false; ConnectToPeer(peer); });
+        show.IsEnabled = _viewer is null && peer.Sharing;
+        var buttons = new StackPanel { Spacing = 10 };
+        buttons.Children.Add(extend);
+        buttons.Children.Add(show);
+        stack.Children.Add(buttons);
+
+        stack.Children.Add(new Border { Height = 1, Background = Ui.White(0.08) });
+        stack.Children.Add(SmallSwitch("Direct Wi-Fi first", "This PC runs a hotspot and the other computer joins it. Less lag.",
+            _settings.ConnectOverDirectWifi, on => { _settings.ConnectOverDirectWifi = on; _settings.Save(); }));
+        if (peer.Fingerprint is { } fp && _trusted.FirstOrDefault(t => t.Fingerprint == fp) is { } trusted)
+        {
+            stack.Children.Add(SmallSwitch("Can use this PC's mouse and keyboard", "When it shows this PC's screen.",
+                trusted.AllowInput, on => { _core?.SetAllowInput(trusted.Fingerprint, on); RefreshTrusted(); }));
+            var foot = new Grid();
+            foot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            foot.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            var seen = Ui.Text(LastSeen(trusted), "CaptionTextBlockStyle", Ui.Secondary);
+            seen.VerticalAlignment = VerticalAlignment.Center;
+            foot.Children.Add(seen);
+            var forget = Ui.Pill("Forget…", () => _ = ConfirmRemove(trusted), prominent: false);
+            Grid.SetColumn(forget, 1);
+            foot.Children.Add(forget);
+            stack.Children.Add(foot);
+        }
+        if (ShowTech && peer.Addresses.Length > 0)
+        {
+            var addresses = Ui.Text(string.Join("\n", peer.Addresses.Select(a => $"{a}:{peer.Port}")), "CaptionTextBlockStyle", Ui.Secondary);
+            addresses.FontFamily = new FontFamily("Consolas");
+            addresses.IsTextSelectionEnabled = true;
+            stack.Children.Add(addresses);
+        }
+
+        var card = Ui.Panel(stack, radius: 22, fill: 0.07, padding: new Thickness(20));
+        card.Width = 300;
+        card.VerticalAlignment = VerticalAlignment.Top;
+        return card;
+    }
+
+    /// <summary>A big two-line button: what it does, and what happens.</summary>
+    private static Button ActionButton(string title, string detail, string glyph, bool prominent, Action click)
+    {
+        var grid = new Grid { ColumnSpacing = 12 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var icon = Ui.Glyph(glyph, 17);
+        icon.VerticalAlignment = VerticalAlignment.Center;
+        grid.Children.Add(icon);
+        var text = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
+        var t = Ui.Text(title, wrap: false);
+        t.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        text.Children.Add(t);
+        text.Children.Add(Ui.Text(detail, "CaptionTextBlockStyle", prominent ? Ui.Black(0.65) : Ui.Secondary));
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+        var arrow = Ui.Glyph("", 12);
+        arrow.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(arrow, 2);
+        grid.Children.Add(arrow);
+        var b = Ui.Flat(grid, prominent ? Ui.White(0.94) : Ui.White(0.07), prominent ? Ui.White(1) : Ui.White(0.12),
+            prominent ? Ui.Black(1) : Ui.White(0.95), click, radius: 16);
+        b.HorizontalAlignment = HorizontalAlignment.Stretch;
+        b.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        b.Padding = new Thickness(14, 10, 14, 10);
+        b.MinHeight = 60;
+        return b;
+    }
+
+    /// <summary>A title and a short line on the left, a switch on the right.</summary>
+    private static Grid SmallSwitch(string title, string detail, bool on, Action<bool> changed)
+    {
+        var grid = new Grid { ColumnSpacing = 10 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var text = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        var t = Ui.Text(title);
+        t.FontSize = 13;
+        text.Children.Add(t);
+        text.Children.Add(Ui.Text(detail, "CaptionTextBlockStyle", Ui.Secondary));
+        grid.Children.Add(text);
+        var toggle = new ToggleSwitch { IsOn = on, OnContent = "", OffContent = "", MinWidth = 0, VerticalAlignment = VerticalAlignment.Center };
+        toggle.Toggled += (_, _) => changed(toggle.IsOn);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(toggle, title);
+        Grid.SetColumn(toggle, 1);
+        grid.Children.Add(toggle);
+        return grid;
+    }
+
+    /// <summary>What's live, in numbers big enough to read from across the room.</summary>
+    private Border? SessionStrip()
+    {
+        if (_viewer is null && _sessions.Count == 0) return null;
+        var grid = new Grid { ColumnSpacing = 28 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var head = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        var liveLabel = Ui.Text("LIVE", "CaptionTextBlockStyle", Ui.Live, wrap: false);
+        liveLabel.FontWeight = Microsoft.UI.Text.FontWeights.Bold;
+        liveLabel.CharacterSpacing = 140;
+        var live = Ui.Row(Ui.LiveDot(8), liveLabel);
+        head.Children.Add(live);
+        var first = _sessions.Values.FirstOrDefault();
+        var title = Ui.Text(_viewer is not null ? _viewerStatus ?? "Connected"
+            : first.Mode == "extend" ? $"Extending to {first.Name}" : $"Showing this screen on {first.Name}", wrap: false);
+        title.FontSize = 18;
+        title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        head.Children.Add(title);
+        string subtitle = _viewer is not null
+            ? _controlling ? "You're in control · Ctrl+Alt+Shift+Q to leave"
+                : _onDirectWifi ? $"On direct Wi-Fi “{_hotspot.Ssid}”"
+                : "Press Esc to leave the viewer · encrypted end to end"
+            : first.Mode == "extend" ? "Arrange it in Settings → System → Display"
+            : first.Input ? $"{first.Name} can use your mouse and keyboard" : "Encrypted end to end";
+        head.Children.Add(Ui.Text(subtitle, "CaptionTextBlockStyle", Ui.Secondary, wrap: false));
+        grid.Children.Add(head);
+
+        var stats = new List<(string Value, string Unit, string Label)>();
+        if (_viewer is not null && _lat is { } l)
+        {
+            stats.Add(($"{l.P50Ms:F0}", "ms", ShowTech ? $"Delay (p95 {l.P95Ms:F0} ms)" : "Delay"));
+            stats.Add(($"{l.Fps:F0}", "fps", "Smoothness"));
+        }
+        else if (_viewer is null && _hostStream is { } st)
+        {
+            stats.Add(($"{st.Fps}", "fps", "Smoothness"));
+            stats.Add(($"{st.Width}×{st.Height}", "", "Picture"));
+        }
+        var column = 1;
+        foreach (var (value, unit, label) in stats)
+        {
+            var big = Ui.Text(value, wrap: false);
+            big.FontSize = 38;
+            big.FontWeight = Microsoft.UI.Text.FontWeights.Light;
+            var u = Ui.Text(unit, "CaptionTextBlockStyle", Ui.Secondary, wrap: false);
+            u.VerticalAlignment = VerticalAlignment.Bottom;
+            u.Margin = new Thickness(0, 0, 0, 8);
+            var number = Ui.Row(big, u);
+            number.Spacing = 4;
+            var cell = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            cell.Children.Add(number);
+            cell.Children.Add(Ui.Text(label, "CaptionTextBlockStyle", Ui.Secondary, wrap: false));
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            Grid.SetColumn(cell, column++);
+            grid.Children.Add(cell);
+        }
+
+        var buttons = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        buttons.Children.Add(_viewer is not null
+            ? Ui.Pill("Disconnect", Disconnect, prominent: true)
+            : Ui.Pill("Stop sharing", () => SetHosting(false), prominent: true));
+        if (_viewer is not null && !_onDirectWifi && _directPending is null)
+            buttons.Children.Add(Ui.Pill("Switch to direct Wi-Fi", () => _ = SwitchToDirectWifiAsync(), prominent: false));
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(buttons, column);
+        grid.Children.Add(buttons);
+
+        var strip = Ui.Panel(grid, radius: 22, fill: 0.07, padding: new Thickness(22, 16, 22, 16));
+        strip.BorderBrush = new SolidColorBrush(Windows.UI.Color.FromArgb(90, 61, 209, 133));
+        return strip;
+    }
+
+    private ContentDialog? _connectDialog;
+
+    /// <summary>Connect by address: for a computer that isn't listed. Replaces the old Connect page.</summary>
+    private async Task ShowConnectDialogAsync()
+    {
+        if (_connectDialog is not null) return;
+        var panel = new StackPanel { Spacing = 14, MinWidth = 420 };
+        panel.Children.Add(Ui.Text("For a computer that isn't listed: on another network, or over Tailscale or ZeroTier.",
+            "BodyTextBlockStyle", Ui.Secondary));
+        var box = Ui.Reuse(_addressBox);
+        box.HorizontalAlignment = HorizontalAlignment.Stretch;
+        panel.Children.Add(box);
+        panel.Children.Add(SmallSwitch("Direct Wi-Fi first", "This PC runs a hotspot and the other computer joins it. Less lag.",
+            _settings.ConnectOverDirectWifi, on => { _settings.ConnectOverDirectWifi = on; _settings.Save(); }));
+        _connectDialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            RequestedTheme = ElementTheme.Dark,
+            Title = "Connect by address",
+            Content = panel,
+            PrimaryButtonText = "Show its screen",
+            SecondaryButtonText = "Extend display",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        try
+        {
+            var result = await _connectDialog.ShowAsync();
+            if (result == ContentDialogResult.Primary || result == ContentDialogResult.Secondary)
+            {
+                _extend = result == ContentDialogResult.Secondary;
+                ConnectManual();
+            }
+        }
+        catch (Exception)
+        {
+            // Another dialog is open (a PIN prompt); the address stays typed for next time.
+        }
+        finally
+        {
+            _connectDialog = null;
+        }
     }
 
     /// <summary>Viewer: start this PC's hotspot, hand its name and passphrase to the host inside the
@@ -713,27 +1202,6 @@ public sealed partial class MainWindow : Window
         _extend = d.Extend;
         _onDirectWifi = true;
         Connect($"{direct}:{peer.Port}", d.Name, d.Fingerprint);
-    }
-
-    private void PeerPage(StackPanel p, PeerInfo peer)
-    {
-        p.Children.Add(Ui.Hero("", peer.Name, IsPaired(peer)
-            ? "Paired. Connects without a PIN."
-            : "The first connection needs a PIN."));
-        ViewerStatus(p);
-        if (!peer.Sharing)
-            p.Children.Add(Ui.Info("Not sharing", $"Start sharing on {peer.Name} first.", InfoBarSeverity.Informational));
-        var show = Ui.Button("Show its screen", () => { _extend = false; ConnectToPeer(peer); }, accent: true);
-        var extend = Ui.Button("Extend display", () => { _extend = true; ConnectToPeer(peer); });
-        show.IsEnabled = _viewer is null && peer.Sharing;
-        extend.IsEnabled = _viewer is null && peer.Sharing && peer.Extend != false;
-        p.Children.Add(Ui.Card("", "Show its screen here", $"Use {peer.Name}'s screen on this PC.", show));
-        p.Children.Add(Ui.Card("", "Extend display", $"This PC becomes a second screen for {peer.Name}.", extend));
-        if (!ShowTech) return;
-        p.Children.Add(Ui.Section("Details"));
-        p.Children.Add(Ui.Card("", "Addresses", $"{string.Join(", ", peer.Addresses)} · port {peer.Port}"));
-        if (peer.Fingerprint is { } fp)
-            p.Children.Add(Ui.Card("", "Identity code", AnnexNative.DisplayFingerprint(fp)));
     }
 
     private void SettingsPage(StackPanel p)
@@ -1101,7 +1569,7 @@ public sealed partial class MainWindow : Window
             : "Sharing · waiting for a connection";
         _trayMenu.ShowAtCursor(
             new TrayMenu.Model(_core?.DeviceName ?? "Annex", status, _host is not null,
-                _viewer is not null ? $"Viewing {_viewingName}" : null, _hosts),
+                _viewer is not null ? $"Viewing {_viewingName}" : null, _hosts, TrayLive()),
             new TrayMenu.Actions(
                 SetSharing: on => SetHosting(on),
                 Connect: (peer, extend) => { _extend = extend; ConnectToPeer(peer); },
@@ -1109,6 +1577,18 @@ public sealed partial class MainWindow : Window
                 Open: ShowFromTray,
                 OpenSettings: () => { ShowFromTray(); Go("settings"); },
                 Quit: Quit));
+    }
+
+    /// <summary>The tray menu's live block: the same title as Nearby's session bar, and its numbers.</summary>
+    private (string Title, string? Detail)? TrayLive()
+    {
+        if (_viewer is not null)
+            return (_viewerStatus ?? $"Connected to {_viewingName}",
+                _lat is { } l ? $"{l.P50Ms:F0} ms delay · {l.Fps:F0} fps" : null);
+        if (_sessions.Count == 0) return null;
+        var s = _sessions.Values.First();
+        return (s.Mode == "extend" ? $"Extending to {s.Name}" : $"Showing this screen on {s.Name}",
+            _hostStream is { } st && s.Mode != "extend" ? $"{st.Width}×{st.Height} · {st.Fps} fps" : null);
     }
 
     private void ShowFromTray()
@@ -1303,6 +1783,7 @@ public sealed partial class MainWindow : Window
                 break;
             case CoreEvent.PeerLost(var instance):
                 _hosts.RemoveAll(h => h.Instance == instance);
+                if (_selected == instance) _selected = null;
                 break;
             default:
                 return;
@@ -1322,7 +1803,9 @@ public sealed partial class MainWindow : Window
     private void ConnectManual()
     {
         var address = _addressBox.Text.Trim();
-        if (address.Length > 0) Connect(address, address, null);
+        if (address.Length == 0) return;
+        _connectDialog?.Hide();
+        Connect(address, address, null);
     }
 
     private void Connect(string address, string title, string? pinnedFingerprint)
@@ -1385,7 +1868,7 @@ public sealed partial class MainWindow : Window
                 _viewerStatus = $"Viewing {_viewingName} · {st.Width}×{st.Height}";
                 break;
             case CoreEvent.Latency(var l):
-                _latency = $"Latency {l.P50Ms:F0} ms (p95 {l.P95Ms:F0} ms) · {l.Fps:F0} fps";
+                _lat = l;
                 break;
             case CoreEvent.SessionEnded(_, var reason):
                 // Switching to direct Wi-Fi drops the old connection on purpose.
@@ -1395,7 +1878,7 @@ public sealed partial class MainWindow : Window
                     _onDirectWifi = false;
                     _ = _hotspot.StopAsync();
                 }
-                _latency = null;
+                _lat = null;
                 _controlling = false;
                 if (_tray is not null) _tray.Tooltip = "Annex";
                 Disconnect();

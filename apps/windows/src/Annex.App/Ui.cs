@@ -8,8 +8,9 @@ using Microsoft.UI.Xaml.Media.Imaging;
 namespace Annex.App;
 
 /// <summary>
-/// Windows 11 Settings-style building blocks, built in code: a page header with a big icon,
-/// section titles and setting cards (icon, title, description on the left; a control on the right).
+/// Building blocks for Annex's black-and-white look (the same as the Mac app), built in code: plain
+/// page titles, small uppercase section labels, flat grouped rows (title and description on the left,
+/// a control on the right), white main buttons and the green "live" dot.
 /// </summary>
 internal static class Ui
 {
@@ -17,6 +18,16 @@ internal static class Ui
 
     public static Brush Secondary => Res<Brush>("TextFillColorSecondaryBrush");
     public static Brush Tertiary => Res<Brush>("TextFillColorTertiaryBrush");
+
+    /// <summary>White at <paramref name="alpha"/>: every fill and line in the app is one of these.</summary>
+    public static SolidColorBrush White(double alpha) =>
+        new(Windows.UI.Color.FromArgb((byte)Math.Round(alpha * 255), 255, 255, 255));
+
+    public static SolidColorBrush Black(double alpha) =>
+        new(Windows.UI.Color.FromArgb((byte)Math.Round(alpha * 255), 5, 5, 5));
+
+    /// <summary>The one colour: something live (a session, a computer that's sharing).</summary>
+    public static SolidColorBrush Live => new(Windows.UI.Color.FromArgb(255, 61, 209, 133));
 
     public static string AssetPath(string name) => Path.Combine(AppContext.BaseDirectory, "Assets", name);
 
@@ -45,43 +56,54 @@ internal static class Ui
         return stack;
     }
 
-    /// <summary>The big header at the top of a page: an accent icon tile, a title and a description.</summary>
+    /// <summary>The top of a page: a plain title and one line saying what the page is for. Content,
+    /// not chrome, so no card and no icon (<paramref name="glyph"/> is kept for callers, unused).</summary>
     public static UIElement Hero(string glyph, string title, string description, UIElement? icon = null)
     {
-        var tile = icon ?? new Border
+        var text = new StackPanel { Spacing = 4, Margin = new Thickness(0, 4, 0, 18) };
+        if (icon is FrameworkElement fe)
         {
-            Width = 52,
-            Height = 52,
-            CornerRadius = new CornerRadius(12),
-            Background = Res<Brush>("AccentFillColorDefaultBrush"),
-            Child = new FontIcon { Glyph = glyph, FontSize = 24, Foreground = Res<Brush>("TextOnAccentFillColorPrimaryBrush") },
-        };
-        var text = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        text.Children.Add(Text(title, "SubtitleTextBlockStyle"));
+            fe.Margin = new Thickness(0, 0, 0, 10);
+            fe.HorizontalAlignment = HorizontalAlignment.Left;
+            text.Children.Add(fe);
+        }
+        text.Children.Add(Title(title));
         text.Children.Add(Text(description, "BodyTextBlockStyle", Secondary));
-        var grid = new Grid { ColumnSpacing = 20, Margin = new Thickness(0, 16, 0, 20) };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        Grid.SetColumn(text, 1);
-        grid.Children.Add(tile);
-        grid.Children.Add(text);
-        return grid;
+        return text;
+    }
+
+    /// <summary>A page title: big and semibold.</summary>
+    public static TextBlock Title(string text)
+    {
+        var t = Text(text, wrap: false);
+        t.FontSize = 28;
+        t.FontWeight = FontWeights.SemiBold;
+        return t;
+    }
+
+    /// <summary>A small uppercase label over a group.</summary>
+    public static TextBlock Eyebrow(string text)
+    {
+        var t = Text(text.ToUpperInvariant(), "CaptionTextBlockStyle", Secondary, wrap: false);
+        t.FontWeight = FontWeights.SemiBold;
+        t.CharacterSpacing = 120;
+        return t;
     }
 
     public static TextBlock Section(string title)
     {
-        var t = Text(title, "BodyStrongTextBlockStyle");
-        t.Margin = new Thickness(1, 20, 0, 6);
+        var t = Eyebrow(title);
+        t.Margin = new Thickness(2, 22, 0, 8);
         return t;
     }
 
     /// <summary>A section heading with a small control (e.g. refresh) at its right end.</summary>
     public static Grid Section(string title, UIElement action)
     {
-        var grid = new Grid { Margin = new Thickness(1, 14, 0, 2) };
+        var grid = new Grid { Margin = new Thickness(2, 16, 0, 4) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var t = Text(title, "BodyStrongTextBlockStyle");
+        var t = Eyebrow(title);
         t.VerticalAlignment = VerticalAlignment.Center;
         grid.Children.Add(t);
         if (action is FrameworkElement fe)
@@ -130,9 +152,9 @@ internal static class Ui
             Tag = RowTag,
             Child = GroupRow(title, description, control, status),
             Padding = new Thickness(16, 10, 16, 10),
-            CornerRadius = new CornerRadius(8),
-            Background = Res<Brush>("CardBackgroundFillColorDefaultBrush"),
-            BorderBrush = Res<Brush>("CardStrokeColorDefaultBrush"),
+            CornerRadius = new CornerRadius(14),
+            Background = White(0.045),
+            BorderBrush = White(0.08),
             BorderThickness = new Thickness(1),
             Margin = new Thickness(0, 0, 0, 2),
         };
@@ -201,16 +223,16 @@ internal static class Ui
         {
             if (row is null) continue;
             if (stack.Children.Count > 0)
-                stack.Children.Add(new Border { Height = 1, Background = Res<Brush>("CardStrokeColorDefaultBrush"), Margin = new Thickness(16, 0, 16, 0) });
+                stack.Children.Add(new Border { Height = 1, Background = White(0.07), Margin = new Thickness(16, 0, 16, 0) });
             var cell = new Border { Padding = new Thickness(16, 10, 16, 10), Child = row };
             stack.Children.Add(cell);
         }
         return new Border
         {
             Child = stack,
-            CornerRadius = new CornerRadius(8),
-            Background = Res<Brush>("CardBackgroundFillColorDefaultBrush"),
-            BorderBrush = Res<Brush>("CardStrokeColorDefaultBrush"),
+            CornerRadius = new CornerRadius(14),
+            Background = White(0.045),
+            BorderBrush = White(0.08),
             BorderThickness = new Thickness(1),
             Margin = new Thickness(0, 0, 0, 2),
         };
@@ -240,6 +262,65 @@ internal static class Ui
         b.Click += (_, _) => click();
         return b;
     }
+
+    /// <summary>A button with its own fill, hover and text colours (WinUI's lightweight styling), so it
+    /// looks the same in every state: white with black text for the main action, faint white otherwise.</summary>
+    public static Button Flat(object content, Brush fill, Brush hover, Brush text, Action? click = null, double radius = 10)
+    {
+        var b = new Button
+        {
+            Content = content,
+            Background = fill,
+            Foreground = text,
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(radius),
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+        };
+        b.Resources["ButtonBackgroundPointerOver"] = hover;
+        b.Resources["ButtonBackgroundPressed"] = fill;
+        b.Resources["ButtonForegroundPointerOver"] = text;
+        b.Resources["ButtonForegroundPressed"] = text;
+        b.Resources["ButtonBackgroundDisabled"] = fill;
+        b.Resources["ButtonForegroundDisabled"] = Secondary;
+        b.Resources["ButtonBorderBrushPointerOver"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        b.Resources["ButtonBorderBrushPressed"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        b.Resources["ButtonBorderBrushDisabled"] = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        if (click is not null) b.Click += (_, _) => click();
+        return b;
+    }
+
+    /// <summary>A small capsule button: white for the main action, faint for the other.</summary>
+    public static Button Pill(string text, Action click, bool prominent)
+    {
+        var label = Text(text, wrap: false);
+        label.FontSize = 12;
+        label.FontWeight = FontWeights.SemiBold;
+        var b = Flat(label, prominent ? White(0.92) : White(0.1), prominent ? White(1) : White(0.16),
+            prominent ? Black(1) : White(1), click, radius: 13);
+        b.Padding = new Thickness(12, 3, 12, 4);
+        b.MinHeight = 26;
+        return b;
+    }
+
+    /// <summary>A green dot: something live.</summary>
+    public static Microsoft.UI.Xaml.Shapes.Ellipse LiveDot(double size = 8) => new()
+    {
+        Width = size,
+        Height = size,
+        Fill = Live,
+        VerticalAlignment = VerticalAlignment.Center,
+    };
+
+    /// <summary>A rounded, faintly filled panel.</summary>
+    public static Border Panel(UIElement child, double radius = 18, double fill = 0.045, Thickness? padding = null) => new()
+    {
+        Child = child,
+        CornerRadius = new CornerRadius(radius),
+        Background = White(fill),
+        BorderBrush = White(0.08),
+        BorderThickness = new Thickness(1),
+        Padding = padding ?? new Thickness(16),
+    };
 
     public static StackPanel Row(params UIElement[] children)
     {
