@@ -61,22 +61,52 @@ internal sealed class Updater
 
     public bool Busy => State is Stage.Checking or Stage.Downloading or Stage.Installing;
 
-    public async Task CheckAsync(bool beta)
+    /// <summary>Beta updates changed while a check was running: check again with this value after it.</summary>
+    private bool? _recheckBeta;
+
+    /// <summary>Beta updates was flipped: the old offer was for the other setting, so it goes now,
+    /// then a check runs with the new one.</summary>
+    public Task BetaChangedAsync(bool beta)
     {
+        if (State == Stage.Available)
+        {
+            Available = null;
+            Set(Stage.Idle);
+        }
+        return CheckAsync(beta);
+    }
+
+    /// <summary><paramref name="automatic"/>: the daily check, which never offers going back to an
+    /// older normal release (only turning Beta updates off, or Check now, does).</summary>
+    public async Task CheckAsync(bool beta, bool automatic = false)
+    {
+        if (State == Stage.Checking)
+        {
+            if (!automatic) _recheckBeta = beta;
+            return;
+        }
         if (Busy) return;
         Set(Stage.Checking);
         try
         {
             var json = await s_http.GetStringAsync(AnnexNative.UpdateReleasesUrl).ConfigureAwait(false);
-            Available = AnnexNative.PickUpdate(json, beta, AssetSuffix);
+            var found = AnnexNative.PickUpdate(json, beta, AssetSuffix);
+            Available = automatic && found is { Downgrade: true } ? null : found;
             Error = null;
             LastChecked = DateTimeOffset.Now;
             Set(Available is null ? Stage.UpToDate : Stage.Available);
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or AnnexException)
         {
+            Available = null;
             Error = "Couldn't check for updates. Check the internet connection and try again.";
             Set(Stage.Failed);
+        }
+        // The setting changed mid-check: that answer was for the old one.
+        if (_recheckBeta is { } again)
+        {
+            _recheckBeta = null;
+            if (again != beta) await CheckAsync(again).ConfigureAwait(false);
         }
     }
 

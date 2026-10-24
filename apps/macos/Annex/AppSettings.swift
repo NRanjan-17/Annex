@@ -53,6 +53,9 @@ final class AppSettings: ObservableObject {
         static let peerToPeer = "peerToPeerWiFi"
     }
 
+    /// This copy is a pre-release (`0.2.0-pre.1`).
+    static var runningBeta: Bool { Annex.version.contains("-") }
+
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true, Keys.updates: true,
@@ -67,7 +70,9 @@ final class AppSettings: ObservableObject {
         saveLog = defaults.bool(forKey: Keys.log)
         showTechnicalDetails = defaults.bool(forKey: Keys.technical)
         checkForUpdates = defaults.bool(forKey: Keys.updates)
-        betaUpdates = defaults.bool(forKey: Keys.beta)
+        // Saved only when the user flips it. Until then it follows what's installed: someone who
+        // installed a beta by hand gets betas, not an offer to go back to the last normal release.
+        betaUpdates = defaults.object(forKey: Keys.beta) as? Bool ?? Self.runningBeta
         dismissedUpdateVersion = defaults.string(forKey: Keys.dismissedUpdate)
         lastUpdateCheck = defaults.object(forKey: Keys.lastCheck) as? Date
         peerToPeerWiFi = defaults.bool(forKey: Keys.peerToPeer)

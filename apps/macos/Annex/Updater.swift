@@ -26,6 +26,8 @@ final class Updater: ObservableObject {
     private let settings: AppSettings
     private let session = URLSession(configuration: .ephemeral)
     private var timer: Timer?
+    /// Beta updates changed while a check was running: check again when it ends.
+    private var recheck = false
     private var cancellables: Set<AnyCancellable> = []
 
     init(settings: AppSettings) {
@@ -40,9 +42,16 @@ final class Updater: ObservableObject {
         settings.$betaUpdates.dropFirst().removeDuplicates()
             .sink { [weak self] _ in
                 // Read the new value after the property has changed.
-                DispatchQueue.main.async { Task { await self?.check() } }
+                DispatchQueue.main.async { self?.betaChanged() }
             }
             .store(in: &cancellables)
+    }
+
+    /// The old offer was for the other setting: drop it now, then look again with the new one.
+    private func betaChanged() {
+        if case .available = state { state = .idle }
+        announced = false
+        Task { await check() }
     }
 
     private func schedule(_ on: Bool) {
@@ -83,10 +92,14 @@ final class Updater: ObservableObject {
 
     func check(automatic: Bool = false) async {
         switch state {
-        case .checking, .downloading, .installing: return
+        case .checking:
+            if !automatic { recheck = true }
+            return
+        case .downloading, .installing: return
         default: break
         }
         state = .checking
+        let beta = settings.betaUpdates
         do {
             var request = URLRequest(url: AnnexUpdate.releasesURL, timeoutInterval: 20)
             request.setValue("Annex/\(Annex.version)", forHTTPHeaderField: "User-Agent")
@@ -95,8 +108,11 @@ final class Updater: ObservableObject {
             if let code = (response as? HTTPURLResponse)?.statusCode, code != 200 {
                 throw AnnexError(message: "GitHub answered \(code).")
             }
-            let found = try AnnexUpdate.pick(json: String(decoding: data, as: UTF8.self), beta: settings.betaUpdates)
+            var found = try AnnexUpdate.pick(json: String(decoding: data, as: UTF8.self), beta: beta)
             settings.lastUpdateCheck = Date()
+            // Going back to an older normal release is only offered when asked for (Beta updates
+            // turned off, or Check Now), never by the daily check.
+            if automatic, found?.downgrade == true { found = nil }
             if let info = found {
                 state = .available(info)
                 if automatic { announced = true }
@@ -106,6 +122,12 @@ final class Updater: ObservableObject {
         } catch {
             // A failed automatic check stays quiet; the next one tries again.
             state = automatic ? .idle : .failed("Couldn't check for updates. \(error.localizedDescription)")
+        }
+        // Beta updates was flipped mid-check: that answer was for the old setting.
+        if recheck || beta != settings.betaUpdates {
+            recheck = false
+            if case .available = state { state = .idle }
+            await check()
         }
     }
 

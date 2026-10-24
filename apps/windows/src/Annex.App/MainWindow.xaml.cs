@@ -1358,8 +1358,9 @@ public sealed partial class MainWindow : Window
                 Ui.Switch(_settings.BetaUpdates, on =>
                 {
                     _settings.BetaUpdates = on;
+                    _settings.BetaUpdatesChosen = true;
                     _settings.Save();
-                    _ = _updater.CheckAsync(on);
+                    _ = _updater.BetaChangedAsync(on);
                 })),
             UpdateStatusRow(),
             checkNow,
@@ -1417,7 +1418,7 @@ public sealed partial class MainWindow : Window
         timer.Tick += (_, _) =>
         {
             timer.Interval = TimeSpan.FromHours(24);
-            if (_settings.CheckForUpdates) _ = _updater.CheckAsync(_settings.BetaUpdates);
+            if (_settings.CheckForUpdates) _ = _updater.CheckAsync(_settings.BetaUpdates, automatic: true);
         };
         timer.Start();
     }
