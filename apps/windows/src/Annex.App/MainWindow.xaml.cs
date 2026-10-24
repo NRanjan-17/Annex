@@ -257,6 +257,8 @@ public sealed partial class MainWindow : Window
     /// <summary>The window buttons (minimise, maximise, close): white on the black title bar.</summary>
     private void StyleCaptionButtons()
     {
+        // Windows 10 can't recolour them; it keeps its own.
+        if (!Microsoft.UI.Windowing.AppWindowTitleBar.IsCustomizationSupported()) return;
         var bar = AppWindow.TitleBar;
         bar.PreferredHeightOption = Microsoft.UI.Windowing.TitleBarHeightOption.Tall;
         bar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
