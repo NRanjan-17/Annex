@@ -534,7 +534,7 @@ final class AppModel: ObservableObject {
 
     /// Joining a PC's hotspot by hand: for networks that keep computers from reaching each other,
     /// where no session can start to hand the hotspot over (the PC shows it under Share → Direct Wi-Fi).
-    @Published var pcHotspotName = "Annex-"
+    @Published var pcHotspotName = ""
     @Published var pcHotspotPassword = ""
     @Published private(set) var joiningPCHotspot = false
 

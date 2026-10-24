@@ -187,12 +187,24 @@ final class ExtendSession {
         display.invalidate()
     }
 
-    /// Called when the display's mode may have changed.
+    /// What to capture: the Annex display, or, when macOS mirrors it from another screen (System
+    /// Settings → Displays → Mirror, which it remembers for this display), that screen. A display
+    /// in a mirror set draws nothing of its own, so ScreenCaptureKit refuses it.
+    private var captureSource: CGDirectDisplayID {
+        let source = CGDisplayMirrorsDisplay(display.displayID)
+        return source == kCGNullDirectDisplay ? display.displayID : source
+    }
+
+    /// The display being captured now.
+    private var capturedDisplay: CGDirectDisplayID = kCGNullDirectDisplay
+
+    /// Called when the display's mode, or whether it's mirrored, may have changed.
     func reconfigured() {
         guard !stopped, let mode = CGDisplayCopyDisplayMode(display.displayID) else { return }
         let size = Self.streamSize(pixels: (mode.pixelWidth, mode.pixelHeight), viewer: viewerPixels,
                                    fps: Self.rate(of: mode, fallback: fps))
-        if startedWithoutMode || size != pixelSize || Self.rate(of: mode, fallback: fps) != fps {
+        if startedWithoutMode || size != pixelSize || Self.rate(of: mode, fallback: fps) != fps
+            || captureSource != capturedDisplay {
             Annex.log("extend: display now \(mode.pixelWidth)×\(mode.pixelHeight) pixels at \(Int(mode.refreshRate.rounded())) Hz; restarting capture")
             restartCapture()
         }
@@ -207,8 +219,12 @@ final class ExtendSession {
         guard !stopped else { return }
         generation += 1
         let gen = generation
-        let id = display.displayID
-        let mode = CGDisplayCopyDisplayMode(id)
+        let id = captureSource
+        capturedDisplay = id
+        if id != display.displayID {
+            Annex.log("extend: the Annex display mirrors display \(id) (System Settings → Displays); capturing that")
+        }
+        let mode = CGDisplayCopyDisplayMode(display.displayID)
         fps = Self.rate(of: mode, fallback: fps)
         let size = Self.streamSize(pixels: (mode?.pixelWidth ?? viewerPixels.0, mode?.pixelHeight ?? viewerPixels.1),
                                    viewer: viewerPixels, fps: fps)

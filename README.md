@@ -127,8 +127,8 @@ enter a PIN again next time. Rename this computer in **Settings → General → 
 - **Quality** (Settings → Viewing): *Fast (Wi-Fi)* keeps the picture moving on a busy network;
   *Best* suits a cable or a fast network. Annex also lowers quality by itself as soon as the
   network starts to lag.
-- **Direct Wi-Fi** (Mac ↔ Windows, or between PCs): the Windows PC runs its own hotspot and hands
-  the password over inside the encrypted session; the other computer joins it and Annex
+- **Direct Wi-Fi** (Mac ↔ Windows, or between PCs): the Windows PC runs its own Mobile hotspot, as
+  set up in Windows Settings, and hands its name and password over inside the encrypted session; the other computer joins it and Annex
   reconnects. Video then goes straight between the two, without the router in the middle.
   - **Before you start:** turn on *Connect over direct Wi-Fi* (Windows: Settings → Viewing; Mac:
     the computer's page under Nearby).
