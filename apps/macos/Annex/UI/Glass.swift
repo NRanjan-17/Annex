@@ -120,6 +120,19 @@ struct Eyebrow: View {
     }
 }
 
+/// The app's own icon, wherever the UI names Annex or this computer.
+struct AppIcon: View {
+    var size: CGFloat = 32
+
+    var body: some View {
+        Image(nsImage: NSApp.applicationIconImage)
+            .resizable()
+            .interpolation(.high)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
 /// A dot that breathes while something is live.
 struct LiveDot: View {
     var color: Color = .annexLive

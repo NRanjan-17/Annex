@@ -42,12 +42,9 @@ struct MenuContent: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "laptopcomputer")
-                .font(.system(size: 16))
-                .frame(width: 38, height: 38)
-                .background(Circle().fill(Color.white.opacity(model.isHosting ? 0.16 : 0.07)))
+            AppIcon(size: 40)
                 .overlay(alignment: .topTrailing) {
-                    if model.isHosting { LiveDot(size: 8).offset(x: -1, y: 1) }
+                    if model.isHosting { LiveDot(size: 8).offset(x: -1, y: 2) }
                 }
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.deviceName.isEmpty ? "Annex" : model.deviceName)
