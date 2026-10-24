@@ -22,6 +22,7 @@ final class AppModel: ObservableObject {
         didSet {
             updateKeepAwake()
             updatePeerToPeerVisibility()
+            updateInSession()
         }
     }
     /// Host: every Mac nearby can find this one on peer-to-peer Wi-Fi until then (else only
@@ -75,7 +76,10 @@ final class AppModel: ObservableObject {
     private var core: CoreClient?
     private var discovery: DiscoveryHandle?
     private var host: HostController?
-    private var viewer: ViewerHandle? { didSet { updateKeepAwake() } }
+    private var viewer: ViewerHandle? { didSet { updateKeepAwake(); updateInSession() } }
+    /// Viewing, or showing this Mac to someone. Peer-to-peer browsing pauses meanwhile: it shares
+    /// the Wi-Fi radio with the session and would add lag.
+    @Published private(set) var inSession = false
     /// Held while a session runs, so neither screen sleeps: the viewer gets no local input, and
     /// the host's screen (or its Annex display) is what the viewer is watching.
     private var keepAwake: NSObjectProtocol?
@@ -119,6 +123,11 @@ final class AppModel: ObservableObject {
 
     var isViewing: Bool { viewer != nil }
 
+    private func updateInSession() {
+        let busy = viewer != nil || hostStatus.viewerName != nil
+        if busy != inSession { inSession = busy }
+    }
+
     func isPaired(_ peer: PeerInfo) -> Bool {
         peer.fingerprint.map { fp in trusted.contains { $0.fingerprint == fp } } ?? false
     }
@@ -132,11 +141,24 @@ final class AppModel: ObservableObject {
     }
 
     static var dataDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Annex", isDirectory: true)
+        #if DEBUG
+        // Its own identity and pairings, kept in a file (see `start`), so a Debug build never
+        // touches the installed app's.
+        let folder = "Annex Debug"
+        #else
+        let folder = "Annex"
+        #endif
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(folder, isDirectory: true)
     }
 
     private func start() {
         do {
+            #if DEBUG
+            // Debug builds are signed ad hoc, so each rebuild is a new app to the Keychain and
+            // macOS asks for the login password on every launch. Keep their key in a file, in
+            // their own data folder.
+            setenv("ANNEX_KEY_STORAGE", "file", 0)
+            #endif
             let name = settings.customDeviceName ?? Self.systemName
             let core = try CoreClient(dataDirectory: Self.dataDirectory, deviceName: name)
             Annex.setLogEnabled(settings.saveLog)
@@ -150,8 +172,8 @@ final class AppModel: ObservableObject {
             }
             // Ask for Local Network access now, not when the first viewer connects.
             if !Self.isRunningTests { localNetwork.request() }
-            $pane.combineLatest(settings.$peerToPeerWiFi)
-                .sink { [weak self] pane, on in self?.updatePeerToPeerBrowsing(pane: pane, on: on) }
+            $pane.combineLatest(settings.$peerToPeerWiFi, $inSession.removeDuplicates())
+                .sink { [weak self] pane, on, busy in self?.updatePeerToPeerBrowsing(pane: pane, on: on && !busy) }
                 .store(in: &cancellables)
         } catch {
             startupError = error.localizedDescription
@@ -690,8 +712,9 @@ final class AppModel: ObservableObject {
                  protoMajor: 1, sharing: true, extend: h.extend)
     }
 
-    /// Looks for Macs on peer-to-peer Wi-Fi only while Home, Connect or a computer's page is open:
-    /// browsing keeps peer-to-peer Wi-Fi on, which takes some speed from the normal Wi-Fi link.
+    /// Looks for Macs on peer-to-peer Wi-Fi only while Nearby or a computer's page is open, and not
+    /// during a session: browsing keeps peer-to-peer Wi-Fi on, which takes some speed from the
+    /// normal Wi-Fi link.
     private func updatePeerToPeerBrowsing(pane: Pane, on: Bool) {
         let wanted: Bool
         switch pane {

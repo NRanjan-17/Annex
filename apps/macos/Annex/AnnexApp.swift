@@ -98,8 +98,12 @@ final class DockPresence {
             w.isVisible && w.styleMask.contains(.titled) && !(w is NSPanel) && w.level == .normal
         }
         let policy: NSApplication.ActivationPolicy = open ? .regular : .accessory
+        // Switching policy (or a window opening while Annex is menu-bar only) takes full screen
+        // away from the main window; give it back every time.
+        for w in NSApp.windows where w.identifier == WindowChrome.id { WindowChrome.allowFullScreen(w) }
         guard NSApp.activationPolicy() != policy else { return }
         NSApp.setActivationPolicy(policy)
+        for w in NSApp.windows where w.identifier == WindowChrome.id { WindowChrome.allowFullScreen(w) }
         if open { NSApp.activate(ignoringOtherApps: true) }
     }
 }

@@ -21,6 +21,7 @@ struct MainView: View {
             }
         }
         .ignoresSafeArea()
+        .background(WindowChrome())
         .preferredColorScheme(.dark)
         .tint(Color(white: 0.82))
         .frame(minWidth: 940, minHeight: 620)
@@ -45,6 +46,52 @@ struct MainView: View {
         case .settings: SettingsPage(model: model, settings: model.settings)
         case .about: AboutPage(model: model, settings: model.settings, updater: model.updater)
         }
+    }
+}
+
+/// The window itself: an empty unified toolbar so the traffic lights sit inset on the sidebar's
+/// glass (as in Apple's own sidebar apps) instead of on its corner, no title, content under the
+/// title bar, and a real full-screen window.
+struct WindowChrome: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async { view.window.map(Self.configure) }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    static func configure(_ window: NSWindow) {
+        window.identifier = Self.id
+        if window.toolbar == nil {
+            let toolbar = NSToolbar(identifier: "annex.main")
+            toolbar.showsBaselineSeparator = false
+            window.toolbar = toolbar
+            // The toolbar is only there to inset the traffic lights. In full screen there are
+            // none, and an empty toolbar would slide down as a grey band.
+            let center = NotificationCenter.default
+            center.addObserver(forName: NSWindow.willEnterFullScreenNotification, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated { window.toolbar?.isVisible = false }
+            }
+            center.addObserver(forName: NSWindow.willExitFullScreenNotification, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated { window.toolbar?.isVisible = true }
+            }
+        }
+        window.toolbarStyle = .unified
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        allowFullScreen(window)
+    }
+
+    static let id = NSUserInterfaceItemIdentifier("annex.main")
+
+    /// While Annex is only in the menu bar, AppKit marks its windows `.auxiliary` and
+    /// `.fullScreenNone`, which turns the green button into plain zoom. This is the app's main
+    /// window, so put full screen back; `DockPresence` calls this again on every switch.
+    static func allowFullScreen(_ window: NSWindow) {
+        window.collectionBehavior.remove([.auxiliary, .fullScreenAuxiliary, .fullScreenNone])
+        window.collectionBehavior.insert([.primary, .fullScreenPrimary])
     }
 }
 
