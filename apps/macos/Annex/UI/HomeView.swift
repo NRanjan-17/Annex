@@ -237,10 +237,8 @@ private struct Waiting: View {
         VStack(spacing: 16) {
             ZStack {
                 PulseRings()
-                Image(systemName: "laptopcomputer")
-                    .font(.system(size: 26))
+                AppIcon(size: 64)
                     .frame(width: 72, height: 72)
-                    .glassCircle()
             }
             .frame(height: 150)
             VStack(spacing: 6) {

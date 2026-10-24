@@ -105,7 +105,14 @@ private struct Sidebar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             // Room for the window's traffic lights, which sit on the glass.
-            Color.clear.frame(height: 34)
+            Color.clear.frame(height: 30)
+            HStack(spacing: 9) {
+                AppIcon(size: 26)
+                Text("Annex").font(.system(size: 15, weight: .semibold, design: .rounded))
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 12)
+            .accessibilityHidden(true)
             item("Nearby", "dot.radiowaves.left.and.right", .home, badge: sharingCount, also: [.connect])
             item("This Mac", "laptopcomputer", .share, live: model.isHosting)
             item("Paired Devices", "person.2", .devices)
