@@ -153,6 +153,12 @@ automatically when one is plugged in (shown as *Cable*):
 A plain USB charging or data cable between two computers is **not** a network link, so it doesn't
 work. Details: [docs/CABLES.md](docs/CABLES.md).
 
+### A computer somewhere else
+
+Annex has no servers, so over the internet it runs on a private network such as Tailscale or
+ZeroTier: install it on both computers, then *Connect by address* with the other computer's VPN
+address. Details: [docs/REMOTE.md](docs/REMOTE.md).
+
 ### Extend on Windows
 
 Windows has no built-in way for an app to add a display, so when a **Windows PC is sharing**,
