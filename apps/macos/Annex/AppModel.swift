@@ -403,6 +403,37 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Joining a PC's hotspot by hand: for networks that keep computers from reaching each other,
+    /// where no session can start to hand the hotspot over (the PC shows it under Share → Direct Wi-Fi).
+    @Published var pcHotspotName = "Annex-"
+    @Published var pcHotspotPassword = ""
+    @Published private(set) var joiningPCHotspot = false
+
+    func joinPCHotspot() {
+        let ssid = pcHotspotName.trimmingCharacters(in: .whitespaces)
+        let passphrase = pcHotspotPassword.trimmingCharacters(in: .whitespaces)
+        guard !ssid.isEmpty, !passphrase.isEmpty, !joiningPCHotspot else { return }
+        joiningPCHotspot = true
+        directStatus = "Joining “\(ssid)”…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let error = DirectWiFi.join(ssid: ssid, passphrase: passphrase)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.joiningPCHotspot = false
+                if let error {
+                    self.directStatus = "Couldn't join “\(ssid)”: \(error)"
+                } else if self.isHosting {
+                    // The PC finds this Mac on its hotspot and connects as usual.
+                    self.hostDirectWiFi = ssid
+                    self.directStatus = "On “\(ssid)”. Connect from the PC: this Mac shows up in its Nearby list."
+                } else {
+                    self.manualAddress = "\(DirectWiFi.windowsHotspotAddress):47800"
+                    self.directStatus = "On “\(ssid)”. Show the PC's screen or extend it below."
+                }
+            }
+        }
+    }
+
     private func reconnectDirect() {
         guard let d = directReconnect else { return }
         extendMode = d.extend
@@ -513,7 +544,13 @@ final class AppModel: ObservableObject {
         case "closed", "connection closed": return "Disconnected from \(peer)."
         default:
             let r = reason.lowercased()
-            if r.contains("refused") || r.contains("timed out") || r.contains("timeout") {
+            if r.contains("timed out") || r.contains("timeout") {
+                // No answer at all: also what a network that keeps computers apart looks like.
+                return "Couldn't reach \(peer). Check that it's sharing and on the same network. "
+                    + "School and office Wi-Fi often blocks computers from reaching each other: "
+                    + "for a Windows PC, use Direct Wi-Fi to a PC below."
+            }
+            if r.contains("refused") {
                 return "Couldn't reach \(peer). Check that it's sharing and on the same network."
             }
             return reason

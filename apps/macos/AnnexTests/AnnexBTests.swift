@@ -73,6 +73,15 @@ final class AnnexBTests: XCTestCase {
         XCTAssertEqual(ExtendSession.serial(for: "zz"), 1)
     }
 
+    @MainActor func testUnreachableReasonsPointAtTheFix() {
+        // A timeout can be a network that keeps computers apart: point at Direct Wi-Fi.
+        XCTAssertTrue(AppModel.friendlyReason("timed out: connect", peer: "PC").contains("Direct Wi-Fi to a PC"))
+        // Refused means the other computer answered: it isn't sharing, so no Direct Wi-Fi hint.
+        let refused = AppModel.friendlyReason("i/o: Connection refused (os error 61)", peer: "PC")
+        XCTAssertTrue(refused.hasPrefix("Couldn't reach PC."))
+        XCTAssertFalse(refused.contains("Direct Wi-Fi"))
+    }
+
     func testEventDecoding() {
         let ended = #"{"type":"session_ended","session_id":3,"reason":"user"}"#
         XCTAssertEqual(CoreEvent.decode(Data(ended.utf8)), .sessionEnded(sessionId: 3, reason: "user"))
