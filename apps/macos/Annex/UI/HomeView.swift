@@ -2,10 +2,30 @@ import SwiftUI
 
 /// Nearby: this Mac in the middle, the computers around it, and what's live. The one screen most
 /// people need: pick a computer, then Extend or Show Its Screen.
+///
+/// Click a computer to open its card; double-click (or Return) uses the default action from
+/// Settings. Arrow keys move between computers, Escape closes the card.
 struct HomeView: View {
     @ObservedObject var model: AppModel
     @State private var selectedID: String?
     @State private var showOtherWays = false
+    @State private var showNotSharing = false
+    /// Empty = automatic: the radar, or a list once it would get crowded. Set once the user picks.
+    @AppStorage("nearbyLayout") private var layoutChoice: String = ""
+    @FocusState private var focused: Bool
+
+    /// The radar holds this many computers before it switches to a list by itself.
+    static let radarLimit = 8
+
+    private var visible: [PeerInfo] {
+        showNotSharing ? model.discovered : model.discovered.filter(\.isSharing)
+    }
+
+    private var notSharingCount: Int { model.discovered.filter { !$0.isSharing }.count }
+
+    private var layout: NearbyLayout {
+        NearbyLayout(rawValue: layoutChoice) ?? (visible.count >= Self.radarLimit ? .list : .radar)
+    }
 
     private var selected: PeerInfo? {
         guard let id = selectedID else { return nil }
@@ -14,11 +34,26 @@ struct HomeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            NearbyHeader(model: model) { showOtherWays = true }
+            NearbyHeader(model: model, layout: layout, otherWays: { showOtherWays = true },
+                         setLayout: { layoutChoice = $0.rawValue })
             UpdateBanner(updater: model.updater)
             HStack(alignment: .top, spacing: 18) {
-                Radar(model: model, selectedID: $selectedID) { showOtherWays = true }
+                ZStack(alignment: .bottomLeading) {
+                    Group {
+                        switch layout {
+                        case .radar:
+                            Radar(model: model, peers: visible, selectedID: $selectedID,
+                                  connect: connect, otherWays: { showOtherWays = true })
+                        case .list:
+                            NearbyList(model: model, peers: visible, selectedID: $selectedID, connect: connect)
+                        }
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Footnote(layout: layout, hidden: showNotSharing ? 0 : notSharingCount,
+                             showing: showNotSharing && notSharingCount > 0) {
+                        withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) { showNotSharing.toggle() }
+                    }
+                }
                 if let peer = selected {
                     PeerCard(model: model, peer: peer) { selectedID = nil }
                         .frame(width: 300)
@@ -36,19 +71,111 @@ struct HomeView: View {
         .padding(.bottom, 24)
         .animation(.spring(response: 0.5, dampingFraction: 0.86), value: model.isViewing)
         .animation(.spring(response: 0.5, dampingFraction: 0.86), value: model.hostStatus.viewerName)
+        .animation(.spring(response: 0.5, dampingFraction: 0.86), value: layout)
         .sheet(isPresented: $showOtherWays) { OtherWaysSheet(model: model) }
         .onChange(of: model.discovered) { _, peers in
             if let id = selectedID, !peers.contains(where: { $0.id == id }) { selectedID = nil }
         }
+        // Keyboard: arrows move, Return connects, Escape closes the card.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($focused)
+        .onAppear { focused = true }
+        .onKeyPress(.escape) {
+            guard selectedID != nil else { return .ignored }
+            selectedID = nil
+            return .handled
+        }
+        .onKeyPress(.return) {
+            guard let peer = selected else { return .ignored }
+            connect(peer)
+            return .handled
+        }
+        .onKeyPress(keys: [.leftArrow, .upArrow]) { _ in move(by: -1) }
+        .onKeyPress(keys: [.rightArrow, .downArrow]) { _ in move(by: 1) }
+    }
+
+    private func move(by step: Int) -> KeyPress.Result {
+        guard !visible.isEmpty else { return .ignored }
+        let i = visible.firstIndex { $0.id == selectedID }.map { ($0 + step + visible.count) % visible.count }
+            ?? (step > 0 ? 0 : visible.count - 1)
+        selectedID = visible[i].id
+        return .handled
+    }
+
+    /// The default action (Settings → Viewing → Extend display by default), straight away.
+    private func connect(_ peer: PeerInfo) {
+        guard peer.isSharing, !model.isViewing else { selectedID = peer.id; return }
+        model.extendMode = model.settings.extendByDefault && peer.canExtend
+        model.connect(to: peer)
+    }
+}
+
+enum NearbyLayout: String {
+    case radar, list
+}
+
+// MARK: How a computer is reached
+
+/// How this Mac would reach a computer, from the addresses it announced.
+enum LinkKind {
+    case cable, directWiFi, peerToPeer, network
+
+    init(_ peer: PeerInfo) {
+        if peer.instance.hasPrefix("p2p:") {
+            self = .peerToPeer
+        } else if peer.addresses.contains(where: { $0.hasPrefix("169.254.") || $0.lowercased().hasPrefix("fe80") }) {
+            self = .cable
+        } else if peer.addresses.contains("192.168.137.1") {
+            self = .directWiFi
+        } else {
+            self = .network
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .cable: "Cable"
+        case .directWiFi: "Direct Wi-Fi"
+        case .peerToPeer: "Peer-to-peer"
+        case .network: "Wi-Fi"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .cable: "cable.connector"
+        case .directWiFi: "wifi.router"
+        case .peerToPeer: "dot.radiowaves.left.and.right"
+        case .network: "wifi"
+        }
+    }
+}
+
+/// A small chip: how the computer is reached.
+private struct LinkChip: View {
+    let kind: LinkKind
+
+    var body: some View {
+        Label(kind.label, systemImage: kind.symbol)
+            .labelStyle(.titleAndIcon)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 7)
+            .frame(height: 18)
+            .background(Capsule().fill(Color.white.opacity(0.07)))
+            .fixedSize()
     }
 }
 
 // MARK: Header
 
-/// Content, not chrome: a plain title. The two controls on its right float, so they're glass.
+/// Content, not chrome: a plain title. The controls on its right float, so they're glass.
 private struct NearbyHeader: View {
     @ObservedObject var model: AppModel
+    let layout: NearbyLayout
     let otherWays: () -> Void
+    let setLayout: (NearbyLayout) -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
@@ -59,6 +186,14 @@ private struct NearbyHeader: View {
             Spacer(minLength: 12)
             GlassGroup(spacing: 8) {
                 HStack(spacing: 8) {
+                    Picker("Layout", selection: Binding(get: { layout }, set: setLayout)) {
+                        Image(systemName: "circle.circle").help("Radar").tag(NearbyLayout.radar)
+                        Image(systemName: "list.bullet").help("List").tag(NearbyLayout.list)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .accessibilityLabel("Layout")
                     Button { model.refreshNearby() } label: {
                         Image(systemName: "arrow.clockwise").frame(width: 16)
                     }
@@ -75,17 +210,49 @@ private struct NearbyHeader: View {
 
     private var hint: String {
         if model.discovered.isEmpty { return "Looking on your network, over cables and Mac to Mac." }
-        return "Choose a computer to extend onto, or to show its screen here."
+        return "Click a computer for options. Double-click to connect."
+    }
+}
+
+/// Bottom-left of the radar or list: what the rings mean, and computers that aren't sharing.
+private struct Footnote: View {
+    let layout: NearbyLayout
+    let hidden: Int
+    let showing: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if hidden > 0 || showing {
+                Button(action: toggle) {
+                    Text(showing ? "Hide computers that aren't sharing" : "+\(hidden) not sharing")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .padding(.horizontal, 12)
+                        .frame(height: 26)
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .glassCapsule(interactive: true)
+            }
+            if layout == .radar {
+                Text(showing ? "Inner ring: paired · Middle: new, PIN needed · Outer: not sharing"
+                             : "Inner ring: paired · Outer: new, PIN needed")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
 // MARK: Radar
 
-/// Computers laid out around this Mac: paired and sharing on the inner ring, sharing on the
-/// middle, the rest (open but not sharing) on the outer.
+/// Computers laid out around this Mac: paired on the inner ring, new ones (PIN needed) on the
+/// middle, and the ones that aren't sharing, when shown, on the outer.
 private struct Radar: View {
     @ObservedObject var model: AppModel
+    let peers: [PeerInfo]
     @Binding var selectedID: String?
+    let connect: (PeerInfo) -> Void
     let otherWays: () -> Void
 
     var body: some View {
@@ -93,23 +260,22 @@ private struct Radar: View {
             let size = geo.size
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
             let unit = min(size.width, size.height) / 2
-            let peers = model.discovered
             ZStack {
                 Rings(searching: peers.isEmpty, live: model.isHosting || model.isViewing)
                 Links(center: center, points: peers.enumerated().filter { $0.element.isSharing }
-                    .map { position(of: $0.offset, count: peers.count, peer: $0.element, center: center, unit: unit) })
+                    .map { position(of: $0.offset, peer: $0.element, center: center, unit: unit) })
                 ThisMacNode(model: model) { model.pane = .share }
                     .position(center)
                 ForEach(Array(peers.enumerated()), id: \.element.id) { i, peer in
-                    PeerNode(peer: peer, paired: model.isPaired(peer), selected: selectedID == peer.id) {
-                        selectedID = selectedID == peer.id ? nil : peer.id
-                    }
-                    .position(position(of: i, count: peers.count, peer: peer, center: center, unit: unit))
-                    .transition(.scale.combined(with: .opacity))
+                    PeerNode(peer: peer, paired: model.isPaired(peer), selected: selectedID == peer.id,
+                             select: { selectedID = selectedID == peer.id ? nil : peer.id },
+                             connect: { connect(peer) })
+                        .position(position(of: i, peer: peer, center: center, unit: unit))
+                        .transition(.scale.combined(with: .opacity))
                 }
                 if peers.isEmpty {
                     EmptyHint(model: model, otherWays: otherWays)
-                        .position(x: center.x, y: min(size.height - 40, center.y + unit * 0.78))
+                        .position(x: center.x, y: min(size.height - 70, center.y + unit * 0.74))
                 }
             }
             .animation(.spring(response: 0.6, dampingFraction: 0.8), value: peers.map(\.id))
@@ -123,8 +289,8 @@ private struct Radar: View {
     }
 
     /// Spread evenly, starting top-right, so nodes never sit on the header or each other.
-    private func position(of i: Int, count: Int, peer: PeerInfo, center: CGPoint, unit: CGFloat) -> CGPoint {
-        let angle = (-60 + Double(i) * 360 / Double(max(count, 1))) * .pi / 180
+    private func position(of i: Int, peer: PeerInfo, center: CGPoint, unit: CGFloat) -> CGPoint {
+        let angle = (-60 + Double(i) * 360 / Double(max(peers.count, 1))) * .pi / 180
         let r = unit * ring(for: peer)
         // Keep whole nodes (and their labels) inside the radar, however narrow it gets.
         let x = center.x + CGFloat(cos(angle)) * r * 1.25
@@ -160,7 +326,6 @@ private struct Rings: View {
                     wedge.move(to: c)
                     wedge.addArc(center: c, radius: unit * 1.1, startAngle: .radians(a - 0.5), endAngle: .radians(a), clockwise: false)
                     wedge.closeSubpath()
-                    ctx.scaleBy(x: 1, y: 1)
                     ctx.fill(wedge, with: .linearGradient(Gradient(colors: [.clear, Color.white.opacity(0.10)]),
                                                          startPoint: CGPoint(x: c.x + unit * CGFloat(cos(a - 0.5)), y: c.y + unit * CGFloat(sin(a - 0.5))),
                                                          endPoint: CGPoint(x: c.x + unit * CGFloat(cos(a)), y: c.y + unit * CGFloat(sin(a)))))
@@ -216,41 +381,51 @@ private struct ThisMacNode: View {
     }
 }
 
+/// Click selects, double-click connects. Not a Button: a Button would swallow the double-click.
 private struct PeerNode: View {
     let peer: PeerInfo
     let paired: Bool
     let selected: Bool
-    let action: () -> Void
+    let select: () -> Void
+    let connect: () -> Void
     @State private var hovered = false
 
     var body: some View {
-        Button(action: action) {
-            VStack(spacing: 7) {
-                Image(systemName: Self.symbol(for: peer))
-                    .font(.system(size: 22))
-                    .foregroundStyle(selected ? Color.black : peer.isSharing ? Color.primary : Color.secondary)
-                    .frame(width: 64, height: 64)
-                    .glassCircle(tint: selected ? Color.white.opacity(0.9) : nil)
-                    .overlay(alignment: .topTrailing) {
-                        if peer.isSharing { LiveDot(size: 9).offset(x: -4, y: 4) }
-                    }
-                    .scaleEffect(hovered && !selected ? 1.06 : 1)
-                VStack(spacing: 1) {
-                    Text(peer.name).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
-                    Text(subtitle).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+        VStack(spacing: 7) {
+            Image(systemName: Self.symbol(for: peer))
+                .font(.system(size: 22))
+                .foregroundStyle(selected ? Color.black : peer.isSharing ? Color.primary : Color.secondary)
+                .frame(width: 64, height: 64)
+                .glassCircle(tint: selected ? Color.white.opacity(0.9) : nil)
+                .overlay(alignment: .topTrailing) {
+                    if peer.isSharing { LiveDot(size: 9).offset(x: -4, y: 4) }
                 }
-                .frame(maxWidth: 140)
+                .scaleEffect(hovered && !selected ? 1.06 : 1)
+            VStack(spacing: 3) {
+                Text(peer.name).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
+                if peer.isSharing {
+                    LinkChip(kind: LinkKind(peer))
+                } else {
+                    Text("Not sharing").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                }
             }
-            .contentShape(Rectangle())
+            .frame(maxWidth: 150)
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: connect)
+        .onTapGesture(perform: select)
         .onHover { h in withAnimation(.spring(response: 0.3)) { hovered = h } }
-        .accessibilityLabel("\(peer.name), \(subtitle)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(peer.name), \(Self.status(peer, paired: paired))")
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction(.default, select)
+        .accessibilityAction(named: "Connect", connect)
+        .help(Self.status(peer, paired: paired))
     }
 
-    private var subtitle: String {
+    static func status(_ peer: PeerInfo, paired: Bool) -> String {
         guard peer.isSharing else { return "Not sharing" }
-        return paired ? "Paired · sharing" : "Sharing · PIN needed"
+        return (paired ? "Paired" : "New · PIN needed") + " · " + LinkKind(peer).label
     }
 
     static func symbol(for peer: PeerInfo) -> String {
@@ -286,12 +461,94 @@ private struct EmptyHint: View {
     }
 }
 
+// MARK: List
+
+/// The same computers as rows: for when the radar would be crowded, or by choice.
+private struct NearbyList: View {
+    @ObservedObject var model: AppModel
+    let peers: [PeerInfo]
+    @Binding var selectedID: String?
+    let connect: (PeerInfo) -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 6) {
+                ForEach(peers) { peer in
+                    NearbyRow(peer: peer, paired: model.isPaired(peer), selected: selectedID == peer.id,
+                              select: { selectedID = selectedID == peer.id ? nil : peer.id },
+                              connect: { connect(peer) })
+                }
+                if peers.isEmpty {
+                    Text("Looking for computers…")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                        .padding(.top, 40)
+                }
+            }
+            .padding(.bottom, 44)
+        }
+        .scrollContentBackground(.hidden)
+    }
+}
+
+private struct NearbyRow: View {
+    let peer: PeerInfo
+    let paired: Bool
+    let selected: Bool
+    let select: () -> Void
+    let connect: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: PeerNode.symbol(for: peer))
+                .font(.system(size: 17))
+                .foregroundStyle(selected ? Color.black : peer.isSharing ? Color.primary : Color.secondary)
+                .frame(width: 38, height: 38)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(selected ? Color.black.opacity(0.08) : Color.white.opacity(0.07)))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(peer.name).font(.system(size: 13.5, weight: .semibold))
+                Text(peer.isSharing ? (paired ? "Paired" : "New · PIN needed") : "Not sharing")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(selected ? Color.black.opacity(0.6) : Color.secondary)
+            }
+            .foregroundStyle(selected ? Color.black : Color.primary)
+            Spacer(minLength: 8)
+            if peer.isSharing {
+                LiveDot(size: 7)
+                LinkChip(kind: LinkKind(peer)).colorScheme(selected ? .light : .dark)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 56)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .fill(selected ? Color.white.opacity(0.92) : Color.white.opacity(hovered ? 0.07 : 0.035)))
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: connect)
+        .onTapGesture(perform: select)
+        .onHover { hovered = $0 }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(peer.name), \(PeerNode.status(peer, paired: paired))")
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction(.default, select)
+        .accessibilityAction(named: "Connect", connect)
+    }
+}
+
 // MARK: Selected computer
 
+/// Floats over the radar, so it's glass; everything inside it is flat (no glass on glass).
+/// Sized to what it holds.
 private struct PeerCard: View {
     @ObservedObject var model: AppModel
     let peer: PeerInfo
     let close: () -> Void
+    @State private var confirmForget = false
+
+    private var trusted: TrustedPeer? {
+        guard let fp = peer.fingerprint else { return nil }
+        return model.trusted.first { $0.fingerprint == fp }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -305,12 +562,16 @@ private struct PeerCard: View {
                     .buttonStyle(.plain)
                     .frame(width: 26, height: 26)
                     .background(Circle().fill(Color.white.opacity(0.08)))
+                    .help("Close (Esc)")
                     .accessibilityLabel("Close")
             }
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(peer.name).font(.system(size: 22, weight: .semibold, design: .rounded)).lineLimit(2)
-                Text(model.isPaired(peer) ? "Paired · connects without a PIN" : "New · asks for a PIN the first time")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(trusted != nil ? "Paired" : "New · asks for a PIN the first time")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    if peer.isSharing { LinkChip(kind: LinkKind(peer)) }
+                }
             }
 
             if !peer.isSharing {
@@ -334,24 +595,58 @@ private struct PeerCard: View {
             }
 
             Divider().opacity(0.5)
-            Toggle(isOn: $model.useDirectWiFi) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Direct Wi-Fi first").font(.system(size: 12.5, weight: .medium))
-                    Text("Join a Windows PC's hotspot. Less lag.").font(.system(size: 11)).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle(isOn: $model.useDirectWiFi) {
+                    Detail(title: "Direct Wi-Fi first", text: "Join a Windows PC's hotspot. Less lag.")
+                }
+                .disabled(model.isViewing)
+                if let trusted {
+                    Toggle(isOn: Binding(get: { trusted.allowInput }, set: { model.setAllowInput(trusted, $0) })) {
+                        Detail(title: "Can use this Mac's mouse and keyboard", text: "When it shows this Mac's screen.")
+                    }
+                    HStack {
+                        Text(lastConnected(trusted)).font(.system(size: 11)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Forget…") { confirmForget = true }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .toggleStyle(.switch)
             .controlSize(.small)
-            .disabled(model.isViewing)
-            if model.settings.showTechnicalDetails {
+            if model.settings.showTechnicalDetails, !peer.addresses.isEmpty {
                 Text(peer.addresses.map { "\($0):\(peer.port)" }.joined(separator: "\n"))
                     .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
             }
-            Spacer(minLength: 0)
         }
         .padding(20)
-        .frame(maxHeight: .infinity, alignment: .top)
         .glassPanel(radius: 26)
+        .confirmationDialog("Forget \(peer.name)?", isPresented: $confirmForget) {
+            Button("Forget", role: .destructive) {
+                if let trusted { model.revoke(trusted) }
+            }
+        } message: {
+            Text("It will need a PIN to connect again.")
+        }
+    }
+
+    private func lastConnected(_ t: TrustedPeer) -> String {
+        guard t.lastSeen > 0 else { return "Paired" }
+        return "Last connected " + Date(timeIntervalSince1970: TimeInterval(t.lastSeen)).formatted(.relative(presentation: .named))
+    }
+}
+
+private struct Detail: View {
+    let title: String
+    let text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: 12.5, weight: .medium))
+            Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
+        }
     }
 }
 
