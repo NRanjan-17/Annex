@@ -122,9 +122,10 @@ opt-in feature, and PLAN.md says so.
 
 | Piece | Where | What it does |
 |---|---|---|
-| `annex-rendezvous` | new crate + small server binary | Holds registrations (code → host), tells each side the other's public and local addresses, rate-limits codes. QUIC, so it sees the session socket's own public address (STUN's job, no STUN server needed). |
-| `annex-relay` | same binary, separate port range | TURN-style: gives each session two relay addresses and forwards packets between them unchanged. |
-| Punching socket | `annex-session`, a custom `quinn::AsyncUdpSocket` | The session socket also talks to the rendezvous server and sends the small "punch" packets that open home routers. quinn supports custom sockets, so QUIC itself is unchanged. |
+| Rendezvous | Cloudflare Worker + one Durable Object per code (`server/rendezvous`) | Holds registrations (code → host) over a WebSocket while the host is sharing, swaps each side's addresses, rate-limits codes. Workers can't receive UDP, so it never sees the session socket. |
+| Public address | `stun.cloudflare.com` (free, no cap) | Each computer asks STUN, from its QUIC socket, which public address and port its router gave that socket. |
+| Relay (phase 2) | Cloudflare Realtime TURN | Standard TURN: forwards packets unchanged. Nothing of ours to run; the core needs a TURN client. |
+| Punching socket | `annex-session`, a custom `quinn::AsyncUdpSocket` | The session socket also sends STUN requests and the small "punch" packets that open home routers, and passes STUN replies aside (RFC 7983 tells them apart from QUIC). quinn supports custom sockets, so QUIC itself is unchanged. |
 | `connect_internet(code)` | `annex-session` viewer, plus the host's registration | Ask for the peer, punch for about 3 seconds, then fall back to the relay. Uses the existing `Established` path, so everything after the handshake is untouched. |
 | UI | Mac and Windows | The switch and code above, Connect by Code…, Direct/Relayed in the session bar. |
 
@@ -155,12 +156,17 @@ Phase 1 without phase 2 is Option 2. It's a working stopping point if relay cost
   about 30 Mbit/s extending 2560×1600 at 60 Hz, so a relayed session moves roughly 5–14 GB an hour.
   **Quality → Fast** lowers that.
 - Only relayed sessions cost much (expect 10–20% of internet sessions). Rendezvous traffic is tiny.
-- **Pick a host that includes bandwidth.** Big-cloud egress (roughly $0.05–0.09/GB) would make one
-  relayed hour cost around $0.50–1. Plans that include tens of TB a month cost a few euros a month
-  for a small server.
-- **Self-hosting:** the server is one binary, and the server address is a setting, so a company or
-  a careful user can run their own and never touch ours.
-- One region to start; the relay adds the trip to it, so choose one near most users.
+- **Hosting: Cloudflare** (decided 2026-10-25, replacing "a small server").
+  - Rendezvous: Workers and Durable Objects. Signalling is a few small messages per session, so
+    this should stay inside the free or $5/month Workers plan.
+  - STUN: free.
+  - Relay (phase 2): Cloudflare TURN, first 1,000 GB a month free, then $0.05/GB. That's about 70–200
+    relayed hours a month free, then roughly $0.25–0.70 per relayed hour.
+  - Anycast: computers reach the nearest Cloudflare location, so there's no region to choose.
+- **What Cloudflare sees:** the same as "the server" above (addresses, timing, relay byte counts).
+  SECURITY.md names Cloudflare.
+- **Self-hosting:** the server address is a setting. Running your own means deploying the Worker
+  to your own Cloudflare account with `wrangler`; any TURN server works for the relay.
 
 ### Doc changes before building
 
@@ -173,8 +179,9 @@ Phase 1 without phase 2 is Option 2. It's a working stopping point if relay cost
 ### Decisions needed
 
 1. ~~**Change the "no servers" rule?**~~ **Yes** (2026-10-25). PLAN.md updated.
-2. **Who runs and pays for the server:** decided later, before release. Built with the server
-   address as a setting and tested against a locally run server.
+2. **Hosting:** Cloudflare Workers + Durable Objects for rendezvous, Cloudflare STUN, and
+   Cloudflare TURN when the relay comes. Whose Cloudflare account is decided before release; built
+   with the server address as a setting and tested with `wrangler dev`.
 3. **Phase 2:** later. The first release is phase 1 only (direct connections); about 1 network in
    5 still needs Tailscale until the relay ships.
 4. **Platforms:** Mac and Windows together.
