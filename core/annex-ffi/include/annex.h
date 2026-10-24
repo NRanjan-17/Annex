@@ -141,6 +141,9 @@ void annex_viewer_frame_presented(const AnnexViewer *viewer, uint32_t frame_id);
 /* Input (connect with input = true; ignored unless session_started/input_allowed says the host
  * allows it). Pointer positions are normalized to the video: (0,0) top-left, (1,1) bottom-right. */
 void annex_viewer_send_mouse_move(const AnnexViewer *viewer, double x, double y);
+/* The pointer moved by (dx, dy) pixels, for Extend: the host's pointer can leave the extended
+ * display. Only when session_started's pointer_deltas is true. */
+void annex_viewer_send_mouse_delta(const AnnexViewer *viewer, int32_t dx, int32_t dy);
 /* button: 0 left, 1 right, 2 middle. */
 void annex_viewer_send_mouse_button(const AnnexViewer *viewer, uint32_t button, bool down);
 /* Pixels; positive dy scrolls up (content moves down), positive dx scrolls left. */

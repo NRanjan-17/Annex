@@ -545,6 +545,7 @@ async fn run_session(
         transport: link.transport,
         link: if link.direct { crate::events::LinkKind::Direct } else { crate::events::LinkKind::Network },
         input,
+        pointer_deltas: true,
     });
     shared.request_keyframe(&slot);
     if req.input && !input {

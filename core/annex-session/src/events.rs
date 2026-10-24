@@ -60,6 +60,9 @@ pub enum Event {
         link: LinkKind,
         /// The viewer's mouse and keyboard control the host in this session.
         input: bool,
+        /// The host understands pointer movement ([`annex_proto::InputEvent::MouseDelta`],
+        /// protocol 1.2), so the viewer may send that instead of positions.
+        pointer_deltas: bool,
     },
     /// Input was allowed or revoked during a session (both sides).
     InputAllowed {

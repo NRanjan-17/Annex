@@ -442,6 +442,7 @@ final class AppModel: ObservableObject {
             }
             if !holdingWindow { viewerWindow?.show(fullScreen: settings.openFullScreen) }
             controllingHost = s.input ?? false
+            viewerWindow?.setRelativePointer(s.mode == "extend" && s.pointerDeltas == true)
             if settings.controlWhenViewing {
                 viewerWindow?.setControlling(controllingHost, hostName: s.peerName)
             }

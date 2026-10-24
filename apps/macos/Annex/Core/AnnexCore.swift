@@ -293,6 +293,10 @@ final class ViewerHandle {
     }
 
     /// button: 0 left, 1 right, 2 middle.
+    func sendMouseDelta(dx: Int32, dy: Int32) {
+        if let raw { annex_viewer_send_mouse_delta(raw, dx, dy) }
+    }
+
     func sendMouseButton(_ button: UInt32, down: Bool) {
         if let raw { annex_viewer_send_mouse_button(raw, button, down) }
     }
