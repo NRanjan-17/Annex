@@ -383,9 +383,11 @@ async fn run(
                         let mut l = latency.lock().unwrap();
                         if let Some(pos) = l.pending.iter().position(|(id, _)| *id == frame_id) {
                             let (_, cap) = l.pending.remove(pos).unwrap();
-                            l.window.push(at_us - cap, at_us);
+                            // `cap` is derived from host timestamps, so it can be anywhere.
+                            let latency = at_us.saturating_sub(cap);
+                            l.window.push(latency, at_us);
                             if let Some(f) = csv.as_mut() {
-                                let _ = writeln!(f, "{frame_id},{cap},{at_us},{}", at_us - cap);
+                                let _ = writeln!(f, "{frame_id},{cap},{at_us},{latency}");
                             }
                         }
                     }

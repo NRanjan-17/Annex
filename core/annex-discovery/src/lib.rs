@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use mdns_sd::{IfKind, ServiceDaemon, ServiceEvent, ServiceInfo};
+use mdns_sd::{IfKind, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
 use serde::Serialize;
 
 pub use annex_proto::MDNS_SERVICE_TCP;
@@ -55,14 +55,24 @@ pub fn instance_label(device_name: &str, fingerprint: &str) -> String {
 }
 
 /// Builds a [`PeerInfo`] from resolved record data. Pure, for testing.
+///
+/// `addrs` pairs each address with the index of the interface it was seen on (0 if unknown).
+/// IPv6 link-local addresses keep it as a numeric zone (`fe80::1%4`): without one they can't be
+/// connected to.
 pub fn peer_from_parts<'a>(
     instance: &str,
     port: u16,
-    addrs: impl IntoIterator<Item = IpAddr>,
+    addrs: impl IntoIterator<Item = (IpAddr, u32)>,
     txt: impl Fn(&str) -> Option<&'a str>,
 ) -> PeerInfo {
-    let mut ips: Vec<IpAddr> = addrs.into_iter().collect();
-    ips.sort_by_key(|ip| (ip.is_ipv6(), *ip));
+    let mut ips: Vec<(IpAddr, u32)> = addrs
+        .into_iter()
+        .map(|(ip, scope)| match ip {
+            IpAddr::V6(v6) if v6.is_unicast_link_local() => (ip, scope),
+            _ => (ip, 0),
+        })
+        .collect();
+    ips.sort_by_key(|(ip, scope)| (ip.is_ipv6(), *ip, *scope));
     ips.dedup();
     let fingerprint = txt("id")
         .filter(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -72,7 +82,10 @@ pub fn peer_from_parts<'a>(
     PeerInfo {
         instance: instance.to_string(),
         name,
-        addresses: ips.iter().map(|ip| ip.to_string()).collect(),
+        addresses: ips
+            .iter()
+            .map(|(ip, scope)| if *scope == 0 { ip.to_string() } else { format!("{ip}%{scope}") })
+            .collect(),
         port,
         fingerprint,
         proto_major: txt("v").and_then(|v| v.parse().ok()),
@@ -239,7 +252,10 @@ impl Discovery {
                             let peer = peer_from_parts(
                                 &svc.fullname,
                                 svc.port,
-                                svc.addresses.iter().map(|a| a.to_ip_addr()),
+                                svc.addresses.iter().map(|a| match a {
+                                    ScopedIp::V6(v6) => (a.to_ip_addr(), v6.scope_id().index),
+                                    _ => (a.to_ip_addr(), 0),
+                                }),
                                 |k| svc.txt_properties.get_property_val_str(k),
                             );
                             if peer.fingerprint.as_deref() == Some(own.as_str()) {
@@ -301,10 +317,22 @@ mod tests {
         let p = peer_from_parts(
             "Studio (abab)._annex._tcp.local.",
             47800,
-            ["fe80::1".parse().unwrap(), "192.168.1.5".parse().unwrap(), "192.168.1.5".parse().unwrap()],
+            [
+                ("fe80::1".parse().unwrap(), 4),
+                ("192.168.1.5".parse().unwrap(), 4),
+                ("192.168.1.5".parse().unwrap(), 7),
+                ("2001:db8::1".parse().unwrap(), 4),
+                ("fe80::2".parse().unwrap(), 0),
+            ],
             txt,
         );
-        assert_eq!(p.addresses, vec!["192.168.1.5", "fe80::1"]);
+        // Only link-local IPv6 keeps its interface; it's what makes the address usable.
+        assert_eq!(p.addresses, vec!["192.168.1.5", "2001:db8::1", "fe80::1%4", "fe80::2"]);
+        assert_eq!(
+            "[fe80::1%4]:47800".parse::<std::net::SocketAddr>().map(|a| a.to_string()),
+            Ok("[fe80::1%4]:47800".to_string()),
+            "viewers parse the zone back"
+        );
         assert_eq!(p.fingerprint.as_deref(), Some("ab".repeat(32).as_str()));
         assert_eq!(p.name, "Studio");
         assert_eq!(p.proto_major, Some(1));
@@ -349,7 +377,9 @@ mod tests {
             {
                 assert_eq!(p.name, "Live Test");
                 assert!(
-                    !p.addresses.iter().any(|a| a == "127.0.0.1" || a == "::1" || a == "fe80::1"),
+                    !p.addresses
+                        .iter()
+                        .any(|a| ["127.0.0.1", "::1", "fe80::1"].contains(&a.split('%').next().unwrap())),
                     "loopback addresses advertised: {:?}",
                     p.addresses
                 );

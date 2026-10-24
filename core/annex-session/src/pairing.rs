@@ -128,6 +128,8 @@ where
         peer_name: cx.peer_name.to_string(),
         fingerprint_display: display_fingerprint(cx.peer_fp),
     });
+    // Set when the host's user cancels: that isn't the peer's failure.
+    let mut cancelled_here = false;
     let result = async {
         let peer_msg = tokio::select! {
             msg = timeout(USER_TIMEOUT + STEP_TIMEOUT, reader.next_control()) => match msg.map_err(|_| SessionError::Timeout("pairing"))?? {
@@ -135,25 +137,32 @@ where
                 Control::Bye { reason } => return Err(SessionError::Rejected(reason)),
                 _ => return Err(SessionError::Violation("expected pair_spake".into())),
             },
-            _ = pending.answer() => return Err(fail(writer, "pairing_cancelled").await),
+            _ = pending.answer() => {
+                cancelled_here = true;
+                return Err(fail(writer, "pairing_cancelled").await);
+            }
         };
         let (pairing, msg) = Pairing::start(PairRole::Host, &pin, cx.peer_fp, cx.core.fingerprint(), cx.exporter);
         writer.send_control(&Control::PairSpake { msg }).await?;
         let Ok(confirmation) = pairing.finish(&peer_msg) else {
-            cx.core.record_pairing_failure();
             return Err(fail(writer, "pairing_failed").await);
         };
         let Control::PairConfirm { mac } = expect(reader).await? else {
             return Err(SessionError::Violation("expected pair_confirm".into()));
         };
         if !confirmation.verify_peer(&mac) {
-            cx.core.record_pairing_failure();
             return Err(fail(writer, "pairing_failed").await);
         }
         writer.send_control(&Control::PairConfirm { mac: confirmation.mine().to_vec() }).await?;
         cx.core.trust_peer(cx.peer_fp, cx.peer_name)
     }
     .await;
+    // Every run that doesn't pair counts towards the lockout, including ones the peer abandons
+    // (bye, hang-up, timeout): otherwise a peer could hold a session slot with a PIN on screen
+    // for two minutes per connection, again and again, without ever being locked out.
+    if result.is_err() && !cancelled_here {
+        cx.core.record_pairing_failure();
+    }
     (cx.events)(Event::PairingFinished { request_id, success: result.is_ok(), peer_name: cx.peer_name.to_string() });
     result
 }

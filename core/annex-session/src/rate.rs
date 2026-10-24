@@ -11,18 +11,24 @@
 //! The scale is a percentage of the app's normal bitrate for the stream, so the core needs no
 //! codec knowledge.
 
+use std::collections::VecDeque;
+
 use annex_proto::{Quality, ReceiverReport};
 
 pub const MIN_SCALE: u32 = 20;
 pub const MAX_SCALE: u32 = 150;
 pub const MIN_FEC: u32 = 10;
 pub const MAX_FEC: u32 = 40;
+/// The "best" RTT is the lowest of this many recent reports (about 10 s), so one lucky sample
+/// doesn't make a steady, higher RTT look congested for the rest of the session.
+const RTT_WINDOW: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct RateController {
     scale: u32,
     fec: u32,
-    best_rtt_us: Option<u32>,
+    /// Recent non-zero RTTs, newest last.
+    recent_rtt_us: VecDeque<u32>,
     /// Highest scale the viewer's quality choice allows.
     ceiling: u32,
 }
@@ -54,7 +60,7 @@ pub struct RateDecision {
 impl RateController {
     pub fn new(quality: Quality) -> Self {
         let ceiling = quality_ceiling(quality);
-        RateController { scale: ceiling.min(100), fec: 15, best_rtt_us: None, ceiling }
+        RateController { scale: ceiling.min(100), fec: 15, recent_rtt_us: VecDeque::new(), ceiling }
     }
 
     pub fn scale_percent(&self) -> u32 {
@@ -67,9 +73,11 @@ impl RateController {
 
     pub fn on_report(&mut self, r: &ReceiverReport) -> RateDecision {
         let before = self.scale;
-        let shard_loss =
-            if r.shards + r.recovered == 0 { 0.0 } else { r.recovered as f64 / (r.shards + r.recovered) as f64 };
-        let (rtt_congested, rtt_rising) = match (self.best_rtt_us, r.rtt_us) {
+        // Widened: the counts come from the peer and may sum past u32::MAX.
+        let total = r.shards as u64 + r.recovered as u64;
+        let shard_loss = if total == 0 { 0.0 } else { r.recovered as f64 / total as f64 };
+        let best_rtt_us = self.recent_rtt_us.iter().copied().min();
+        let (rtt_congested, rtt_rising) = match (best_rtt_us, r.rtt_us) {
             (_, 0) | (None, _) => (false, false),
             (Some(best), rtt) => (
                 rtt > best.saturating_mul(2).saturating_add(15_000),
@@ -77,7 +85,10 @@ impl RateController {
             ),
         };
         if r.rtt_us > 0 {
-            self.best_rtt_us = Some(self.best_rtt_us.map_or(r.rtt_us, |b| b.min(r.rtt_us)));
+            if self.recent_rtt_us.len() == RTT_WINDOW {
+                self.recent_rtt_us.pop_front();
+            }
+            self.recent_rtt_us.push_back(r.rtt_us);
         }
 
         if r.lost > 0 || shard_loss > 0.05 || rtt_congested {
@@ -160,6 +171,27 @@ mod tests {
         let d = c.on_report(&report(60, 0, 1500, 0, 20_000));
         // The clean first report raised it to 105 %; the gentle back-off is ×0.9.
         assert_eq!((d.scale_percent, d.scale_changed), (94, true));
+    }
+
+    #[test]
+    fn a_brief_low_rtt_is_forgotten() {
+        let mut c = RateController::default();
+        for _ in 0..3 {
+            c.on_report(&report(60, 0, 1500, 0, 3000));
+        }
+        // The path settles at a steady 30 ms: congested at first compared to 3 ms, but once the
+        // low samples age out the rate climbs again instead of staying pinned at the floor.
+        for _ in 0..RTT_WINDOW + 30 {
+            c.on_report(&report(60, 0, 1500, 0, 30_000));
+        }
+        assert_eq!(c.scale_percent(), MAX_SCALE);
+    }
+
+    #[test]
+    fn huge_peer_counts_do_not_overflow() {
+        let mut c = RateController::default();
+        let d = c.on_report(&report(u32::MAX, 0, u32::MAX, u32::MAX, u32::MAX));
+        assert!(d.scale_changed, "half the datagrams rebuilt is heavy loss");
     }
 
     #[test]

@@ -137,8 +137,14 @@ struct Pending {
     shard_len: usize,
 }
 
+/// Incomplete frames kept waiting for shards; beyond this the oldest is given up on.
+const MAX_PENDING: usize = 32;
+/// Most never-seen frame ids reported lost per gap, so a bogus jump in `frame_id` stays cheap.
+const MAX_GAP_LOST: usize = 64;
+
 /// Collects shards and emits frames in order. A frame that can't be completed before a newer
-/// frame finishes is declared lost (the viewer then asks for a keyframe).
+/// frame finishes is declared lost (the viewer then asks for a keyframe), and so is a frame none
+/// of whose datagrams arrived.
 #[derive(Default)]
 pub struct Reassembler {
     pending: BTreeMap<u32, Pending>,
@@ -165,6 +171,18 @@ impl Reassembler {
         if self.done_through.is_some_and(|d| header.frame_id <= d) {
             return Ok(out); // late shard of a finished frame
         }
+        if self.pending.len() >= MAX_PENDING && !self.pending.contains_key(&header.frame_id) {
+            // Too many frames in flight (a peer that never completes any): give up on the oldest.
+            let oldest = *self.pending.keys().next().unwrap();
+            self.give_up_before(oldest, &mut out);
+            self.pending.remove(&oldest);
+            self.frames_lost += 1;
+            out.lost.push(oldest);
+            self.done_through = Some(oldest);
+            if header.frame_id <= oldest {
+                return Ok(out);
+            }
+        }
         self.shards_received += 1;
         let entry = self.pending.entry(header.frame_id).or_insert_with(|| Pending {
             header,
@@ -179,16 +197,28 @@ impl Reassembler {
             return Ok(out);
         }
         let done = self.pending.remove(&header.frame_id).unwrap();
-        // Everything older than a completed frame is lost.
-        let older: Vec<u32> = self.pending.range(..header.frame_id).map(|(id, _)| *id).collect();
-        for id in older {
-            self.pending.remove(&id);
-            self.frames_lost += 1;
-            out.lost.push(id);
-        }
+        self.give_up_before(header.frame_id, &mut out);
         self.done_through = Some(header.frame_id);
         out.frames.push(self.rebuild(done)?);
         Ok(out)
+    }
+
+    /// Declares every unfinished frame older than `id` lost: the pending ones, and those never
+    /// seen at all since the last finished frame (none before the first, and at most
+    /// [`MAX_GAP_LOST`] of them).
+    fn give_up_before(&mut self, id: u32, out: &mut PushResult) {
+        let older: Vec<u32> = self.pending.range(..id).map(|(id, _)| *id).collect();
+        for i in &older {
+            self.pending.remove(i);
+        }
+        let mut lost = older.clone();
+        if let Some(d) = self.done_through {
+            // `id > d`, so `d + 1` can't overflow.
+            lost.extend((d + 1..id).filter(|i| older.binary_search(i).is_err()).take(MAX_GAP_LOST));
+            lost.sort_unstable();
+        }
+        self.frames_lost += lost.len() as u64;
+        out.lost.extend(lost);
     }
 
     fn rebuild(&mut self, p: Pending) -> Result<Reassembled, ProtoError> {
@@ -304,6 +334,54 @@ mod tests {
         assert_eq!(r.frames_lost, 1);
         // Late shards of the lost frame are ignored.
         assert!(r.push(&a[0]).unwrap().frames.is_empty());
+    }
+
+    fn push_all(r: &mut Reassembler, grams: &[Vec<u8>]) -> PushResult {
+        let mut out = PushResult::default();
+        for g in grams {
+            let p = r.push(g).unwrap();
+            out.frames.extend(p.frames);
+            out.lost.extend(p.lost);
+        }
+        out
+    }
+
+    #[test]
+    fn frames_with_no_datagrams_at_all_are_lost_too() {
+        let mut r = Reassembler::default();
+        // Nothing is known before the first frame, so frames 0..5 aren't reported.
+        let out = push_all(&mut r, &fragment(5, 0, VideoFlags(0), &frame(500), 1200, 10).unwrap());
+        assert!(out.lost.is_empty());
+        // Frame 6 vanished entirely, frame 7 lost a shard too many, frame 8 arrives.
+        let seven = fragment(7, 0, VideoFlags(0), &frame(5000), 1200, 10).unwrap();
+        push_all(&mut r, &seven[2..]);
+        let out = push_all(&mut r, &fragment(8, 0, VideoFlags(0), &frame(500), 1200, 10).unwrap());
+        assert_eq!(out.lost, vec![6, 7]);
+        assert_eq!((out.frames.len(), r.frames_lost), (1, 2));
+        // A wild jump in frame_id reports a bounded number of lost frames.
+        let out = push_all(&mut r, &fragment(u32::MAX, 0, VideoFlags(0), &frame(500), 1200, 10).unwrap());
+        assert_eq!(out.lost.len(), MAX_GAP_LOST);
+        assert_eq!(out.lost[0], 9);
+        assert_eq!(out.frames.len(), 1);
+    }
+
+    #[test]
+    fn frames_that_never_complete_are_bounded() {
+        let mut r = Reassembler::default();
+        let mut lost = Vec::new();
+        for id in 0..100 {
+            // One shard of a frame that needs five.
+            let g = fragment(id, 0, VideoFlags(0), &frame(5000), 1200, 10).unwrap();
+            lost.extend(r.push(&g[0]).unwrap().lost);
+            assert!(r.pending.len() <= MAX_PENDING);
+        }
+        assert_eq!(lost, (0..100 - MAX_PENDING as u32).collect::<Vec<_>>());
+        assert_eq!(r.frames_lost, lost.len() as u64);
+        // Each further frame pushes out the oldest still pending.
+        let g = fragment(200, 0, VideoFlags(0), &frame(5000), 1200, 10).unwrap();
+        r.push(&g[0]).unwrap();
+        assert_eq!(r.done_through, Some(100 - MAX_PENDING as u32));
+        assert_eq!(r.pending.len(), MAX_PENDING);
     }
 
     #[test]
