@@ -336,8 +336,7 @@ fn run(
 ) {
     if let Some(sink) = hooks.on_input.take() {
         INPUT.with(|i| {
-            *i.borrow_mut() =
-                Some(InputState { sink, active: input_active, relative, video: (0, 0), buttons_down: 0 })
+            *i.borrow_mut() = Some(InputState { sink, active: input_active, relative, video: (0, 0), buttons_down: 0 })
         });
         // Raw mouse movement (WM_INPUT) while the window is in front, for the relative pointer.
         let mouse = windows::Win32::UI::Input::RAWINPUTDEVICE {
