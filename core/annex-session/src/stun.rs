@@ -186,7 +186,7 @@ impl Message {
 }
 
 /// The long-term credential key: MD5(username ":" realm ":" password). MD5 is what TURN
-/// requires (RFC 8489 §9.2.2); relays reject anything else. The key only signs messages to the
+/// uses by default (RFC 8489 §9.2.2), and the only one most relays support. The key only signs messages to the
 /// relay and isn't stored; our relay's passwords are short-lived ones the server hands out.
 pub fn long_term_key(username: &str, realm: &str, password: &str) -> [u8; 16] {
     use md5::Digest;
