@@ -459,9 +459,6 @@ private struct SharePage: View {
                     GroupRow(title: err, status: .symbol("exclamationmark.triangle.fill", .orange))
                 }
             }
-            if model.isHosting && settings.peerToPeerWiFi {
-                NewMacSection(model: model)
-            }
             if model.isHosting && model.hostStatus.viewerName != nil {
                 let s = model.hostStatus
                 GroupSection("Connected now") {
@@ -492,11 +489,13 @@ private struct SharePage: View {
             if model.isHosting, let port = model.hostStatus.listeningPort {
                 HowToConnect(model: model, port: port)
             }
+            if model.isHosting && settings.peerToPeerWiFi {
+                NewMacSection(model: model)
+            }
             if !model.isHosting {
                 GroupSection("How it works") {
-                    GroupRow(title: "1. Start sharing here.")
-                    GroupRow(title: "2. On the other computer, open Annex and pick this Mac in Nearby.")
-                    GroupRow(title: "3. The first time, type the PIN this Mac shows. After that, it just connects.")
+                    GroupRow(title: "Start sharing, then pick this Mac in Annex on the other computer.",
+                             subtitle: "The first time, it asks for a PIN shown here. After that, it just connects.")
                 }
             }
         }
@@ -520,12 +519,10 @@ private struct HowToConnect: View {
     @State private var copied: String?
 
     var body: some View {
-        GroupSection("Connect from another computer",
-                     footer: addresses.isEmpty ? nil : "Not listed there? Connect by address."
-                         + (model.settings.showTechnicalDetails ? " Identity code: \(model.fingerprintDisplay)" : "")) {
-            GroupRow(title: "1. Open Annex on the other computer and choose “\(model.deviceName)”.")
-            GroupRow(title: "2. Pick Show Its Screen or Extend Display.")
-            GroupRow(title: "3. Enter the PIN shown here (first time only).")
+        GroupSection("On the same network",
+                     footer: model.settings.showTechnicalDetails ? "Identity code: \(model.fingerprintDisplay)" : nil) {
+            GroupRow(title: "Pick “\(model.deviceName)” in Annex on the other computer.",
+                     subtitle: "The first time, type the PIN this Mac shows. Not listed? Connect by one of these addresses.")
             if addresses.isEmpty {
                 GroupRow(title: "This Mac isn't on a network.", subtitle: "Connect it to Wi-Fi, Ethernet or a cable.",
                          status: .symbol("exclamationmark.triangle.fill", .orange))
@@ -829,28 +826,6 @@ private struct NewMacSection: View {
                 }
             }
         }
-    }
-}
-
-/// Re-checks the Nearby list; a small spinner while it runs.
-private struct NearbyRefreshButton: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        Group {
-            if model.refreshingNearby {
-                ProgressView().controlSize(.mini)
-            } else {
-                Button { model.refreshNearby() } label: {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .semibold))
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .help("Refresh")
-                .accessibilityLabel("Refresh Nearby")
-            }
-        }
-        .frame(width: 16, height: 16)
     }
 }
 

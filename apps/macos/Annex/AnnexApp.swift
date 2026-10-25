@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -10,7 +11,7 @@ struct AnnexApp: App {
             MenuContent(model: model)
                 .onAppear { model.refreshDisplays() }
         } label: {
-            MenuBarIcon(hosting: model.isHosting)
+            MenuBarIcon(state: model.isLive ? .live : model.isHosting ? .sharing : .off)
         }
         .menuBarExtraStyle(.window)
 
@@ -48,13 +49,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 private struct MenuBarIcon: View {
-    let hosting: Bool
+    let state: MenuBarGlyph.State
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        // Template image: macOS tints it for light and dark menu bars.
-        Image("MenuBarIcon")
-            .opacity(hosting ? 1 : 0.85)
+        Image(nsImage: MenuBarGlyph.image(state))
+            .accessibilityLabel(MenuBarGlyph.label(state))
             .onReceive(NotificationCenter.default.publisher(for: .annexShowMainWindow)) { _ in
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
@@ -68,6 +68,10 @@ private struct MenuBarIcon: View {
                 #if DEBUG
                 if ProcessInfo.processInfo.environment["ANNEX_PREVIEW_UI"] != nil {
                     openWindow(id: "menu-preview")
+                }
+                // `ANNEX_PREVIEW_GLYPHS=dir`: the menu bar icon's states as PNGs, light and dark.
+                if let dir = ProcessInfo.processInfo.environment["ANNEX_PREVIEW_GLYPHS"] {
+                    MenuBarGlyph.writePreview(to: URL(fileURLWithPath: dir))
                 }
                 #endif
             }
@@ -122,3 +126,80 @@ private struct SettingsCommand: View {
         .keyboardShortcut(",")
     }
 }
+
+/// The menu bar icon, one look per state, so a glance says whether anyone can see this screen.
+/// Template images: macOS tints them for light and dark menu bars.
+enum MenuBarGlyph {
+    enum State { case off, sharing, live }
+
+    static func label(_ state: State) -> String {
+        switch state {
+        case .off: "Annex, not sharing"
+        case .sharing: "Annex, sharing"
+        case .live: "Annex, connected"
+        }
+    }
+
+    private static var cache: [State: NSImage] = [:]
+
+    static func image(_ state: State) -> NSImage {
+        if let cached = cache[state] { return cached }
+        let base = NSImage(named: "MenuBarIcon") ?? NSImage()
+        let size = base.size == .zero ? NSSize(width: 18, height: 18) : base.size
+        let image = NSImage(size: size, flipped: false) { rect in
+            // Off: faded, like a paused app. Sharing: solid. Live: solid with a dot.
+            base.draw(in: rect, from: .zero, operation: .sourceOver, fraction: state == .off ? 0.45 : 1)
+            if state == .live {
+                let d = rect.width * 0.34
+                let dot = NSRect(x: rect.maxX - d, y: rect.maxY - d, width: d, height: d)
+                // Clear a ring round the dot so it reads apart from the screens.
+                NSGraphicsContext.current?.compositingOperation = .clear
+                NSBezierPath(ovalIn: dot.insetBy(dx: -1.5, dy: -1.5)).fill()
+                NSGraphicsContext.current?.compositingOperation = .sourceOver
+                NSColor.black.setFill()
+                NSBezierPath(ovalIn: dot).fill()
+            }
+            return true
+        }
+        image.isTemplate = true
+        cache[state] = image
+        return image
+    }
+}
+
+#if DEBUG
+extension MenuBarGlyph {
+    /// Each state tinted the way the menu bar would, on a light and a dark strip, 4× size.
+    static func writePreview(to dir: URL) {
+        let states: [State] = [.off, .sharing, .live]
+        let scale: CGFloat = 4, cell: CGFloat = 30
+        for (name, bg, fg) in [("light", NSColor(white: 0.93, alpha: 1), NSColor.black),
+                               ("dark", NSColor(white: 0.12, alpha: 1), NSColor.white)] {
+            let size = NSSize(width: cell * CGFloat(states.count) * scale, height: cell * scale)
+            let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+                                       bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                       colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+            bg.setFill()
+            NSRect(origin: .zero, size: size).fill()
+            for (i, state) in states.enumerated() {
+                let glyph = image(state)
+                let r = NSRect(x: (CGFloat(i) * cell + (cell - glyph.size.width) / 2) * scale,
+                               y: (cell - glyph.size.height) / 2 * scale,
+                               width: glyph.size.width * scale, height: glyph.size.height * scale)
+                // Tint like a template: the colour, masked by the glyph's alpha.
+                let tinted = NSImage(size: glyph.size, flipped: false) { rect in
+                    glyph.draw(in: rect)
+                    fg.set()
+                    rect.fill(using: .sourceIn)
+                    return true
+                }
+                tinted.draw(in: r)
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("glyphs-\(name).png"))
+        }
+    }
+}
+#endif

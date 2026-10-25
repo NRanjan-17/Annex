@@ -14,15 +14,20 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private var framesReceived = 0
     private var loggedFirstFrame = false
     private var loggedBadFrame = false
+    private var sized = false
 
     var onClose: (() -> Void)?
 
+    /// `title` names the other computer (or the code, until it's known).
     init(title: String) {
+        // The title bar sits above the picture, not over it: the other computer's top edge (its
+        // menu bar, its title bars) stays visible and clickable.
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
-                              styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
+                              styleMask: [.titled, .closable, .resizable, .miniaturizable],
                               backing: .buffered, defer: false)
         window.title = title
         window.titlebarAppearsTransparent = true
+        window.appearance = NSAppearance(named: .darkAqua)
         window.contentView = videoView
         window.collectionBehavior = [.fullScreenPrimary]
         window.backgroundColor = .black
@@ -31,7 +36,38 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         window.center()
         super.init(window: window)
         window.delegate = self
+        window.addTitlebarAccessoryViewController(disconnectAccessory())
         videoView.onLeave = { [weak window] in window?.performClose(nil) }
+    }
+
+    private func disconnectAccessory() -> NSTitlebarAccessoryViewController {
+        let button = NSButton(title: "Disconnect", target: self, action: #selector(disconnect))
+        button.bezelStyle = .push
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        button.toolTip = "Close this window and end the session"
+        let holder = NSView()
+        holder.translatesAutoresizingMaskIntoConstraints = false
+        button.translatesAutoresizingMaskIntoConstraints = false
+        holder.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
+            button.leadingAnchor.constraint(equalTo: holder.leadingAnchor),
+            button.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -10),
+        ])
+        holder.frame.size = NSSize(width: button.fittingSize.width + 10, height: 28)
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = holder
+        accessory.layoutAttribute = .trailing
+        return accessory
+    }
+
+    @objc private func disconnect() { window?.performClose(nil) }
+
+    /// The other computer's name, and how it's reached ("Over the internet", "Through a relay").
+    func setPeer(_ name: String, detail: String) {
+        window?.title = name
+        window?.subtitle = detail
     }
 
     @available(*, unavailable)
@@ -53,6 +89,17 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     /// The stream's size, for mapping the pointer through the letterbox.
     func setStreamSize(width: Int, height: Int) {
         videoView.streamSize = CGSize(width: width, height: height)
+        guard let window, width > 0, height > 0, !window.styleMask.contains(.fullScreen) else { return }
+        // Shape the window to the picture, so there are no black bars to resize away. Sized once:
+        // a later resolution change keeps the size the user picked.
+        let size = NSSize(width: width, height: height)
+        window.contentAspectRatio = size
+        guard !sized else { return }
+        sized = true
+        let visible = (window.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1440, height: 900)
+        let scale = min(window.contentLayoutRect.width / size.width,
+                        (visible.height - 60) / size.height, (visible.width - 40) / size.width)
+        window.setContentSize(NSSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded()))
     }
 
     /// The host allowed (or revoked) control by this Mac's mouse and keyboard.
@@ -138,7 +185,7 @@ final class VideoView: NSView {
         addSubview(hud)
         NSLayoutConstraint.activate([
             hud.centerXAnchor.constraint(equalTo: centerXAnchor),
-            hud.topAnchor.constraint(equalTo: topAnchor, constant: 48),
+            hud.topAnchor.constraint(equalTo: topAnchor, constant: 16),
         ])
     }
 

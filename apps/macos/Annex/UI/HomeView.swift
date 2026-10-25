@@ -8,7 +8,6 @@ import SwiftUI
 struct HomeView: View {
     @ObservedObject var model: AppModel
     @State private var selectedID: String?
-    @State private var showOtherWays = false
     @State private var showNotSharing = false
     @FocusState private var focused: Bool
 
@@ -25,13 +24,18 @@ struct HomeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            NearbyHeader(model: model) { showOtherWays = true }
+            NearbyHeader(model: model, found: !visible.isEmpty) { model.showConnectSheet = true }
             UpdateBanner(updater: model.updater)
+            // What's live comes first: it's what this Mac is doing right now.
+            if model.isLive {
+                SessionStrip(model: model)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
             HStack(alignment: .top, spacing: 18) {
                 VStack(alignment: .leading, spacing: 10) {
-                    SearchStatus(model: model, found: visible.count)
+                    if !visible.isEmpty { SearchStatus(model: model, found: visible.count) }
                     if visible.isEmpty {
-                        Waiting(model: model) { showOtherWays = true }
+                        if !model.isLive { Waiting(model: model) }
                     } else {
                         NearbyList(model: model, peers: visible, selectedID: $selectedID, connect: connect)
                     }
@@ -41,7 +45,7 @@ struct HomeView: View {
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 if let peer = selected {
                     PeerCard(model: model, peer: peer) { selectedID = nil }
                         .frame(width: 300)
@@ -50,20 +54,15 @@ struct HomeView: View {
             }
             .animation(.spring(response: 0.45, dampingFraction: 0.85), value: selectedID)
             .animation(.spring(response: 0.5, dampingFraction: 0.86), value: visible.map(\.id))
-            if model.isViewing || model.hostStatus.viewerName != nil {
-                SessionStrip(model: model)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
         }
         .padding(.horizontal, 28)
         .padding(.top, 22)
         .padding(.bottom, 24)
-        .animation(.spring(response: 0.5, dampingFraction: 0.86), value: model.isViewing)
-        .animation(.spring(response: 0.5, dampingFraction: 0.86), value: model.hostStatus.viewerName)
-        .sheet(isPresented: $showOtherWays) { OtherWaysSheet(model: model) }
+        .animation(.spring(response: 0.5, dampingFraction: 0.86), value: model.isLive)
+        .sheet(isPresented: $model.showConnectSheet) { OtherWaysSheet(model: model) }
         #if DEBUG
         // Screenshots: `ANNEX_PREVIEW_SHEET=1` opens Connect by Code or Address.
-        .onAppear { if ProcessInfo.processInfo.environment["ANNEX_PREVIEW_SHEET"] != nil { showOtherWays = true } }
+        .onAppear { if ProcessInfo.processInfo.environment["ANNEX_PREVIEW_SHEET"] != nil { model.showConnectSheet = true } }
         #endif
         .onChange(of: model.discovered) { _, peers in
             if let id = selectedID, !peers.contains(where: { $0.id == id }) { selectedID = nil }
@@ -161,29 +160,21 @@ private struct LinkChip: View {
 /// Content, not chrome: a plain title. The controls on its right float, so they're glass.
 private struct NearbyHeader: View {
     @ObservedObject var model: AppModel
+    let found: Bool
     let otherWays: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Nearby").font(.system(size: 28, weight: .semibold, design: .rounded))
-                Text("Click a computer for options. Double-click to connect.")
+                Text(found ? "Click a computer for options. Double-click to connect."
+                           : "Computers sharing on this network show up here by themselves.")
                     .font(.system(size: 13)).foregroundStyle(.secondary)
             }
             Spacer(minLength: 12)
-            GlassGroup(spacing: 8) {
-                HStack(spacing: 8) {
-                    Button { model.refreshNearby() } label: {
-                        Image(systemName: "arrow.clockwise").frame(width: 16)
-                    }
-                    .secondaryGlassButton()
-                    .disabled(model.refreshingNearby)
-                    .help("Look again")
-                    .accessibilityLabel("Refresh Nearby")
-                    Button("Connect by Code or Address…", action: otherWays)
-                        .secondaryGlassButton()
-                }
-            }
+            Button("Connect by Code or Address…", action: otherWays)
+                .secondaryGlassButton()
+                .disabled(model.isViewing)
         }
     }
 }
@@ -235,7 +226,6 @@ struct ScanningDots: View {
 /// Nothing found yet: what to do on the other computer, and the ways round it.
 private struct Waiting: View {
     @ObservedObject var model: AppModel
-    let otherWays: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
@@ -247,19 +237,9 @@ private struct Waiting: View {
             .frame(height: 150)
             VStack(spacing: 6) {
                 Text("Waiting for a computer…").font(.system(size: 17, weight: .semibold, design: .rounded))
-                Text("Open Annex on the other computer and turn on sharing.\nIt shows up here by itself.")
+                Text("Open Annex on the other computer and turn on sharing.\nOn another network? Use Connect by Code or Address.")
                     .font(.system(size: 12.5)).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-            }
-            GlassGroup(spacing: 8) {
-                HStack(spacing: 8) {
-                    Button("Connect by Code or Address…", action: otherWays)
-                        .secondaryGlassButton()
-                    if model.isHosting && model.settings.peerToPeerWiFi && model.visibleToNewMacsUntil == nil {
-                        Button("Let a New Mac Find This One") { model.letNewMacsFindThisOne() }
-                            .secondaryGlassButton()
-                    }
-                }
             }
         }
         .frame(maxWidth: .infinity)
@@ -582,7 +562,7 @@ private struct SessionStrip: View {
                     Text(s.label).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
-            Button(role: .destructive) { stop() } label: { Text(model.isViewing ? "Disconnect" : "Stop") }
+            Button(role: .destructive) { stop() } label: { Text(model.isViewing ? "Disconnect" : "Stop Sharing") }
                 .secondaryGlassButton()
         }
         .padding(.horizontal, 22)
@@ -597,18 +577,14 @@ private struct SessionStrip: View {
             return [Stat(value: String(format: "%.0f", l.p50Ms), unit: "ms", label: "Delay"),
                     Stat(value: String(format: "%.0f", l.fps), unit: "fps", label: "Smoothness")]
         }
-        if let s = model.hostStatus.stream {
-            return [Stat(value: "\(s.fps)", unit: "fps", label: "Smoothness"),
-                    Stat(value: "\(s.width)×\(s.height)", unit: "", label: "Picture")]
-        }
         return []
     }
 
     private var title: String {
         if model.isViewing { return model.viewerStatus ?? "Connected" }
         let s = model.hostStatus
-        if let name = s.extendViewers.first { return "Extending to \(name)" }
-        if let name = s.mirrorViewers.first { return "Showing this screen on \(name)" }
+        if let name = s.extendViewers.first { return "Extending onto \(name)" }
+        if let name = s.mirrorViewers.first { return "\(name) is viewing this screen" }
         return "Connected"
     }
 
@@ -618,7 +594,9 @@ private struct SessionStrip: View {
             return model.onDirectWiFi ? "On direct Wi-Fi" : "Encrypted end to end"
         }
         if !model.hostStatus.extendViewers.isEmpty { return "Arrange it in System Settings → Displays" }
-        return "New computers can't find this Mac during a session"
+        let controllers = model.hostStatus.controllingViewers
+        if !controllers.isEmpty { return "\(controllers.joined(separator: ", ")) can use your mouse and keyboard" }
+        return "View only: it can't use your mouse or keyboard"
     }
 
     private func stop() {

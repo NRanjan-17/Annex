@@ -39,6 +39,8 @@ final class AppModel: ObservableObject {
     /// The current viewer's relay over peer-to-peer Wi-Fi, if it has one.
     private var peerToPeerTunnel: PeerToPeerTunnel?
     @Published var manualAddress = ""
+    /// Connect by Code or Address, open over Nearby (the menu bar panel asks for it too).
+    @Published var showConnectSheet = false
     /// Connect by Address sheet: a code from a computer sharing over the internet.
     @Published var manualCode = ""
     /// The current viewer connected by code (its errors read differently).
@@ -73,7 +75,6 @@ final class AppModel: ObservableObject {
     /// Host: the hotspot this Mac joined for its viewers, if any.
     @Published private(set) var hostDirectWiFi: String?
     /// Nearby refresh in progress (the button shows a spinner).
-    @Published private(set) var refreshingNearby = false
     /// Bumped whenever a viewer is replaced, so late events from the old one are ignored.
     private var viewerGeneration = 0
     private var cancellables: Set<AnyCancellable> = []
@@ -128,6 +129,8 @@ final class AppModel: ObservableObject {
     }
 
     var isViewing: Bool { viewer != nil }
+    /// A session either way: this Mac shows another computer, or another computer shows this one.
+    var isLive: Bool { isViewing || hostStatus.viewerName != nil }
 
     private func updateInSession() {
         let busy = viewer != nil || hostStatus.viewerName != nil
@@ -343,7 +346,7 @@ final class AppModel: ObservableObject {
         switchOnStart = false
         holdingWindow = false
         let generation = viewerGeneration
-        let window = ViewerWindowController(title: "Annex — \(code.uppercased())")
+        let window = ViewerWindowController(title: "Code \(code.uppercased())")
         window.onClose = { [weak self] in self?.disconnectViewer() }
         do {
             let v = try ViewerHandle(
@@ -372,9 +375,15 @@ final class AppModel: ObservableObject {
 
     #if DEBUG
     /// Screenshots: `ANNEX_PREVIEW_PANE=share|settings` opens that page; with `ANNEX_PREVIEW_CODE=1`
-    /// (and sharing on) it also gets a code.
+    /// (and sharing on) it also gets a code. `ANNEX_PREVIEW_CONNECT=address` connects there.
     func openPreviewPane() {
         let env = ProcessInfo.processInfo.environment
+        if let address = env["ANNEX_PREVIEW_CONNECT"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.manualAddress = address
+                self?.connectManual()
+            }
+        }
         switch env["ANNEX_PREVIEW_PANE"] {
         case "share": pane = .share
         case "settings": pane = .settings
@@ -429,16 +438,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: Nearby
-
-    /// Re-checks the Nearby list (computers that went away drop off, new ones appear).
-    func refreshNearby() {
-        guard !refreshingNearby else { return }
-        refreshingNearby = true
-        discovery?.refresh()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.refreshingNearby = false }
-    }
-
     // MARK: Viewing
 
     func connect(to peer: PeerInfo) {
@@ -489,7 +488,7 @@ final class AppModel: ObservableObject {
         switchOnStart = false
         holdingWindow = false
         let generation = viewerGeneration
-        let window = ViewerWindowController(title: "Annex — \(title)")
+        let window = ViewerWindowController(title: title)
         window.onClose = { [weak self] in self?.disconnectViewer() }
         do {
             let v = try ViewerHandle(
@@ -561,6 +560,13 @@ final class AppModel: ObservableObject {
                 onDirectWiFi = true
                 holdingWindow = false
             }
+            let route = switch s.link {
+            case "direct": "Over a cable"
+            case "internet": "Over the internet"
+            case "relayed": "Through a relay"
+            default: onDirectWiFi ? "On direct Wi-Fi" : ""
+            }
+            viewerWindow?.setPeer(s.peerName, detail: route)
             viewerWindow?.setStreamSize(width: s.stream.width, height: s.stream.height)
             if switchOnStart {
                 // Set up direct Wi-Fi first; the picture starts once reconnected over it.
@@ -574,8 +580,8 @@ final class AppModel: ObservableObject {
                 viewerWindow?.setControlling(controllingHost, hostName: s.peerName)
             }
         case .streamConfig(let s):
+            // The title set at session start keeps how it's reached (" · relay"); the size is a detail.
             viewerWindow?.setStreamSize(width: s.width, height: s.height)
-            viewerStatus = "Viewing \(viewerPeerName) · \(s.width)×\(s.height)"
         case .inputAllowed(_, let allowed):
             controllingHost = allowed
             viewerWindow?.setControlling(allowed, hostName: viewerPeerName)
