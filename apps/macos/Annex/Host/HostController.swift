@@ -171,6 +171,15 @@ final class HostController {
         host?.requestDirectLink(session: session) ?? false
     }
 
+    /// Shares over the internet with one code; its events arrive through `onEvent`.
+    func shareCode(server: String, ownRelay: (url: String, username: String, password: String)?) throws {
+        try host?.shareCode(server: server, ownRelay: ownRelay)
+    }
+
+    func stopCode() {
+        host?.stopCode()
+    }
+
     /// A Mac can't run a hotspot for the direct link; the Windows side does that.
     func refuseDirectLink(session: UInt64) {
         host?.refuseDirectLink(session: session, reason: "This Mac can't host a direct Wi-Fi link. Start the switch from the Windows PC (it runs the hotspot).")

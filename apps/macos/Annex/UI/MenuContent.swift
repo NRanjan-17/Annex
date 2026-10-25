@@ -50,29 +50,26 @@ struct MenuContent: View {
                 Text(model.deviceName.isEmpty ? "Annex" : model.deviceName)
                     .font(.system(size: 14, weight: .semibold, design: .rounded))
                     .lineLimit(1)
-                if model.settings.showTechnicalDetails {
-                    Text(model.fingerprintDisplay)
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .help("This Mac's identity code. Compare it with what the other device shows when pairing.")
-                } else {
-                    Text(model.isHosting ? "Sharing" : "Not sharing")
-                        .font(.system(size: 11.5)).foregroundStyle(.secondary)
-                }
+                Text(status)
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary)
             }
             Spacer()
-            CircleButton(symbol: "macwindow", help: "Open Annex") { open(.home) }
             CircleButton(symbol: "gearshape", help: "Settings") { open(.settings) }
                 .keyboardShortcut(",")
         }
     }
 
+    private var status: String {
+        if model.isViewing { return model.viewerStatus ?? "Connecting…" }
+        return model.isHosting ? "Sharing" : "Not sharing"
+    }
+
     private var footer: some View {
         HStack {
-            Text("Annex \(Annex.version)")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
+            Button("Open Annex") { open(.home) }
+                .buttonStyle(.plain)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(.secondary)
             Spacer()
             Button("Quit Annex") { model.quit() }
                 .buttonStyle(.plain)
@@ -129,8 +126,7 @@ private struct ShareRow: View {
     private var summary: String {
         guard model.isHosting else { return "Other computers can't see it." }
         let s = model.hostStatus
-        if s.viewerName != nil { return "Connected." }
-        if s.listeningPort != nil { return "Waiting for a computer to connect." }
+        if s.viewerName != nil || s.listeningPort != nil { return "Computers nearby can find it." }
         return "Starting…"
     }
 }
@@ -190,18 +186,14 @@ private struct LiveBlock: View {
             return [Stat(value: String(format: "%.0f", l.p50Ms), unit: "ms", label: "Delay"),
                     Stat(value: String(format: "%.0f", l.fps), unit: "fps", label: "Smoothness")]
         }
-        if !model.isViewing, let s = model.hostStatus.stream {
-            return [Stat(value: "\(s.fps)", unit: "fps", label: "Smoothness"),
-                    Stat(value: "\(s.width)×\(s.height)", unit: "", label: "Picture")]
-        }
         return []
     }
 
     private var title: String {
         if model.isViewing { return model.viewerStatus ?? "Connected" }
         let s = model.hostStatus
-        if let name = s.extendViewers.first { return "Extending to \(name)" }
-        if let name = s.mirrorViewers.first { return "Showing this screen on \(name)" }
+        if let name = s.extendViewers.first { return "Extending onto \(name)" }
+        if let name = s.mirrorViewers.first { return "\(name) is viewing this screen" }
         return "Connected"
     }
 
@@ -211,6 +203,7 @@ private struct LiveBlock: View {
         if !model.isViewing, !controllers.isEmpty {
             return "\(controllers.joined(separator: ", ")) can use your mouse and keyboard"
         }
+        if !model.isViewing { return "View only: it can't use your mouse or keyboard." }
         return nil
     }
 }
@@ -221,7 +214,6 @@ private struct NearbySection: View {
     @ObservedObject var model: AppModel
 
     private var sharing: [PeerInfo] { model.discovered.filter(\.isSharing) }
-    private var notSharing: Int { model.discovered.count - sharing.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -232,9 +224,7 @@ private struct NearbySection: View {
             }
             .padding(.horizontal, 16)
             if sharing.isEmpty {
-                Text(notSharing > 0
-                     ? "Waiting for a computer to share · \(notSharing) not sharing"
-                     : "Waiting for a computer… Open Annex on it and turn on sharing.")
+                Text("No computers sharing nearby.")
                     .font(.system(size: 11.5)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 16)
@@ -246,13 +236,8 @@ private struct NearbySection: View {
                     }
                 }
                 .padding(.horizontal, 8)
-                if notSharing > 0 {
-                    Text("+\(notSharing) not sharing")
-                        .font(.system(size: 11)).foregroundStyle(.tertiary)
-                        .padding(.horizontal, 16)
-                }
             }
-            AddressField(model: model)
+            ConnectRow(model: model)
                 .padding(.horizontal, 12)
                 .padding(.top, 6)
         }
@@ -302,33 +287,33 @@ private struct PeerRow: View {
     }
 }
 
-private struct AddressField: View {
+/// Codes and addresses live in one sheet in the main window; the panel just opens it.
+private struct ConnectRow: View {
     @ObservedObject var model: AppModel
-
-    private var empty: Bool { model.manualAddress.trimmingCharacters(in: .whitespaces).isEmpty }
+    @Environment(\.openWindow) private var openWindow
+    @State private var hovered = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "network").font(.system(size: 11)).foregroundStyle(.secondary)
-            TextField("Connect by address (IP or host:port)", text: $model.manualAddress)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .onSubmit { model.connectManual() }
-            Button { model.connectManual() } label: {
-                Image(systemName: "arrow.right").font(.system(size: 10, weight: .bold))
-                    .frame(width: 20, height: 20)
-                    .background(Circle().fill(Color.white.opacity(empty ? 0.08 : 0.92)))
-                    .foregroundStyle(empty ? Color.secondary : Color.black)
+        Button {
+            model.pane = .home
+            model.showConnectSheet = true
+            openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "number").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                Text("Connect by Code or Address…").font(.system(size: 12, weight: .medium))
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            .disabled(empty || model.isViewing)
-            .help("Connect")
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+            .background(Capsule().fill(Color.white.opacity(hovered ? 0.1 : 0.05)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.08)))
+            .contentShape(Capsule())
         }
-        .padding(.leading, 10)
-        .padding(.trailing, 5)
-        .frame(height: 30)
-        .background(Capsule().fill(Color.white.opacity(0.05)))
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.08)))
+        .buttonStyle(.plain)
+        .disabled(model.isViewing)
+        .onHover { hovered = $0 }
     }
 }
 
@@ -366,6 +351,7 @@ private struct CircleButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .foregroundStyle(.secondary)
         .onHover { hovered = $0 }
         .help(help)

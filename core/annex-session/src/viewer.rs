@@ -17,8 +17,9 @@ use crate::conn::{Incoming, Reader, Writer, check_hello, hello};
 use crate::events::LinkKind;
 use crate::events::{Event, EventSink, FrameOut, FrameSink};
 use crate::pairing::{PairContext, pair_as_viewer};
+use crate::punch::PunchSocket;
 use crate::stats::LatencyWindow;
-use crate::transport::{Established, connect_quic, connect_tcp, is_link_local};
+use crate::transport::{Established, connect_quic, connect_quic_on, connect_tcp, is_link_local};
 use crate::{Core, SessionError};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -43,6 +44,91 @@ pub struct ViewerConfig {
     pub quality: Quality,
     /// Optional per-frame latency log: `frame_id,capture_local_us,present_us,latency_us`.
     pub latency_csv: Option<PathBuf>,
+    /// Connect across the internet from this socket: `address` then lists the host's candidates
+    /// from the rendezvous server. QUIC only.
+    pub internet: Option<Arc<InternetSocket>>,
+    /// Connect by code instead of `address`: join through the rendezvous server, then connect
+    /// across the internet (on `internet`'s socket if set, else a new one).
+    pub join: Option<JoinCode>,
+}
+
+/// A code typed by the user, and the servers to use it with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinCode {
+    pub code: String,
+    pub servers: crate::InternetServers,
+}
+
+/// The viewer's side of an internet connection. It's bound before connecting, so its public
+/// address can go to the host (through the rendezvous server) and the host can open its router
+/// towards it; then the session runs on this same socket.
+#[derive(Debug)]
+pub struct InternetSocket {
+    udp: Arc<PunchSocket>,
+    /// Host addresses on a relay (the session there is "relayed", not "internet").
+    relayed: std::sync::Mutex<Vec<std::net::SocketAddr>>,
+    /// The rendezvous connection, kept open to ask for the relay if connecting directly fails.
+    fallback: std::sync::Mutex<Option<crate::rendezvous::Joined>>,
+    /// QUIC on the socket from the start: its driver is what reads the socket, STUN answers included.
+    endpoint: quinn::Endpoint,
+}
+
+impl InternetSocket {
+    /// A new UDP socket on any port (IPv6 and IPv4 where the system allows both).
+    pub fn bind() -> std::io::Result<Arc<Self>> {
+        let dual = || -> std::io::Result<std::net::UdpSocket> {
+            let s = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+            s.set_only_v6(false)?;
+            s.bind(&std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)).into())?;
+            Ok(s.into())
+        };
+        let s = match dual() {
+            Ok(s) => s,
+            Err(_) => std::net::UdpSocket::bind("0.0.0.0:0")?,
+        };
+        s.set_nonblocking(true)?;
+        Self::on(PunchSocket::from_std(s)?)
+    }
+
+    fn on(udp: Arc<PunchSocket>) -> std::io::Result<Arc<Self>> {
+        let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime for QUIC"))?;
+        let endpoint =
+            quinn::Endpoint::new_with_abstract_socket(quinn::EndpointConfig::default(), None, udp.clone(), runtime)?;
+        Ok(Arc::new(Self { udp, relayed: Default::default(), fallback: Default::default(), endpoint }))
+    }
+
+    /// If connecting directly fails, ask the sharing computer for its relay address through
+    /// `joined` (the rendezvous connection that introduced them), and connect there.
+    pub fn relay_fallback(&self, joined: crate::rendezvous::Joined) {
+        *self.fallback.lock().unwrap() = Some(joined);
+    }
+
+    /// `addrs` are the host's addresses on a relay (from the rendezvous server's relay answer).
+    #[doc(hidden)]
+    pub fn through_relay(&self, addrs: &[std::net::SocketAddr]) {
+        self.relayed
+            .lock()
+            .unwrap()
+            .extend(addrs.iter().map(|a| std::net::SocketAddr::new(a.ip().to_canonical(), a.port())));
+    }
+
+    /// On a given socket. Tests use it for a simulated network.
+    #[doc(hidden)]
+    pub fn with_socket(socket: Arc<dyn quinn::AsyncUdpSocket>) -> std::io::Result<Arc<Self>> {
+        Self::on(PunchSocket::new(socket))
+    }
+
+    /// Where the host can reach this socket: its public address (asked of `stun_server`), plus
+    /// this computer's LAN and IPv6 addresses.
+    pub async fn candidates(
+        &self,
+        stun_server: std::net::SocketAddr,
+    ) -> Result<Vec<std::net::SocketAddr>, SessionError> {
+        let mut out = vec![self.udp.public_address(stun_server).await?];
+        out.extend(crate::punch::own_addresses(self.udp.local_addr()?.port()));
+        out.dedup();
+        Ok(out)
+    }
 }
 
 enum Cmd {
@@ -150,13 +236,25 @@ async fn run(
     frames: FrameSink,
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
 ) -> Result<String, SessionError> {
-    events(Event::Connecting { address: cfg.address.clone() });
-    let est = connect_best(&core, &cfg).await?;
+    events(Event::Connecting { address: cfg.join.as_ref().map_or_else(|| cfg.address.clone(), |j| j.code.clone()) });
+    let (est, net) = match &cfg.join {
+        Some(j) => join_by_code(&core, &cfg, j).await?,
+        None => (connect_best(&core, &cfg).await?, cfg.internet.clone()),
+    };
     let Established { kind, reader, writer, fingerprint: fp, exporter, remote, quic } = est;
     if fp == core.fingerprint() {
         return Err(SessionError::Violation("host uses our own identity".into()));
     }
-    let link = if is_link_local(&remote) { LinkKind::Direct } else { LinkKind::Network };
+    let canonical = std::net::SocketAddr::new(remote.ip().to_canonical(), remote.port());
+    let link = if net.as_ref().is_some_and(|n| n.relayed.lock().unwrap().contains(&canonical)) {
+        LinkKind::Relayed
+    } else if net.is_some() {
+        LinkKind::Internet
+    } else if is_link_local(&remote) {
+        LinkKind::Direct
+    } else {
+        LinkKind::Network
+    };
     tracing::info!(%remote, ?kind, ?link, "connected");
     let mut reader = Reader::new(reader);
     let mut writer = Writer::new(writer);
@@ -419,6 +517,26 @@ async fn run(
 
 /// Resolves every candidate address and races connections: direct-cable (link-local) addresses
 /// first, QUIC first, falling back to TCP if no QUIC handshake succeeds.
+/// Joins the sharing computer by its code, then connects across the internet (and through its
+/// relay if the direct path fails).
+async fn join_by_code(
+    core: &Arc<Core>,
+    cfg: &ViewerConfig,
+    j: &JoinCode,
+) -> Result<(Established, Option<Arc<InternetSocket>>), SessionError> {
+    let net = match &cfg.internet {
+        Some(n) => n.clone(),
+        None => InternetSocket::bind()?,
+    };
+    let addrs = net.candidates(crate::resolve_stun(&j.servers.stun).await?).await?;
+    let joined = crate::rendezvous::join(&j.servers.rendezvous, &j.code, &core.device_name(), &addrs).await?;
+    let host = joined.peer.addrs.clone();
+    tracing::info!(name = %joined.peer.name, addrs = ?host, "joined by code");
+    net.relay_fallback(joined);
+    let est = connect_internet(core, cfg, &net, host).await?;
+    Ok((est, Some(net)))
+}
+
 async fn connect_best(core: &Arc<Core>, cfg: &ViewerConfig) -> Result<Established, SessionError> {
     let mut addrs = Vec::new();
     for part in cfg.address.split(',').map(str::trim).filter(|p| !p.is_empty()) {
@@ -432,6 +550,9 @@ async fn connect_best(core: &Arc<Core>, cfg: &ViewerConfig) -> Result<Establishe
     }
     addrs.sort_by_key(|a| !is_link_local(a));
     addrs.dedup();
+    if let Some(net) = &cfg.internet {
+        return connect_internet(core, cfg, net, addrs).await;
+    }
     let mut last_err = None;
     for quic in [true, false] {
         let mut tries = tokio::task::JoinSet::new();
@@ -468,6 +589,72 @@ async fn connect_best(core: &Arc<Core>, cfg: &ViewerConfig) -> Result<Establishe
         }
         if quic {
             tracing::warn!("QUIC did not connect; trying TCP (video over TCP stalls when packets are lost)");
+        }
+    }
+    Err(last_err.unwrap_or(SessionError::Timeout("connect")))
+}
+
+/// An internet connection: QUIC to each of the host's candidates from the one socket whose public
+/// address the host punched towards. The host's router may drop the first packets until its punch
+/// arrives; QUIC resends the handshake, so the wait is the whole handshake timeout.
+async fn connect_internet(
+    core: &Arc<Core>,
+    cfg: &ViewerConfig,
+    net: &InternetSocket,
+    addrs: Vec<std::net::SocketAddr>,
+) -> Result<Established, SessionError> {
+    // Also open this side's router towards the host, in case its first packets beat ours.
+    net.udp.punch(addrs.clone());
+    let direct = race(core, cfg, &net.endpoint, addrs).await;
+    let joined = net.fallback.lock().unwrap().take();
+    let (Err(e), Some(joined)) = (&direct, joined) else {
+        // Connected (dropping the rendezvous connection ends the match), or no relay to ask.
+        return direct;
+    };
+    tracing::info!("couldn't connect directly ({e}); asking for the relay");
+    match joined.ask_relay().await {
+        Ok(Some(relayed)) if !relayed.is_empty() => {
+            net.through_relay(&relayed);
+            race(core, cfg, &net.endpoint, relayed).await
+        }
+        Ok(_) => {
+            tracing::info!("the sharing computer has no relay");
+            direct
+        }
+        Err(e) => {
+            tracing::info!("asking for the relay failed: {e}");
+            direct
+        }
+    }
+}
+
+/// Tries `addrs` a little apart; the first to connect wins.
+async fn race(
+    core: &Arc<Core>,
+    cfg: &ViewerConfig,
+    endpoint: &quinn::Endpoint,
+    addrs: Vec<std::net::SocketAddr>,
+) -> Result<Established, SessionError> {
+    let mut tries = tokio::task::JoinSet::new();
+    for (i, addr) in addrs.into_iter().enumerate() {
+        let (core, endpoint, expected) = (core.clone(), endpoint.clone(), cfg.expected_fingerprint.clone());
+        tries.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100 * i as u64)).await;
+            connect_quic_on(&core, &endpoint, addr, expected).await
+        });
+    }
+    let mut last_err = None;
+    while let Some(r) = tries.join_next().await {
+        match r {
+            Ok(Ok(est)) => {
+                tries.abort_all();
+                return Ok(est);
+            }
+            Ok(Err(e)) => {
+                tracing::info!("internet connect attempt failed: {e}");
+                last_err = Some(e);
+            }
+            Err(_) => {}
         }
     }
     Err(last_err.unwrap_or(SessionError::Timeout("connect")))

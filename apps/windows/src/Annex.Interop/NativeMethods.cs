@@ -83,6 +83,12 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)]
     public static partial int annex_host_submit_frame(nint host, byte* data, nuint len, long captureTsUs, [MarshalAs(UnmanagedType.U1)] bool keyframe);
 
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_host_share_code(nint host, string rendezvous, string? stun, string? turnUrl,
+        string? turnUsername, string? turnPassword);
+
+    [LibraryImport(Lib)] public static partial void annex_host_stop_code(nint host);
+
     [LibraryImport(Lib)] public static partial void annex_host_free(nint host);
 
     /// <summary>Windows only.</summary>
@@ -110,6 +116,18 @@ internal static unsafe partial class NativeMethods
         [MarshalAs(UnmanagedType.U1)] bool extend, [MarshalAs(UnmanagedType.U1)] bool input, uint quality,
         delegate* unmanaged<nint, nint, void> onEvent, delegate* unmanaged<nint, byte*, nuint, uint, long, byte, void> onFrame,
         nint ctx, out nint viewer);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_viewer_connect_code(nint core, string rendezvous, string? stun, string code, string? displayJson,
+        [MarshalAs(UnmanagedType.U1)] bool extend, [MarshalAs(UnmanagedType.U1)] bool input, uint quality,
+        delegate* unmanaged<nint, nint, void> onEvent, delegate* unmanaged<nint, byte*, nuint, uint, long, byte, void> onFrame,
+        nint ctx, out nint viewer);
+
+    /// <summary>Windows only: connect by code into the core's own window.</summary>
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_viewer_connect_code_windowed(nint core, string rendezvous, string? stun, string code,
+        [MarshalAs(UnmanagedType.U1)] bool extend, [MarshalAs(UnmanagedType.U1)] bool input, uint quality,
+        delegate* unmanaged<nint, nint, void> onEvent, nint ctx, out nint viewer);
 
     /// <summary>Windows only: the core decodes and renders into its own full-screen window.</summary>
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]

@@ -4,9 +4,13 @@
 //! annex identity                      print this device's name and fingerprint
 //! annex peers [remove <fingerprint>]  list or revoke trusted devices
 //! annex discover [--seconds N]        list hosts on the LAN
-//! annex host [--port P] [--replay file.h264 | --synthetic] [--fps N] [--no-advertise]
-//! annex viewer <address> [--extend] [--dump file.h264] [--expect <fingerprint>] [--seconds N]
+//! annex host [--port P] [--replay file.h264 | --synthetic] [--fps N] [--no-advertise] [--internet]
+//! annex viewer <address | --code K7P-4QX> [--extend] [--dump file.h264] [--expect <fingerprint>] [--seconds N]
 //! ```
+//! Internet connections (`--internet`, `--code`) need `--rendezvous wss://…` (or `ANNEX_RENDEZVOUS`)
+//! and use `--stun host:port` (default stun.cloudflare.com:3478). If a direct connection isn't
+//! possible, the host gets an address on a relay: its own with `--turn turn:host:port --turn-user U
+//! --turn-pass P`, otherwise ours through the rendezvous server (time- and quality-limited).
 //! Common options: `--data-dir DIR` (default: a separate "Annex CLI" data folder), `--name NAME`,
 //! `--trust-all` (skip PIN pairing and accept anyone; for automated tests only).
 
@@ -197,6 +201,12 @@ async fn host(o: &mut Opts) {
     let replay = o.value("--replay").map(PathBuf::from);
     let synthetic = o.flag("--synthetic");
     let advertise = !o.flag("--no-advertise");
+    let internet = o.flag("--internet").then(|| internet_opts(o));
+    let turn = o.value("--turn").map(|url| {
+        let user = o.value("--turn-user").unwrap_or_default();
+        let pass = o.value("--turn-pass").unwrap_or_default();
+        (url, user, pass)
+    });
     let (aus, codec, w, h) = match &replay {
         Some(p) => {
             let data = std::fs::read(p).unwrap_or_else(|e| die(&format!("{}: {e}", p.display())));
@@ -214,7 +224,7 @@ async fn host(o: &mut Opts) {
     let events = event_printer(core.clone());
     let handle = start_host(
         core.clone(),
-        HostConfig { port, stream: StreamConfig { codec, width: w, height: h, fps }, extend: false },
+        HostConfig { port, stream: StreamConfig { codec, width: w, height: h, fps }, extend: false, udp: None },
         events,
     )
     .await
@@ -232,6 +242,11 @@ async fn host(o: &mut Opts) {
         handle.port(),
         display(core.fingerprint())
     );
+
+    let handle = Arc::new(handle);
+    if let Some((server, stun)) = internet {
+        tokio::spawn(share_over_internet(handle.clone(), core.device_name(), server, stun, turn));
+    }
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / fps as f64));
     let mut i = 0usize;
@@ -263,9 +278,55 @@ fn annex_proto_port() -> u16 {
     47800
 }
 
+/// `--rendezvous` (or `ANNEX_RENDEZVOUS`) and `--stun`.
+fn internet_opts(o: &mut Opts) -> (String, String) {
+    let server = o
+        .value("--rendezvous")
+        .or_else(|| std::env::var("ANNEX_RENDEZVOUS").ok())
+        .unwrap_or_else(|| die("internet connections need --rendezvous wss://… (or ANNEX_RENDEZVOUS)"));
+    (server, o.value("--stun").unwrap_or_else(|| DEFAULT_STUN.into()))
+}
+
+/// The STUN server's IPv4 address: what a home router's mapping is about.
+/// Shares over the internet, one code after another, printing what happens.
+async fn share_over_internet(
+    handle: Arc<HostHandle>,
+    name: String,
+    server: String,
+    stun: String,
+    turn: Option<(String, String, String)>,
+) {
+    let servers = InternetServers { rendezvous: server, stun };
+    let own_relay = turn.map(|(url, username, password)| OwnRelay { url, username, password });
+    let events: EventSink = Arc::new(|e: Event| match e {
+        Event::InternetCode { code, .. } => eprintln!("internet code: {code}"),
+        Event::InternetJoined { peer_name } => eprintln!("\"{peer_name}\" is connecting"),
+        Event::InternetRelay { relayed: true, limited } => {
+            eprintln!("relaying ({})", if limited { "our relay, limited" } else { "your relay" })
+        }
+        Event::InternetRelay { relayed: false, .. } => {
+            eprintln!("no relay available (ours is off or used up for today)")
+        }
+        Event::InternetCodeEnded { reason } => eprintln!("code ended: {reason}"),
+        _ => {}
+    });
+    loop {
+        share_code(handle.clone(), name.clone(), servers.clone(), own_relay.clone(), events.clone()).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 async fn viewer(o: &mut Opts) {
     let core = open_core(o);
-    let address = o.positional().unwrap_or_else(|| die("viewer <address>"));
+    let code = o.value("--code");
+    let join = code.map(|code| {
+        let (rendezvous, stun) = internet_opts(o);
+        JoinCode { code, servers: InternetServers { rendezvous, stun } }
+    });
+    let address = match &join {
+        Some(_) => String::new(),
+        None => o.positional().unwrap_or_else(|| die("viewer <address> or viewer --code <code>")),
+    };
     let dump = o.value("--dump").map(PathBuf::from);
     let expected = o.value("--expect");
     let secs: u64 = o.num("--seconds", 0);
@@ -307,6 +368,8 @@ async fn viewer(o: &mut Opts) {
         input: false,
         quality: annex_session::Quality::Best,
         latency_csv,
+        internet: None,
+        join,
     };
     let v = Arc::new(connect_viewer(core, cfg, events, frames));
     let presenter = {

@@ -226,6 +226,20 @@ public sealed unsafe class HostHandle : IDisposable
     public bool RequestDirectLink(ulong sessionId) =>
         _raw != 0 && NativeMethods.Check(NativeMethods.annex_host_request_direct_link(_raw, sessionId)) == 1;
 
+    /// <summary>Shares over the internet with one code from the rendezvous server (wss://…). Events:
+    /// InternetCode, InternetJoined, InternetRelay, then InternetCodeEnded. <paramref name="turnUrl"/>
+    /// (turn:host:port) is the user's own relay; null for none.</summary>
+    public void ShareCode(string rendezvous, string? turnUrl = null, string? turnUsername = null, string? turnPassword = null)
+    {
+        if (_raw != 0) NativeMethods.Check(NativeMethods.annex_host_share_code(_raw, rendezvous, null, turnUrl, turnUsername, turnPassword));
+    }
+
+    /// <summary>Stops the code (InternetCodeEnded "stopped"); connected sessions carry on.</summary>
+    public void StopCode()
+    {
+        if (_raw != 0) NativeMethods.annex_host_stop_code(_raw);
+    }
+
     public void Dispose()
     {
         if (_raw != 0)
@@ -277,6 +291,37 @@ public sealed unsafe class ViewerHandle : IDisposable
     {
         var v = new ViewerHandle(core, new CallbackTarget(onEvent));
         var rc = NativeMethods.annex_viewer_connect_windowed(core.Raw, address, expectedFingerprint, extend, input, (uint)quality,
+            CallbackTarget.EventCallback, v._target.Context, out v._raw);
+        if (rc < 0)
+        {
+            v._target.Dispose();
+            throw NativeMethods.LastError();
+        }
+        return v;
+    }
+
+    /// <summary>Connects by a code from a computer sharing over the internet. A wrong, used or expired
+    /// code ends with SessionEnded "unknown_code".</summary>
+    public static ViewerHandle ConnectCode(CoreClient core, string rendezvous, string code, DisplayInfo display,
+        Action<CoreEvent> onEvent, FrameHandler onFrame, bool extend = false, bool input = false, Quality quality = Quality.Best)
+    {
+        var v = new ViewerHandle(core, new CallbackTarget(onEvent, onFrame));
+        var rc = NativeMethods.annex_viewer_connect_code(core.Raw, rendezvous, null, code, AnnexJson.Serialize(display), extend, input,
+            (uint)quality, CallbackTarget.EventCallback, CallbackTarget.FrameCallback, v._target.Context, out v._raw);
+        if (rc < 0)
+        {
+            v._target.Dispose();
+            throw NativeMethods.LastError();
+        }
+        return v;
+    }
+
+    /// <summary>Windows: <see cref="ConnectCode"/> shown like <see cref="ConnectWindowed"/>.</summary>
+    public static ViewerHandle ConnectCodeWindowed(CoreClient core, string rendezvous, string code, Action<CoreEvent> onEvent,
+        bool extend = false, bool input = false, Quality quality = Quality.Best)
+    {
+        var v = new ViewerHandle(core, new CallbackTarget(onEvent));
+        var rc = NativeMethods.annex_viewer_connect_code_windowed(core.Raw, rendezvous, null, code, extend, input, (uint)quality,
             CallbackTarget.EventCallback, v._target.Context, out v._raw);
         if (rc < 0)
         {

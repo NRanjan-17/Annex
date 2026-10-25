@@ -5,6 +5,7 @@
 //! frames ([`HostHandle::submit_session_frame`]). Extra viewers are rejected with `busy`.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -17,8 +18,9 @@ use tokio::time::timeout;
 
 use crate::clock::now_us;
 use crate::conn::{Incoming, Reader, Writer, check_hello, hello};
-use crate::events::{Event, EventSink};
+use crate::events::{Event, EventSink, LinkKind};
 use crate::pairing::{PairContext, pair_as_host};
+use crate::punch::{PunchSocket, TurnServer};
 use crate::transport::{
     BoxRead, BoxWrite, Established, TransportKind, accept_quic, accept_tcp, is_link_local, quic_server_config,
 };
@@ -80,6 +82,9 @@ pub struct HostConfig {
     pub stream: StreamConfig,
     /// Whether this host can create virtual displays (accepts `extend` sessions).
     pub extend: bool,
+    /// The UDP socket for QUIC instead of binding `port`. Tests use it for a simulated network.
+    #[doc(hidden)]
+    pub udp: Option<Arc<dyn quinn::AsyncUdpSocket>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,6 +123,8 @@ struct Shared {
     /// Connections that have claimed a slot (pairing or streaming).
     claimed: AtomicUsize,
     next_id: AtomicU64,
+    /// QUIC's socket, which also reaches across the internet (None if QUIC couldn't start).
+    udp: Option<Arc<PunchSocket>>,
 }
 
 impl Shared {
@@ -184,6 +191,39 @@ impl HostHandle {
             }
             None => false,
         }
+    }
+
+    /// Where a viewer on the internet can reach this host: the public address and port its router
+    /// gave the session socket (asked of `stun_server`), plus its own LAN and IPv6 addresses.
+    /// Hand them to the viewer through the rendezvous server.
+    pub async fn internet_candidates(&self, stun_server: SocketAddr) -> Result<Vec<SocketAddr>, SessionError> {
+        let udp = self.shared.udp.as_ref().ok_or(SessionError::Violation("QUIC isn't available".into()))?;
+        let mut out = vec![udp.public_address(stun_server).await?];
+        out.extend(crate::punch::own_addresses(udp.local_addr()?.port()));
+        out.dedup();
+        Ok(out)
+    }
+
+    /// A viewer on the internet is about to connect from `viewer`: open this computer's router
+    /// towards those addresses for a few seconds.
+    pub fn punch(&self, viewer: Vec<SocketAddr>) {
+        if let Some(udp) = &self.shared.udp {
+            udp.punch(viewer);
+        }
+    }
+
+    /// The viewer couldn't connect directly: gets an address on `relay` that forwards to this
+    /// host, open to the viewer's IP addresses. Hand it to the viewer through the rendezvous
+    /// server. `limited`: it's our relay (sessions through it are held to about 6 Mbit/s, and
+    /// end when its login expires), not one the user set up.
+    pub async fn relay(
+        &self,
+        relay: TurnServer,
+        viewer: Vec<std::net::IpAddr>,
+        limited: bool,
+    ) -> Result<SocketAddr, SessionError> {
+        let udp = self.shared.udp.as_ref().ok_or(SessionError::Violation("QUIC isn't available".into()))?;
+        Ok(udp.allocate_relay(relay, viewer, limited).await?)
     }
 
     /// Whether this host accepts Extend sessions (it can create virtual displays).
@@ -294,13 +334,19 @@ pub async fn start_host(core: Arc<Core>, cfg: HostConfig, events: EventSink) -> 
     let port = listener.local_addr()?.port();
     let tls = tokio_rustls::TlsAcceptor::from(Arc::new(annex_crypto::server_config(core.identity())?));
     // QUIC on the same port number (UDP). If UDP can't be bound, viewers fall back to TCP.
-    let quic = match bind_quic(quic_server_config(&core)?, port, listener.local_addr()?.is_ipv6()) {
-        Ok(e) => Some(e),
+    let server = quic_server_config(&core)?;
+    let udp = match cfg.udp {
+        Some(s) => Ok(PunchSocket::new(s)),
+        None => bind_udp(port, listener.local_addr()?.is_ipv6()).map_err(SessionError::from),
+    };
+    let quic = match udp.and_then(|u| quic_endpoint(server, u.clone()).map(|e| (e, u))) {
+        Ok(q) => Some(q),
         Err(e) => {
             tracing::warn!("QUIC unavailable, TCP only: {e}");
             None
         }
     };
+    let (quic, udp) = quic.unzip();
     let (shutdown, shutdown_rx) = watch::channel(false);
     let shared = Arc::new(Shared {
         core,
@@ -310,6 +356,7 @@ pub async fn start_host(core: Arc<Core>, cfg: HostConfig, events: EventSink) -> 
         sessions: Mutex::new(HashMap::new()),
         claimed: AtomicUsize::new(0),
         next_id: AtomicU64::new(1),
+        udp,
     });
     events(Event::Listening { port });
     let task = tokio::spawn(accept_loop(listener, tls, quic, shared.clone(), shutdown_rx));
@@ -339,17 +386,25 @@ async fn bind_tcp(port: u16) -> std::io::Result<TcpListener> {
     }
 }
 
-/// The QUIC endpoint, on the same addresses as the TCP listener.
-fn bind_quic(config: quinn::ServerConfig, port: u16, ipv6: bool) -> std::io::Result<quinn::Endpoint> {
-    if !ipv6 {
-        return quinn::Endpoint::server(config, (std::net::Ipv4Addr::UNSPECIFIED, port).into());
-    }
-    let s = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
-    s.set_only_v6(false)?;
-    s.bind(&std::net::SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into())?;
+/// The UDP socket for QUIC, on the same addresses as the TCP listener.
+fn bind_udp(port: u16, ipv6: bool) -> std::io::Result<Arc<PunchSocket>> {
+    let s = if ipv6 {
+        let s = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+        s.set_only_v6(false)?;
+        s.bind(&SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into())?;
+        s
+    } else {
+        let s = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+        s.bind(&SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, port)).into())?;
+        s
+    };
     s.set_nonblocking(true)?;
+    PunchSocket::from_std(s.into())
+}
+
+fn quic_endpoint(config: quinn::ServerConfig, udp: Arc<PunchSocket>) -> Result<quinn::Endpoint, SessionError> {
     let runtime = quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime for QUIC"))?;
-    quinn::Endpoint::new(quinn::EndpointConfig::default(), Some(config), s.into(), runtime)
+    Ok(quinn::Endpoint::new_with_abstract_socket(quinn::EndpointConfig::default(), Some(config), udp, runtime)?)
 }
 
 async fn accept_loop(
@@ -424,7 +479,19 @@ async fn handle_conn(est: Established, shared: Arc<Shared>, shutdown: watch::Rec
     }
     let id = shared.next_id.fetch_add(1, Ordering::Relaxed);
     let mut started = false;
-    let link = Link { transport: kind, direct: is_link_local(&remote) };
+    let link = Link {
+        transport: kind,
+        limited: shared.udp.as_ref().and_then(|u| u.relayed(remote)).unwrap_or(false),
+        kind: if shared.udp.as_ref().is_some_and(|u| u.relayed(remote).is_some()) {
+            LinkKind::Relayed
+        } else if shared.udp.as_ref().is_some_and(|u| u.was_punched(remote)) {
+            LinkKind::Internet
+        } else if is_link_local(&remote) {
+            LinkKind::Direct
+        } else {
+            LinkKind::Network
+        },
+    };
     let result =
         run_session(&mut reader, &mut writer, &fp, &exporter, &shared, shutdown, id, link, &video, &mut started).await;
     shared.sessions.lock().unwrap().remove(&id);
@@ -450,7 +517,9 @@ async fn handle_conn(est: Established, shared: Arc<Shared>, shutdown: watch::Rec
 #[derive(Clone, Copy)]
 struct Link {
     transport: TransportKind,
-    direct: bool,
+    kind: LinkKind,
+    /// Through our relay, which has usage limits: the session is held to about 6 Mbit/s.
+    limited: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -535,6 +604,7 @@ async fn run_session(
         }
     }
     *started = true;
+    let relay_ceiling = crate::rate::relay_ceiling(req.mode, &stream);
     (shared.events)(Event::SessionStarted {
         session_id: id,
         mode: req.mode,
@@ -543,7 +613,7 @@ async fn run_session(
         viewer_display: Some(req.display.clone()),
         stream,
         transport: link.transport,
-        link: if link.direct { crate::events::LinkKind::Direct } else { crate::events::LinkKind::Network },
+        link: link.kind,
         input,
         pointer_deltas: true,
     });
@@ -575,7 +645,13 @@ async fn run_session(
         // so a `Bye` followed by EOF is reported as the `Bye` reason, not as "closed".
         std::future::pending::<()>().await
     };
-    let mut rate = crate::rate::RateController::new(req.quality);
+    let mut rate = if link.limited {
+        let ceiling = relay_ceiling;
+        tracing::info!(id, ceiling, "through our relay: bitrate limited");
+        crate::rate::RateController::with_ceiling(ceiling)
+    } else {
+        crate::rate::RateController::new(req.quality)
+    };
     if rate.scale_percent() != 100 {
         // The viewer chose a lower quality: start the encoder there rather than at 100 %.
         (shared.events)(Event::BitrateHint { session_id: id, scale_percent: rate.scale_percent() });

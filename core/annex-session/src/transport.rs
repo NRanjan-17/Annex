@@ -106,16 +106,26 @@ pub(crate) async fn connect_quic(
     addr: SocketAddr,
     expected: Option<String>,
 ) -> Result<Established, SessionError> {
+    let bind: SocketAddr = if addr.is_ipv6() { "[::]:0".parse().unwrap() } else { "0.0.0.0:0".parse().unwrap() };
+    let endpoint = quinn::Endpoint::client(bind)?;
+    connect_quic_on(core, &endpoint, addr, expected).await
+}
+
+/// Viewer side of a QUIC connection on a given endpoint (an internet connection's socket).
+pub(crate) async fn connect_quic_on(
+    core: &Core,
+    endpoint: &quinn::Endpoint,
+    addr: SocketAddr,
+    expected: Option<String>,
+) -> Result<Established, SessionError> {
     let tls = annex_crypto::client_config(core.identity(), expected)?;
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)
         .map_err(|e| SessionError::Violation(format!("quic tls config: {e}")))?;
     let mut client = quinn::ClientConfig::new(Arc::new(crypto));
     client.transport_config(quic_transport());
-    let bind: SocketAddr = if addr.is_ipv6() { "[::]:0".parse().unwrap() } else { "0.0.0.0:0".parse().unwrap() };
-    let mut endpoint = quinn::Endpoint::client(bind)?;
-    endpoint.set_default_client_config(client);
-    let connecting =
-        endpoint.connect(addr, annex_crypto::SERVER_NAME).map_err(|e| SessionError::Io(std::io::Error::other(e)))?;
+    let connecting = endpoint
+        .connect_with(client, addr, annex_crypto::SERVER_NAME)
+        .map_err(|e| SessionError::Io(std::io::Error::other(e)))?;
     let conn = timeout(HANDSHAKE_TIMEOUT, connecting)
         .await
         .map_err(|_| SessionError::Timeout("quic handshake"))?

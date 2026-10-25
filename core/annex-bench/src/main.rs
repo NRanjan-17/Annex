@@ -66,6 +66,7 @@ async fn main() {
             port: 0,
             stream: StreamConfig { codec: Codec::Raw, width: 1920, height: 1080, fps },
             extend: false,
+            udp: None,
         },
         host_events,
     )
@@ -102,6 +103,8 @@ async fn main() {
             input: false,
             quality: annex_session::Quality::Best,
             latency_csv: None,
+            internet: None,
+            join: None,
         },
         Arc::new(|_| {}),
         frame_sink,

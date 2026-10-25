@@ -61,7 +61,7 @@ public abstract record CoreEvent
         public string ConnectionDescription => string.Join(" · ", new[]
         {
             Transport switch { "quic" => "QUIC", "tcp" => "TCP", _ => null },
-            Link switch { "direct" => "direct cable", "network" => "network", _ => null },
+            Link switch { "direct" => "direct cable", "network" => "network", "internet" => "internet", "relayed" => "relay", _ => null },
         }.Where(s => s is not null));
     }
     public sealed record StreamChanged(StreamConfig Stream) : CoreEvent;
@@ -82,6 +82,14 @@ public abstract record CoreEvent
     public sealed record Error(string Message) : CoreEvent;
     public sealed record PeerFound(PeerInfo Peer) : CoreEvent;
     public sealed record PeerLost(string Instance) : CoreEvent;
+    /// <summary>Host: the code to read out; it works once, for <c>ExpiresIn</c> seconds.</summary>
+    public sealed record InternetCode(string Code, int ExpiresIn) : CoreEvent;
+    /// <summary>Host: someone typed the code; their connection comes next.</summary>
+    public sealed record InternetJoined(string PeerName) : CoreEvent;
+    /// <summary>Host: a direct connection failed. <c>Relayed</c>: a relay is set up; <c>Limited</c>: it's ours (capped).</summary>
+    public sealed record InternetRelay(bool Relayed, bool Limited) : CoreEvent;
+    /// <summary>Host: the code is done ("used", "expired", "stopped", or an error).</summary>
+    public sealed record InternetCodeEnded(string Reason) : CoreEvent;
     public sealed record Unknown(string Type) : CoreEvent;
 
     public static CoreEvent Parse(string json)
@@ -121,6 +129,10 @@ public abstract record CoreEvent
                 "error" => new Error(Get<MessageDto>(json).Message),
                 "peer_found" => new PeerFound(Get<PeerInfo>(json)),
                 "peer_lost" => new PeerLost(Get<InstanceDto>(json).Instance),
+                "internet_code" => Get<InternetCode>(json),
+                "internet_joined" => Get<InternetJoined>(json),
+                "internet_relay" => Get<InternetRelay>(json),
+                "internet_code_ended" => Get<InternetCodeEnded>(json),
                 _ => new Unknown(type),
             };
         }
@@ -154,6 +166,10 @@ internal sealed record InstanceDto(string Instance);
 [JsonSerializable(typeof(CoreEvent.InputRequested))]
 [JsonSerializable(typeof(CoreEvent.DirectLinkOffer))]
 [JsonSerializable(typeof(CoreEvent.DirectLinkUnavailable))]
+[JsonSerializable(typeof(CoreEvent.InternetCode))]
+[JsonSerializable(typeof(CoreEvent.InternetJoined))]
+[JsonSerializable(typeof(CoreEvent.InternetRelay))]
+[JsonSerializable(typeof(CoreEvent.InternetCodeEnded))]
 [JsonSerializable(typeof(ExtendStatus))]
 [JsonSerializable(typeof(GpuInfo[]))]
 [JsonSerializable(typeof(UpdateInfo))]

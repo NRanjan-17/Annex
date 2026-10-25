@@ -4,7 +4,7 @@
 param(
     [Parameter(Mandatory)] [string] $Installer,
     [string] $OutDir = "smoke",
-    [int] $WaitSeconds = 25
+    [int] $WaitSeconds = 40
 )
 $ErrorActionPreference = "Continue"
 New-Item -ItemType Directory -Force $OutDir | Out-Null
@@ -50,6 +50,12 @@ try {
     [System.Drawing.Graphics]::FromImage($bmp).CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
     $bmp.Save((Join-Path $OutDir "screenshot.png"))
 } catch { Note "Screenshot failed: $_" }
+
+# The self-test's pictures of the main screens, for design review.
+$shots = "$env:LOCALAPPDATA\Annex\shots"
+if (Test-Path $shots) { Copy-Item "$shots\*" $OutDir -ErrorAction SilentlyContinue }
+$secret = "$env:LOCALAPPDATA\Annex\selftest-secret"
+Note "Relay password encryption: $(if (Test-Path $secret) { Get-Content $secret } else { 'not run' })"
 
 # Managed stacks: shows where a hung start-up is stuck.
 if ($alive) {

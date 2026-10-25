@@ -19,8 +19,9 @@ use std::sync::{Arc, Mutex};
 
 use annex_discovery::{Advertisement, Browser, Discovery};
 use annex_session::{
-    Codec, Core, DisplayInfo, Event, EventSink, FrameOut, FrameSink, HostConfig, HostHandle, InputEvent, Mode,
-    MouseButton, Quality, StreamConfig, SubmitResult, TrustPolicy, ViewerConfig, ViewerHandle, keys,
+    Codec, Core, DEFAULT_STUN, DisplayInfo, Event, EventSink, FrameOut, FrameSink, HostConfig, HostHandle, InputEvent,
+    InternetServers, JoinCode, Mode, MouseButton, OwnRelay, Quality, StreamConfig, SubmitResult, TrustPolicy,
+    ViewerConfig, ViewerHandle, keys, share_code,
 };
 
 pub const ANNEX_OK: i32 = 0;
@@ -265,6 +266,8 @@ pub struct AnnexHost {
     callbacks: Arc<Callbacks>,
     _advert: Option<Advertisement>,
     core: *const AnnexCore,
+    /// Sharing over the internet with a code (annex_host_share_code), while it runs.
+    internet: Mutex<Option<tokio::task::AbortHandle>>,
     /// Windows: the capture/encode pipeline owned by the core (annex_host_start_screen).
     #[cfg(windows)]
     screen: Option<Arc<win_host::ScreenState>>,
@@ -663,7 +666,7 @@ pub unsafe extern "C" fn annex_host_start(
             return Err(invalid("width, height and fps must be non-zero"));
         }
         let callbacks = Callbacks::new(on_event, None, ctx);
-        let cfg = HostConfig { port, stream: StreamConfig { codec, width, height, fps }, extend };
+        let cfg = HostConfig { port, stream: StreamConfig { codec, width, height, fps }, extend, udp: None };
         let handle =
             c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, callbacks.event_sink())).map_err(failed)?;
         let advert = if advertise {
@@ -684,6 +687,7 @@ pub unsafe extern "C" fn annex_host_start(
             callbacks,
             _advert: advert,
             core,
+            internet: Mutex::default(),
             #[cfg(windows)]
             screen: None,
         });
@@ -793,6 +797,63 @@ pub unsafe extern "C" fn annex_host_end_session(host: *const AnnexHost, session_
     }
 }
 
+/// Shares this host over the internet with one code, through the rendezvous server
+/// `rendezvous` (`wss://…`). `stun` (nullable: Cloudflare's) is `host:port`. `turn_url`
+/// (nullable or empty: none) is the user's own relay, `turn:host:port`, with `turn_username` and
+/// `turn_password`. Events: `internet_code`, `internet_joined`, `internet_relay`, and
+/// `internet_code_ended` last. Replaces a code still running.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_share_code(
+    host: *const AnnexHost,
+    rendezvous: *const c_char,
+    stun: *const c_char,
+    turn_url: *const c_char,
+    turn_username: *const c_char,
+    turn_password: *const c_char,
+) -> i32 {
+    guard(|| {
+        let h = unsafe { host.as_ref() }.ok_or_else(|| invalid("host is null"))?;
+        let c = unsafe { h.core.as_ref() }.ok_or_else(|| invalid("core is gone"))?;
+        let rendezvous = unsafe { str_arg(rendezvous, "rendezvous") }?.trim().to_string();
+        if rendezvous.is_empty() {
+            return Err(invalid("rendezvous is empty"));
+        }
+        let stun = unsafe { opt_str_arg(stun, "stun") }?.filter(|s| !s.is_empty()).unwrap_or(DEFAULT_STUN);
+        let own_relay = match unsafe { opt_str_arg(turn_url, "turn_url") }?.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(url) => Some(OwnRelay {
+                url: url.to_string(),
+                username: unsafe { opt_str_arg(turn_username, "turn_username") }?.unwrap_or_default().to_string(),
+                password: unsafe { opt_str_arg(turn_password, "turn_password") }?.unwrap_or_default().to_string(),
+            }),
+            None => None,
+        };
+        let servers = InternetServers { rendezvous, stun: stun.to_string() };
+        let task = c.rt.spawn(share_code(
+            h.handle.clone(),
+            c.core.device_name(),
+            servers,
+            own_relay,
+            h.callbacks.event_sink(),
+        ));
+        if let Some(old) = h.internet.lock().unwrap().replace(task.abort_handle()) {
+            old.abort();
+        }
+        Ok(ANNEX_OK)
+    })
+}
+
+/// Stops sharing over the internet: the code stops working (`internet_code_ended`, "stopped").
+/// Sessions already connected carry on.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_stop_code(host: *const AnnexHost) {
+    if let Some(h) = unsafe { host.as_ref() }
+        && let Some(task) = h.internet.lock().unwrap().take()
+    {
+        task.abort();
+        (h.callbacks.event_sink())(Event::InternetCodeEnded { reason: "stopped".into() });
+    }
+}
+
 /// Stops hosting (ends all sessions, stops advertising) and frees the host.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn annex_host_free(host: *mut AnnexHost) {
@@ -805,6 +866,9 @@ pub unsafe extern "C" fn annex_host_free(host: *mut AnnexHost) {
         s.stop();
     }
     let advert = h._advert.take();
+    if let Some(task) = h.internet.lock().unwrap().take() {
+        task.abort();
+    }
     if let Some(c) = unsafe { h.core.as_ref() } {
         c.rt.block_on(h.handle.stop());
     }
@@ -905,7 +969,14 @@ pub unsafe extern "C" fn annex_host_start_screen(
         } else {
             None
         };
-        let h = Box::new(AnnexHost { handle: host, callbacks, _advert: advert, core, screen: Some(screen) });
+        let h = Box::new(AnnexHost {
+            handle: host,
+            callbacks,
+            _advert: advert,
+            core,
+            internet: Mutex::default(),
+            screen: Some(screen),
+        });
         unsafe { *out = Box::into_raw(h) };
         Ok(ANNEX_OK)
     })
@@ -1283,7 +1354,8 @@ mod win_host {
             })
         };
         let extend = state.driver.is_some();
-        let cfg = HostConfig { port, stream: StreamConfig { codec: Codec::H264, width, height, fps }, extend };
+        let cfg =
+            HostConfig { port, stream: StreamConfig { codec: Codec::H264, width, height, fps }, extend, udp: None };
         let handle = Arc::new(c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, events))?);
         let _ = state.host.set(Arc::downgrade(&handle));
         Ok((handle, state))
@@ -1331,6 +1403,8 @@ unsafe fn viewer_config(
             _ => Quality::Best,
         },
         latency_csv: std::env::var_os("ANNEX_LATENCY_CSV").map(PathBuf::from),
+        internet: None,
+        join: None,
     })
 }
 
@@ -1379,6 +1453,75 @@ pub unsafe extern "C" fn annex_viewer_connect(
     })
 }
 
+/// Connects by a code from a computer sharing over the internet (see `annex_host_share_code`),
+/// otherwise like `annex_viewer_connect`. `stun` is nullable (Cloudflare's). A wrong, used or
+/// expired code ends with `session_ended` reason "unknown_code"; too many tries,
+/// "too_many_attempts". `session_started.link` is "internet" or "relayed".
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn annex_viewer_connect_code(
+    core: *const AnnexCore,
+    rendezvous: *const c_char,
+    stun: *const c_char,
+    code: *const c_char,
+    display_json: *const c_char,
+    extend: bool,
+    input: bool,
+    quality: u32,
+    on_event: AnnexEventCallback,
+    on_frame: AnnexFrameCallback,
+    ctx: *mut c_void,
+    out: *mut *mut AnnexViewer,
+) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        if out.is_null() {
+            return Err(invalid("out is null"));
+        }
+        let mut cfg = unsafe { code_viewer_config(rendezvous, stun, code, display_json, extend, input, quality) }?;
+        cfg.address = String::new();
+        let callbacks = Callbacks::new(on_event, on_frame, ctx);
+        let _enter = c.rt.enter();
+        let handle = Arc::new(annex_session::connect_viewer(
+            c.core.clone(),
+            cfg,
+            callbacks.event_sink(),
+            callbacks.frame_sink(),
+        ));
+        let v = Box::new(AnnexViewer {
+            handle,
+            callbacks,
+            core,
+            #[cfg(windows)]
+            window: None,
+        });
+        unsafe { *out = Box::into_raw(v) };
+        Ok(ANNEX_OK)
+    })
+}
+
+/// A viewer config for a code (shared by the plain and the Windows windowed connect).
+unsafe fn code_viewer_config(
+    rendezvous: *const c_char,
+    stun: *const c_char,
+    code: *const c_char,
+    display_json: *const c_char,
+    extend: bool,
+    input: bool,
+    quality: u32,
+) -> Result<ViewerConfig, (i32, String)> {
+    let rendezvous = unsafe { str_arg(rendezvous, "rendezvous") }?.trim().to_string();
+    let code = unsafe { str_arg(code, "code") }?.trim().to_string();
+    if rendezvous.is_empty() || code.is_empty() {
+        return Err(invalid("rendezvous and code must be non-empty"));
+    }
+    let stun = unsafe { opt_str_arg(stun, "stun") }?.filter(|s| !s.is_empty()).unwrap_or(DEFAULT_STUN);
+    // The address is unused with a code; any valid string will do for the shared parser.
+    let mut cfg = unsafe { viewer_config(c"".as_ptr(), std::ptr::null(), display_json, extend, input, quality) }?;
+    cfg.join = Some(JoinCode { code, servers: InternetServers { rendezvous, stun: stun.to_string() } });
+    Ok(cfg)
+}
+
 /// Windows only: connects and shows the stream in a full-screen window rendered by the core
 /// (Media Foundation decode + Direct3D 11). Closing the window (Esc, or Ctrl+Alt+Shift+Q while
 /// controlling the host) ends the session. With `input`, the window forwards mouse and keyboard.
@@ -1401,8 +1544,50 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
         if out.is_null() {
             return Err(invalid("out is null"));
         }
-        let mut cfg =
-            unsafe { viewer_config(address, expected_fingerprint, std::ptr::null(), extend, input, quality) }?;
+        let cfg = unsafe { viewer_config(address, expected_fingerprint, std::ptr::null(), extend, input, quality) }?;
+        unsafe { connect_windowed(c, core, cfg, input, on_event, ctx, out) }
+    })
+}
+
+/// Windows only: `annex_viewer_connect_code` shown like `annex_viewer_connect_windowed`.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn annex_viewer_connect_code_windowed(
+    core: *const AnnexCore,
+    rendezvous: *const c_char,
+    stun: *const c_char,
+    code: *const c_char,
+    extend: bool,
+    input: bool,
+    quality: u32,
+    on_event: AnnexEventCallback,
+    ctx: *mut c_void,
+    out: *mut *mut AnnexViewer,
+) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        if out.is_null() {
+            return Err(invalid("out is null"));
+        }
+        let mut cfg = unsafe { code_viewer_config(rendezvous, stun, code, std::ptr::null(), extend, input, quality) }?;
+        cfg.address = String::new();
+        unsafe { connect_windowed(c, core, cfg, input, on_event, ctx, out) }
+    })
+}
+
+/// The core's own window for a viewer: frames go to it, its input and close come back.
+#[cfg(windows)]
+unsafe fn connect_windowed(
+    c: &AnnexCore,
+    core: *const AnnexCore,
+    mut cfg: ViewerConfig,
+    input: bool,
+    on_event: AnnexEventCallback,
+    ctx: *mut c_void,
+    out: *mut *mut AnnexViewer,
+) -> Result<i32, (i32, String)> {
+    {
         cfg.display = annex_media_win::primary_display_info();
         let callbacks = Callbacks::new(on_event, None, ctx);
         let events = callbacks.event_sink();
@@ -1473,7 +1658,7 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
         let v = Box::new(AnnexViewer { handle, callbacks, core, window: Some(window) });
         unsafe { *out = Box::into_raw(v) };
         Ok(ANNEX_OK)
-    })
+    }
 }
 
 #[cfg(windows)]
