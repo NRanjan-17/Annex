@@ -615,6 +615,7 @@ async fn run_session(
         transport: link.transport,
         link: link.kind,
         input,
+        pointer_deltas: true,
     });
     shared.request_keyframe(&slot);
     if req.input && !input {

@@ -294,6 +294,8 @@ async fn run(
         Control::SessionReject { reason } | Control::Bye { reason } => return Err(SessionError::Rejected(reason)),
         _ => return Err(SessionError::Violation("expected session_accept".into())),
     };
+    // Older hosts don't know pointer movement events; they're never sent to them.
+    let pointer_deltas = peer.proto_minor >= 2;
     events(Event::SessionStarted {
         session_id: 0,
         mode: cfg.mode,
@@ -304,6 +306,7 @@ async fn run(
         transport: kind,
         link,
         input,
+        pointer_deltas,
     });
     // Flipped by the host's `input_allowed` messages.
     let input_allowed = Arc::new(std::sync::atomic::AtomicBool::new(input));
@@ -473,7 +476,8 @@ async fn run(
                     Some(Cmd::Control(c)) => writer.send_control(&c).await?,
                     Some(Cmd::Input(e)) => {
                         // Never send keystrokes to a host that hasn't asked for them.
-                        if input_allowed.load(std::sync::atomic::Ordering::Acquire) {
+                        let unknown = matches!(e, InputEvent::MouseDelta { .. }) && !pointer_deltas;
+                        if input_allowed.load(std::sync::atomic::Ordering::Acquire) && !unknown {
                             writer.send_control(&Control::Input(e)).await?;
                         }
                     }

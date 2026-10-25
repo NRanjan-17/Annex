@@ -30,6 +30,9 @@ final class AppSettings: ObservableObject {
     @Published var dismissedUpdateVersion: String? { didSet { defaults.set(dismissedUpdateVersion, forKey: Keys.dismissedUpdate) } }
     /// When the last update check finished (shown on the About page).
     @Published var lastUpdateCheck: Date? { didSet { defaults.set(lastUpdateCheck, forKey: Keys.lastCheck) } }
+    /// Host: the size of text and windows on a screen extending this Mac. 0 = sharpest (100 %, or
+    /// 200 % on a high-resolution screen); otherwise a scale step, 100–200.
+    @Published var extendScale: Int { didSet { defaults.set(extendScale, forKey: Keys.extendScale) } }
     /// Mac ↔ Mac with no router, over peer-to-peer Wi-Fi (what AirDrop uses). On by default.
     @Published var peerToPeerWiFi: Bool { didSet { defaults.set(peerToPeerWiFi, forKey: Keys.peerToPeer) } }
     /// The name other devices see; nil = this Mac's name from System Settings.
@@ -62,6 +65,7 @@ final class AppSettings: ObservableObject {
         static let dismissedUpdate = "dismissedUpdateVersion"
         static let lastCheck = "lastUpdateCheck"
         static let peerToPeer = "peerToPeerWiFi"
+        static let extendScale = "extendScale"
         static let internet = "internetEnabled"
         static let rendezvous = "rendezvousServer"
         static let relayURL = "relayURL"
@@ -103,6 +107,7 @@ final class AppSettings: ObservableObject {
         relayURL = defaults.string(forKey: Keys.relayURL) ?? ""
         relayUsername = defaults.string(forKey: Keys.relayUser) ?? ""
         relayPassword = Keychain.get(account: Keys.relayPassword) ?? ""
+        extendScale = defaults.integer(forKey: Keys.extendScale)
         refreshLaunchAtLogin()
     }
 

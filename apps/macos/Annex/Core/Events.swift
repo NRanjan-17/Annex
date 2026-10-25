@@ -55,6 +55,9 @@ struct SessionStarted: Decodable, Equatable {
     let link: String?
     /// The viewer's mouse and keyboard control the host in this session.
     let input: Bool?
+    /// The host understands pointer movement (protocol 1.2), so Extend can send that instead of
+    /// positions and the host's pointer can leave the extended display.
+    let pointerDeltas: Bool?
 
     var connectionDescription: String {
         let t = transport == "quic" ? "QUIC" : transport == "tcp" ? "TCP" : nil
@@ -133,6 +136,9 @@ enum InputEvent: Equatable {
     case scroll(dx: Int32, dy: Int32)
     /// USB HID usage (keyboard page).
     case key(usage: UInt16, down: Bool)
+    /// The pointer moved by this much (the viewer's raw mouse movement), free to leave the
+    /// extended display for this Mac's other screens.
+    case mouseDelta(dx: Int32, dy: Int32)
 }
 
 extension InputEvent: Decodable {
@@ -145,6 +151,7 @@ extension InputEvent: Decodable {
         case "mouse_button": self = .mouseButton(button: try c.decode(String.self, forKey: .button), down: try c.decode(Bool.self, forKey: .down))
         case "scroll": self = .scroll(dx: try c.decode(Int32.self, forKey: .dx), dy: try c.decode(Int32.self, forKey: .dy))
         case "key": self = .key(usage: try c.decode(UInt16.self, forKey: .usage), down: try c.decode(Bool.self, forKey: .down))
+        case "mouse_delta": self = .mouseDelta(dx: try c.decode(Int32.self, forKey: .dx), dy: try c.decode(Int32.self, forKey: .dy))
         case let other: throw DecodingError.dataCorruptedError(forKey: .k, in: c, debugDescription: "unknown input kind \(other)")
         }
     }

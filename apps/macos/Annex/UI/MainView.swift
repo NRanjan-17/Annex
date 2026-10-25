@@ -784,7 +784,7 @@ private struct PCHotspotSection: View {
                      footer: "When this network won't connect the two computers: on the PC, turn on This PC → Direct Wi-Fi "
                          + "and type the network and password it shows. Works whether this Mac views or shares.") {
             GroupRow(title: "Network") {
-                InputField(text: $model.pcHotspotName, placeholder: "Annex-1A2B").frame(width: 200)
+                InputField(text: $model.pcHotspotName, placeholder: "Network name").frame(width: 200)
             }
             GroupRow(title: "Password") {
                 InputField(text: $model.pcHotspotPassword, placeholder: "From the PC",
@@ -1003,6 +1003,15 @@ private struct SettingsPage: View {
                       subtitle: "Another Mac can connect with no router, like AirDrop. "
                           + (model.isHosting || model.isViewing ? "Applies to the next session." : "Uses a little Wi-Fi speed while on."),
                       isOn: $settings.peerToPeerWiFi)
+            GroupRow(title: "Extended display scaling",
+                     subtitle: "Text size on a screen extending this Mac. Sharpest is crisp; the steps between look a little soft.") {
+                Picker("", selection: $settings.extendScale) {
+                    Text("Sharpest").tag(0)
+                    ForEach(ExtendSession.scales, id: \.self) { Text("\($0) %").tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
         }
     }
 

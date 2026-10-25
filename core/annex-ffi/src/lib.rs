@@ -1641,7 +1641,8 @@ unsafe fn connect_windowed(
                 }
                 match &e {
                     Event::SessionEnded { .. } => window.close(),
-                    Event::SessionStarted { input, .. } => {
+                    Event::SessionStarted { input, mode, pointer_deltas, .. } => {
+                        window.set_relative_pointer(*mode == Mode::Extend && *pointer_deltas);
                         window.set_input_active(*input);
                         window.show();
                     }
@@ -1689,6 +1690,16 @@ pub unsafe extern "C" fn annex_viewer_send_mouse_move(viewer: *const AnnexViewer
     if let Some(v) = unsafe { viewer.as_ref() } {
         let n = |f: f64| (f.clamp(0.0, 1.0) * f64::from(u16::MAX)).round() as u16;
         v.handle.send_input(InputEvent::MouseMove { x: n(x), y: n(y) });
+    }
+}
+
+/// The pointer moved by this much (raw mouse movement, in pixels), for Extend: the host's pointer
+/// can then leave the extended display. Ignored unless the host allows input, and never sent to
+/// hosts older than protocol 1.2 (session_started's `pointer_deltas` says which).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_send_mouse_delta(viewer: *const AnnexViewer, dx: i32, dy: i32) {
+    if let Some(v) = unsafe { viewer.as_ref() } {
+        v.handle.send_input(InputEvent::MouseDelta { dx: dx.clamp(-10_000, 10_000), dy: dy.clamp(-10_000, 10_000) });
     }
 }
 

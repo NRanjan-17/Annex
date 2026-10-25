@@ -73,6 +73,16 @@ final class InputInjector: @unchecked Sendable {
             } else {
                 post(.mouseMoved, button: .left)
             }
+        case .mouseDelta(let dx, let dy):
+            // Like a real mouse: from wherever the pointer is, across every screen (so it can leave
+            // the Annex display for this Mac's own), stopping at the outer edges.
+            let start = CGEvent(source: nil)?.location ?? location
+            location = Self.clampToScreens(CGPoint(x: start.x + CGFloat(dx), y: start.y + CGFloat(dy)))
+            if let held = [CGMouseButton.left, .right, .center].first(where: buttonsDown.contains) {
+                post(held == .left ? .leftMouseDragged : held == .right ? .rightMouseDragged : .otherMouseDragged, button: held)
+            } else {
+                post(.mouseMoved, button: .left)
+            }
         case .mouseButton(let name, let down):
             let button: CGMouseButton = name == "right" ? .right : name == "middle" ? .center : .left
             if down { buttonsDown.insert(button) } else { buttonsDown.remove(button) }
@@ -89,6 +99,24 @@ final class InputInjector: @unchecked Sendable {
             }
             postKey(code, down: down)
         }
+    }
+
+    /// The nearest point that's on a screen: inside the display the point is on, or else the
+    /// closest edge of the nearest display.
+    static func clampToScreens(_ p: CGPoint) -> CGPoint {
+        var count: UInt32 = 0
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+        guard CGGetActiveDisplayList(16, &ids, &count) == .success, count > 0 else { return p }
+        var best = p
+        var bestDistance = CGFloat.infinity
+        for id in ids.prefix(Int(count)) {
+            let b = CGDisplayBounds(id)
+            let q = CGPoint(x: min(max(p.x, b.minX), b.maxX - 1), y: min(max(p.y, b.minY), b.maxY - 1))
+            let d = hypot(q.x - p.x, q.y - p.y)
+            if d < bestDistance { best = q; bestDistance = d }
+            if d == 0 { break }
+        }
+        return best
     }
 
     private func mouseType(_ b: CGMouseButton, down: Bool) -> CGEventType {

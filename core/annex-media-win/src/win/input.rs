@@ -128,6 +128,8 @@ impl Injector {
                 Some(sc) => send(&[key(sc, down)]),
                 None => Ok(()),
             },
+            // Relative movement, like a real mouse: free to leave the Annex monitor.
+            InputEvent::MouseDelta { dx, dy } => send(&[mouse(MOUSEEVENTF_MOVE, dx, dy, 0)]),
         }
     }
 }

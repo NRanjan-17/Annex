@@ -39,6 +39,9 @@ pub struct WindowHooks {
 struct InputState {
     sink: Box<dyn Fn(InputEvent) + Send + Sync>,
     active: Arc<AtomicBool>,
+    /// Send raw mouse movement instead of positions (Extend, to a host at protocol 1.2+): the
+    /// host's pointer can then leave the extended display. The local pointer stays in the window.
+    relative: Arc<AtomicBool>,
     /// Visible size of the last presented frame (for the letterbox mapping).
     video: (u32, u32),
     buttons_down: u32,
@@ -61,6 +64,7 @@ const CURSOR_IDLE: Duration = Duration::from_secs(2);
 pub struct VideoWindow {
     tx: Mutex<Sender<Msg>>,
     input_active: Arc<AtomicBool>,
+    relative_pointer: Arc<AtomicBool>,
     closed: AtomicBool,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
@@ -91,6 +95,8 @@ fn forward_input(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
             return false;
         }
         let video = st.video;
+        let relative = st.relative.load(Ordering::Acquire);
+        let mut clip = false;
         let point = || {
             let (x, y) = ((lparam.0 & 0xFFFF) as i16 as i32, ((lparam.0 >> 16) & 0xFFFF) as i16 as i32);
             let mut rc = RECT::default();
@@ -101,8 +107,10 @@ fn forward_input(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
         // Returns the mouse-capture change to make once the state is released: keep receiving moves
         // and releases while dragging outside the window.
         let button = |b: MouseButton, down: bool, st: &mut InputState| -> Option<bool> {
-            let (x, y) = point();
-            (st.sink)(InputEvent::MouseMove { x, y });
+            if !relative {
+                let (x, y) = point();
+                (st.sink)(InputEvent::MouseMove { x, y });
+            }
             (st.sink)(InputEvent::MouseButton { button: b, down });
             if down {
                 st.buttons_down += 1;
@@ -114,9 +122,22 @@ fn forward_input(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
         };
         let mut capture = None;
         match msg {
+            WM_MOUSEMOVE if relative => clip = true,
             WM_MOUSEMOVE => {
                 let (x, y) = point();
                 (st.sink)(InputEvent::MouseMove { x, y });
+            }
+            WM_INPUT => {
+                if relative && let Some((dx, dy)) = raw_mouse_delta(lparam) {
+                    (st.sink)(InputEvent::MouseDelta { dx, dy });
+                    clip = true;
+                }
+                // DefWindowProc must still see WM_INPUT to clean up.
+                drop(guard);
+                if clip {
+                    clip_cursor_to(hwnd);
+                }
+                return false;
             }
             WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => capture = button(MouseButton::Left, true, st),
             WM_LBUTTONUP => capture = button(MouseButton::Left, false, st),
@@ -155,6 +176,9 @@ fn forward_input(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
             _ => return false,
         }
         drop(guard);
+        if clip {
+            clip_cursor_to(hwnd);
+        }
         match capture {
             // SAFETY: capturing / releasing our own window's mouse capture.
             Some(true) => unsafe {
@@ -167,6 +191,49 @@ fn forward_input(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
         }
         true
     })
+}
+
+/// Raw relative mouse movement from a WM_INPUT message, if that's what it carries.
+fn raw_mouse_delta(lparam: LPARAM) -> Option<(i32, i32)> {
+    const RIM_TYPEMOUSE: u32 = 0;
+    const MOUSE_MOVE_ABSOLUTE: u16 = 1;
+    let mut raw = windows::Win32::UI::Input::RAWINPUT::default();
+    let mut size = std::mem::size_of::<windows::Win32::UI::Input::RAWINPUT>() as u32;
+    // SAFETY: lparam is this WM_INPUT's handle, and the buffer is a whole RAWINPUT.
+    let n = unsafe {
+        windows::Win32::UI::Input::GetRawInputData(
+            windows::Win32::UI::Input::HRAWINPUT(lparam.0 as *mut _),
+            windows::Win32::UI::Input::RID_INPUT,
+            Some(&mut raw as *mut windows::Win32::UI::Input::RAWINPUT as *mut _),
+            &mut size,
+            std::mem::size_of::<windows::Win32::UI::Input::RAWINPUTHEADER>() as u32,
+        )
+    };
+    if n == u32::MAX || raw.header.dwType != RIM_TYPEMOUSE {
+        return None;
+    }
+    // SAFETY: dwType says the union holds mouse data.
+    let m = unsafe { raw.data.mouse };
+    if m.usFlags.0 & MOUSE_MOVE_ABSOLUTE != 0 || (m.lLastX == 0 && m.lLastY == 0) {
+        return None;
+    }
+    Some((m.lLastX, m.lLastY))
+}
+
+/// Keeps the local pointer inside the window while it sends movement (only while in front).
+fn clip_cursor_to(hwnd: HWND) {
+    // SAFETY: plain Win32 calls on our own window.
+    unsafe {
+        let mut rc = RECT::default();
+        if GetForegroundWindow() == hwnd && GetWindowRect(hwnd, &mut rc).is_ok() {
+            let _ = ClipCursor(Some(&rc));
+        }
+    }
+}
+
+fn release_cursor() {
+    // SAFETY: no preconditions; frees the pointer to go anywhere.
+    let _ = unsafe { ClipCursor(None) };
 }
 
 /// Forwarding input to the host right now (then the local pointer stays hidden).
@@ -183,6 +250,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 }
 
 fn handle_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // Another window in front, or closing: the pointer is free again.
+    if msg == WM_KILLFOCUS || msg == WM_DESTROY || (msg == WM_ACTIVATE && wparam.0 & 0xFFFF == 0) {
+        release_cursor();
+    }
     if msg == WM_MOUSEMOVE {
         LAST_MOVE.with(|t| t.set(Some(Instant::now())));
         if !input_active() {
@@ -255,11 +326,30 @@ fn create_window(title: &str) -> Result<HWND, MediaError> {
     }
 }
 
-fn run(rx: Receiver<Msg>, mut hooks: WindowHooks, hwnd: HWND, mut renderer: Renderer, input_active: Arc<AtomicBool>) {
+fn run(
+    rx: Receiver<Msg>,
+    mut hooks: WindowHooks,
+    hwnd: HWND,
+    mut renderer: Renderer,
+    input_active: Arc<AtomicBool>,
+    relative: Arc<AtomicBool>,
+) {
     if let Some(sink) = hooks.on_input.take() {
         INPUT.with(|i| {
-            *i.borrow_mut() = Some(InputState { sink, active: input_active, video: (0, 0), buttons_down: 0 })
+            *i.borrow_mut() = Some(InputState { sink, active: input_active, relative, video: (0, 0), buttons_down: 0 })
         });
+        // Raw mouse movement (WM_INPUT) while the window is in front, for the relative pointer.
+        let mouse = windows::Win32::UI::Input::RAWINPUTDEVICE {
+            usUsagePage: 0x01,
+            usUsage: 0x02,
+            dwFlags: windows::Win32::UI::Input::RAWINPUTDEVICE_FLAGS(0),
+            hwndTarget: hwnd,
+        };
+        let size = std::mem::size_of::<windows::Win32::UI::Input::RAWINPUTDEVICE>() as u32;
+        // SAFETY: one valid device description for our own window.
+        if let Err(e) = unsafe { windows::Win32::UI::Input::RegisterRawInputDevices(&[mouse], size) } {
+            tracing::warn!("raw mouse input unavailable: {e}");
+        }
     }
     let mut decoder = match H264Decoder::new(Some(renderer.device())) {
         Ok(d) => {
@@ -357,6 +447,8 @@ impl VideoWindow {
         let title = title.to_string();
         let input_active = Arc::new(AtomicBool::new(false));
         let active = input_active.clone();
+        let relative_pointer = Arc::new(AtomicBool::new(false));
+        let relative = relative_pointer.clone();
         let thread = std::thread::Builder::new()
             .name("annex-viewer-window".into())
             .spawn(move || {
@@ -364,7 +456,7 @@ impl VideoWindow {
                 match setup {
                     Ok((hwnd, renderer)) => {
                         let _ = init_tx.send(Ok(()));
-                        run(rx, hooks, hwnd, renderer, active);
+                        run(rx, hooks, hwnd, renderer, active, relative);
                     }
                     Err(e) => {
                         let _ = init_tx.send(Err(e.to_string()));
@@ -376,6 +468,7 @@ impl VideoWindow {
             Ok(Ok(())) => Ok(VideoWindow {
                 tx: Mutex::new(tx),
                 input_active,
+                relative_pointer,
                 closed: AtomicBool::new(false),
                 thread: Mutex::new(Some(thread)),
             }),
@@ -390,6 +483,18 @@ impl VideoWindow {
     /// Starts or stops forwarding mouse and keyboard (the host allowed or revoked input).
     pub fn set_input_active(&self, active: bool) {
         self.input_active.store(active, Ordering::Release);
+        if !active {
+            release_cursor();
+        }
+    }
+
+    /// Sends raw mouse movement instead of positions (Extend to a host that understands it), so
+    /// the other computer's pointer can leave this screen for its own, like a real monitor.
+    pub fn set_relative_pointer(&self, on: bool) {
+        self.relative_pointer.store(on, Ordering::Release);
+        if !on {
+            release_cursor();
+        }
     }
 
     /// Shows the window in front (call when the session has started).

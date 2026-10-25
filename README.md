@@ -99,8 +99,11 @@ Choose **Extend display** (or turn on *Extend display by default* in
 
 - **Mac:** arrange it in System Settings → Displays, and pick its scaling there, from *Larger Text*
   to *More Space* (the same steps as Windows' 100–200 %), and its refresh rate: the same rates
-  the other computer's screen supports, so a 144 Hz laptop gets 144 Hz. It starts at the other
-  computer's own scaling and refresh rate.
+  the other computer's screen supports, so a 144 Hz laptop gets 144 Hz. It starts at the sharpest
+  scaling (100 %, or 200 % on a high-resolution screen) and the other computer's refresh rate. To
+  change the scaling from Annex, use **Settings → Sharing → Extended display scaling**: it applies
+  at once and every time that computer extends this Mac. The steps between 100 % and 200 % give
+  bigger text but look a little soft.
 - **Windows:** arrange it, and pick its scale and refresh rate, in Settings → System → Display.
   Needs the Extend-mode driver (below).
 
@@ -127,8 +130,8 @@ enter a PIN again next time. Rename this computer in **Settings → General → 
 - **Quality** (Settings → Viewing): *Fast (Wi-Fi)* keeps the picture moving on a busy network;
   *Best* suits a cable or a fast network. Annex also lowers quality by itself as soon as the
   network starts to lag.
-- **Direct Wi-Fi** (Mac ↔ Windows, or between PCs): the Windows PC runs its own hotspot and hands
-  the password over inside the encrypted session; the other computer joins it and Annex
+- **Direct Wi-Fi** (Mac ↔ Windows, or between PCs): the Windows PC runs its own Mobile hotspot, as
+  set up in Windows Settings, and hands its name and password over inside the encrypted session; the other computer joins it and Annex
   reconnects. Video then goes straight between the two, without the router in the middle.
   - **Before you start:** turn on *Connect over direct Wi-Fi* (Windows: Settings → Viewing; Mac:
     the computer's page under Nearby).

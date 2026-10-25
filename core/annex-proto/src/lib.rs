@@ -19,7 +19,8 @@ pub use video::{VIDEO_HEADER_LEN, VideoFlags, VideoFrame, VideoHeader};
 /// Major protocol version. Changes only for incompatible changes and is part of the ALPN.
 pub const PROTOCOL_MAJOR: u16 = 1;
 /// Minor protocol version. Bumped for backwards-compatible additions.
-pub const PROTOCOL_MINOR: u16 = 1;
+/// 2: [`InputEvent::MouseDelta`].
+pub const PROTOCOL_MINOR: u16 = 2;
 /// TLS ALPN identifier. Peers that don't speak the same major version fail the handshake.
 pub const ALPN: &[u8] = b"annex/1";
 /// Default TCP port for the M1 transport.
@@ -173,6 +174,13 @@ pub enum InputEvent {
     Key {
         usage: u16,
         down: bool,
+    },
+    /// The pointer moved by this much (the viewer's raw mouse movement), not to a place on the
+    /// stream: in Extend the host's pointer can then leave the extended display for its other
+    /// screens, like a real monitor. Only sent to hosts at protocol 1.2 or later.
+    MouseDelta {
+        dx: i32,
+        dy: i32,
     },
 }
 

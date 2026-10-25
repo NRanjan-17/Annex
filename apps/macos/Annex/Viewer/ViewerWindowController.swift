@@ -102,6 +102,12 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         window.setContentSize(NSSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded()))
     }
 
+    /// Extend to a host that understands pointer movement: send this Mac's mouse movement, so the
+    /// host's pointer can leave this screen for its own, like a real monitor.
+    func setRelativePointer(_ on: Bool) {
+        videoView.relative = on
+    }
+
     /// The host allowed (or revoked) control by this Mac's mouse and keyboard.
     func setControlling(_ on: Bool, hostName: String) {
         videoView.controlling = on
@@ -145,17 +151,23 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    func windowDidBecomeKey(_ notification: Notification) {
+        videoView.updatePointerLock()
+    }
+
     func windowWillClose(_ notification: Notification) {
         queue.async { [self] in
             if !loggedFirstFrame { Annex.log("viewer: closed without a picture; \(framesReceived) frames received", error: true) }
         }
         videoView.releaseHeldInput()
+        videoView.relative = false  // frees this Mac's pointer
         onClose?()
     }
 
     func windowDidResignKey(_ notification: Notification) {
         // Keys released while another window has focus would otherwise stay down on the host.
         videoView.releaseHeldInput()
+        videoView.updatePointerLock()
     }
 }
 
@@ -164,7 +176,38 @@ final class VideoView: NSView {
     weak var viewer: ViewerHandle?
     var streamSize = CGSize(width: 16, height: 9)
     var controlling = false {
-        didSet { if !controlling { releaseHeldInput() } }
+        didSet {
+            if !controlling { releaseHeldInput() }
+            updatePointerLock()
+        }
+    }
+    /// Send mouse movement instead of positions (see ViewerWindowController.setRelativePointer).
+    var relative = false {
+        didSet { updatePointerLock() }
+    }
+    /// This Mac's pointer is held still and hidden while its movement goes to the host.
+    private var pointerLocked = false
+
+    /// Locks this Mac's pointer while it sends movement (controlling, relative, window in front);
+    /// frees it otherwise.
+    func updatePointerLock() {
+        let lock = controlling && relative && window?.isKeyWindow == true
+        guard lock != pointerLocked else { return }
+        pointerLocked = lock
+        CGAssociateMouseAndMouseCursorPosition(lock ? 0 : 1)
+        if lock { NSCursor.hide() } else { NSCursor.unhide() }
+    }
+
+    private func sendMovement(_ event: NSEvent) {
+        guard let e = event.cgEvent else { return }
+        let dx = Int32(e.getIntegerValueField(.mouseEventDeltaX))
+        let dy = Int32(e.getIntegerValueField(.mouseEventDeltaY))
+        if dx != 0 || dy != 0 { viewer?.sendMouseDelta(dx: dx, dy: dy) }
+    }
+
+    private func pointerMoved(_ event: NSEvent) {
+        guard controlling else { return }
+        if relative { sendMovement(event) } else { sendPosition(event) }
     }
     var onLeave: (() -> Void)?
 
@@ -229,15 +272,15 @@ final class VideoView: NSView {
 
     private func button(_ b: UInt32, _ event: NSEvent, down: Bool) {
         guard controlling else { return }
-        sendPosition(event)
+        if !relative { sendPosition(event) }
         if down { heldButtons.insert(b) } else { heldButtons.remove(b) }
         viewer?.sendMouseButton(b, down: down)
     }
 
-    override func mouseMoved(with event: NSEvent) { if controlling { sendPosition(event) } }
-    override func mouseDragged(with event: NSEvent) { if controlling { sendPosition(event) } }
-    override func rightMouseDragged(with event: NSEvent) { if controlling { sendPosition(event) } }
-    override func otherMouseDragged(with event: NSEvent) { if controlling { sendPosition(event) } }
+    override func mouseMoved(with event: NSEvent) { pointerMoved(event) }
+    override func mouseDragged(with event: NSEvent) { pointerMoved(event) }
+    override func rightMouseDragged(with event: NSEvent) { pointerMoved(event) }
+    override func otherMouseDragged(with event: NSEvent) { pointerMoved(event) }
     override func mouseDown(with event: NSEvent) { button(0, event, down: true) }
     override func mouseUp(with event: NSEvent) { button(0, event, down: false) }
     override func rightMouseDown(with event: NSEvent) { button(1, event, down: true) }

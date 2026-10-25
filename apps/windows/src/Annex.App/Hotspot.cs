@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using Windows.Networking.Connectivity;
 using Windows.Networking.NetworkOperators;
 
@@ -6,8 +5,10 @@ namespace Annex.App;
 
 /// <summary>
 /// A direct Wi-Fi link through Windows' Mobile hotspot: the other computer joins this PC's own
-/// network, so video goes straight between them (one hop, no router). Each start uses a fresh
-/// random network name and passphrase; the user's own hotspot settings are restored on stop.
+/// network, so video goes straight between them (one hop, no router). It uses the hotspot exactly
+/// as the user set it up in Settings → Network &amp; internet → Mobile hotspot, never changing its
+/// name or password: the other computer remembers that network and joins it faster next time.
+/// A hotspot the user had already turned on stays on afterwards.
 /// </summary>
 internal sealed class Hotspot
 {
@@ -15,7 +16,7 @@ internal sealed class Hotspot
     public const string HostAddress = "192.168.137.1";
 
     private NetworkOperatorTetheringManager? _manager;
-    private (string Ssid, string Passphrase)? _previous;
+    private bool _startedByAnnex;
     private Task<string?>? _starting;
 
     public string? Ssid { get; private set; }
@@ -26,8 +27,7 @@ internal sealed class Hotspot
     public Task<string?> StartAsync()
     {
         if (IsOn) return Task.FromResult<string?>(null);
-        // A caller while a start is under way shares it: starting again would save the first
-        // start's temporary network as the user's own, and theirs would never come back.
+        // A caller while a start is under way shares it.
         if (_starting is { IsCompleted: false } running) return running;
         return _starting = StartCoreAsync();
     }
@@ -51,20 +51,20 @@ internal sealed class Hotspot
                 };
             _manager = NetworkOperatorTetheringManager.CreateFromConnectionProfile(profile);
             var config = _manager.GetCurrentAccessPointConfiguration();
-            _previous = (config.Ssid, config.Passphrase);
-            var ssid = "Annex-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(2));
-            var passphrase = RandomNumberGenerator.GetString("abcdefghijkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789", 20);
-            config.Ssid = ssid;
-            config.Passphrase = passphrase;
-            await _manager.ConfigureAccessPointAsync(config).AsTask().ConfigureAwait(false);
-            var result = await _manager.StartTetheringAsync().AsTask().ConfigureAwait(false);
-            if (result.Status != TetheringOperationStatus.Success)
+            if (string.IsNullOrEmpty(config.Ssid) || string.IsNullOrEmpty(config.Passphrase))
+                return "Set up Mobile hotspot once in Windows Settings → Network & internet → Mobile hotspot, then try again.";
+            _startedByAnnex = _manager.TetheringOperationalState != TetheringOperationalState.On;
+            if (_startedByAnnex)
             {
-                await RestoreAsync().ConfigureAwait(false);
-                return $"Windows couldn't start the hotspot ({result.Status}{(string.IsNullOrEmpty(result.AdditionalErrorMessage) ? "" : ": " + result.AdditionalErrorMessage)}).";
+                var result = await _manager.StartTetheringAsync().AsTask().ConfigureAwait(false);
+                if (result.Status != TetheringOperationStatus.Success)
+                {
+                    _startedByAnnex = false;
+                    return $"Windows couldn't start the hotspot ({result.Status}{(string.IsNullOrEmpty(result.AdditionalErrorMessage) ? "" : ": " + result.AdditionalErrorMessage)}).";
+                }
             }
-            Ssid = ssid;
-            Passphrase = passphrase;
+            Ssid = config.Ssid;
+            Passphrase = config.Passphrase;
             return null;
         }
         catch (Exception e)
@@ -73,36 +73,22 @@ internal sealed class Hotspot
         }
     }
 
+    /// <summary>Turns the hotspot off again, unless the user had it on before Annex needed it.</summary>
     public async Task StopAsync()
     {
         if (_manager is null || !IsOn) return;
-        try
+        if (_startedByAnnex)
         {
-            await _manager.StopTetheringAsync().AsTask().ConfigureAwait(false);
+            try
+            {
+                await _manager.StopTetheringAsync().AsTask().ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // Already off.
+            }
         }
-        catch (Exception)
-        {
-            // Already off.
-        }
-        await RestoreAsync().ConfigureAwait(false);
+        _startedByAnnex = false;
         Ssid = Passphrase = null;
-    }
-
-    /// <summary>Puts the user's own hotspot name and passphrase back.</summary>
-    private async Task RestoreAsync()
-    {
-        if (_manager is null || _previous is not { } prev) return;
-        try
-        {
-            var config = _manager.GetCurrentAccessPointConfiguration();
-            config.Ssid = prev.Ssid;
-            config.Passphrase = prev.Passphrase;
-            await _manager.ConfigureAccessPointAsync(config).AsTask().ConfigureAwait(false);
-        }
-        catch (Exception)
-        {
-            // Best effort.
-        }
-        _previous = null;
     }
 }
