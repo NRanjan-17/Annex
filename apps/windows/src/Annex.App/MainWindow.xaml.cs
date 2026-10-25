@@ -609,9 +609,12 @@ public sealed partial class MainWindow : Window
         _codeCountdown = Ui.Text(Countdown(c.Expires), "BodyTextBlockStyle", Ui.Secondary);
         text.Children.Add(_codeCountdown);
         grid.Children.Add(text);
-        var buttons = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        buttons.Children.Add(CopyButton(c.Value));
-        buttons.Children.Add(Ui.Button("Stop", StopCode));
+        var buttons = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center, Width = 96 };
+        foreach (var b in new[] { CopyButton(c.Value), Ui.Button("Stop", StopCode) })
+        {
+            b.HorizontalAlignment = HorizontalAlignment.Stretch;
+            buttons.Children.Add(b);
+        }
         Grid.SetColumn(buttons, 1);
         grid.Children.Add(buttons);
         return Ui.Panel(grid, radius: 8, padding: new Thickness(18, 14, 18, 14));
