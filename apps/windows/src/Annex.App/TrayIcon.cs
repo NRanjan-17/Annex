@@ -21,7 +21,8 @@ internal sealed unsafe partial class TrayIcon : IDisposable
     private static uint s_taskbarCreated;
 
     private readonly nint _hwnd;
-    private readonly nint _icon;
+    private nint _icon;
+    private string _iconPath;
     private string _tooltip;
 
     public event Action? LeftClick;
@@ -48,8 +49,23 @@ internal sealed unsafe partial class TrayIcon : IDisposable
             _hwnd = CreateWindowExW(0, cls, cls, 0, 0, 0, 0, 0, 0, 0, hinst, 0);
         }
         s_taskbarCreated = RegisterWindowMessageW("TaskbarCreated");
+        _iconPath = iconPath;
         _icon = LoadImageW(0, iconPath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
         Add();
+    }
+
+    /// <summary>Swaps the icon (Annex shows whether it's sharing, and whether anyone is connected).</summary>
+    public void SetIcon(string iconPath)
+    {
+        if (iconPath == _iconPath) return;
+        var icon = LoadImageW(0, iconPath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
+        if (icon == 0) return;
+        var old = _icon;
+        _icon = icon;
+        _iconPath = iconPath;
+        var data = Data(NIF_ICON);
+        Shell_NotifyIconW(NIM_MODIFY, &data);
+        if (old != 0) DestroyIcon(old);
     }
 
     public string Tooltip

@@ -148,6 +148,10 @@ int32_t annex_viewer_connect_windowed(const AnnexCore *core, const char *address
                                       const char *expected_fingerprint, bool extend, bool input,
                                       uint32_t quality,
                                       AnnexEventCallback on_event, void *ctx, AnnexViewer **out);
+/* Windows: annex_viewer_connect_code shown like annex_viewer_connect_windowed. */
+int32_t annex_viewer_connect_code_windowed(const AnnexCore *core, const char *rendezvous, const char *stun,
+                                           const char *code, bool extend, bool input, uint32_t quality,
+                                           AnnexEventCallback on_event, void *ctx, AnnexViewer **out);
 #endif
 void annex_viewer_request_keyframe(const AnnexViewer *viewer);
 void annex_viewer_frame_presented(const AnnexViewer *viewer, uint32_t frame_id);

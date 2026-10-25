@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Win32;
@@ -40,6 +42,28 @@ public sealed class AppSettings
     public bool SaveLog { get; set; }
     /// <summary>Viewer: bitrate ceiling asked of hosts (Fast suits Wi-Fi).</summary>
     public Annex.Interop.Quality Quality { get; set; } = Annex.Interop.Quality.Best;
+    /// <summary>Share and connect over the internet with codes. Off by default: it uses a server.</summary>
+    public bool InternetEnabled { get; set; }
+    /// <summary>The rendezvous server (wss://…) that swaps the two computers' addresses.</summary>
+    public string RendezvousServer { get; set; } = "";
+    /// <summary>The user's own relay (turn:host:port) for networks that block direct connections;
+    /// empty = the server's relay, if it offers one. The password is in <see cref="RelayPassword"/>.</summary>
+    public string RelayUrl { get; set; } = "";
+    public string RelayUsername { get; set; } = "";
+
+    /// <summary>Codes work once both are set.</summary>
+    [JsonIgnore]
+    public bool InternetReady => InternetEnabled && RendezvousServer.Trim().Length > 0;
+
+    /// <summary>Kept out of settings.json: encrypted for this Windows user (DPAPI) in relay.dat.</summary>
+    [JsonIgnore]
+    public string RelayPassword
+    {
+        get => Secret.Read(RelayPasswordPath);
+        set => Secret.Write(RelayPasswordPath, value);
+    }
+
+    private static string RelayPasswordPath => Path.Combine(MainWindow.DataDirectory, "relay.dat");
 
     private static string FilePath => Path.Combine(MainWindow.DataDirectory, "settings.json");
 
@@ -110,3 +134,75 @@ public sealed class AppSettings
 [JsonSerializable(typeof(AppSettings))]
 [JsonSourceGenerationOptions(WriteIndented = true)]
 internal sealed partial class SettingsJson : JsonSerializerContext;
+
+/// <summary>Small secrets encrypted for the current Windows user (CryptProtectData), so only this
+/// user on this PC can read them. The file lives in the data folder the uninstaller removes.</summary>
+internal static unsafe partial class Secret
+{
+    public static string Read(string path)
+    {
+        try
+        {
+            var data = File.ReadAllBytes(path);
+            fixed (byte* p = data)
+            {
+                var input = new Blob { Size = (uint)data.Length, Data = p };
+                if (!CryptUnprotectData(&input, 0, null, 0, 0, 0, out var output)) return "";
+                try { return Encoding.UTF8.GetString(output.Data, (int)output.Size); }
+                finally { LocalFree((nint)output.Data); }
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return "";
+        }
+    }
+
+    public static void Write(string path, string value)
+    {
+        try
+        {
+            if (value.Length == 0)
+            {
+                File.Delete(path);
+                return;
+            }
+            var data = Encoding.UTF8.GetBytes(value);
+            fixed (byte* p = data)
+            {
+                var input = new Blob { Size = (uint)data.Length, Data = p };
+                if (!CryptProtectData(&input, null, null, 0, 0, 0, out var output)) return;
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                    File.WriteAllBytes(path, new ReadOnlySpan<byte>(output.Data, (int)output.Size).ToArray());
+                }
+                finally { LocalFree((nint)output.Data); }
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // Not fatal: the relay just won't have its password after a restart.
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Blob
+    {
+        public uint Size;
+        public byte* Data;
+    }
+
+    [LibraryImport("crypt32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CryptProtectData(Blob* input, string? description, Blob* entropy, nint reserved, nint prompt,
+        uint flags, out Blob output);
+
+    [LibraryImport("crypt32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CryptUnprotectData(Blob* input, nint description, Blob* entropy, nint reserved, nint prompt,
+        uint flags, out Blob output);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial nint LocalFree(nint mem);
+}

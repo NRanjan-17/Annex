@@ -1,8 +1,9 @@
 # Connecting over the internet without a VPN (proposal)
 
 **Status:** the core, the rendezvous server and the relay fallback are built and tested on a
-simulated internet and against a local server (`feat/internet-connect`); the Mac and Windows
-screens aren't yet, and nothing has been tried between two real networks. Until it ships, the way
+simulated internet and against a local server (`feat/internet-connect`), and the Mac and Windows
+apps have their screens (This Mac/This PC → Over the internet, Connect by code or address,
+Settings → Internet). Nothing has been tried between two real networks yet. Until it ships, the way
 to reach a computer elsewhere is a mesh VPN; see [REMOTE.md](REMOTE.md).
 
 ## The problem

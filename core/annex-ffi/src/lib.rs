@@ -1354,7 +1354,8 @@ mod win_host {
             })
         };
         let extend = state.driver.is_some();
-        let cfg = HostConfig { port, stream: StreamConfig { codec: Codec::H264, width, height, fps }, extend };
+        let cfg =
+            HostConfig { port, stream: StreamConfig { codec: Codec::H264, width, height, fps }, extend, udp: None };
         let handle = Arc::new(c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, events))?);
         let _ = state.host.set(Arc::downgrade(&handle));
         Ok((handle, state))
@@ -1543,8 +1544,50 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
         if out.is_null() {
             return Err(invalid("out is null"));
         }
-        let mut cfg =
-            unsafe { viewer_config(address, expected_fingerprint, std::ptr::null(), extend, input, quality) }?;
+        let cfg = unsafe { viewer_config(address, expected_fingerprint, std::ptr::null(), extend, input, quality) }?;
+        unsafe { connect_windowed(c, core, cfg, input, on_event, ctx, out) }
+    })
+}
+
+/// Windows only: `annex_viewer_connect_code` shown like `annex_viewer_connect_windowed`.
+#[cfg(windows)]
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn annex_viewer_connect_code_windowed(
+    core: *const AnnexCore,
+    rendezvous: *const c_char,
+    stun: *const c_char,
+    code: *const c_char,
+    extend: bool,
+    input: bool,
+    quality: u32,
+    on_event: AnnexEventCallback,
+    ctx: *mut c_void,
+    out: *mut *mut AnnexViewer,
+) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        if out.is_null() {
+            return Err(invalid("out is null"));
+        }
+        let mut cfg = unsafe { code_viewer_config(rendezvous, stun, code, std::ptr::null(), extend, input, quality) }?;
+        cfg.address = String::new();
+        unsafe { connect_windowed(c, core, cfg, input, on_event, ctx, out) }
+    })
+}
+
+/// The core's own window for a viewer: frames go to it, its input and close come back.
+#[cfg(windows)]
+unsafe fn connect_windowed(
+    c: &AnnexCore,
+    core: *const AnnexCore,
+    mut cfg: ViewerConfig,
+    input: bool,
+    on_event: AnnexEventCallback,
+    ctx: *mut c_void,
+    out: *mut *mut AnnexViewer,
+) -> Result<i32, (i32, String)> {
+    {
         cfg.display = annex_media_win::primary_display_info();
         let callbacks = Callbacks::new(on_event, None, ctx);
         let events = callbacks.event_sink();
@@ -1614,7 +1657,7 @@ pub unsafe extern "C" fn annex_viewer_connect_windowed(
         let v = Box::new(AnnexViewer { handle, callbacks, core, window: Some(window) });
         unsafe { *out = Box::into_raw(v) };
         Ok(ANNEX_OK)
-    })
+    }
 }
 
 #[cfg(windows)]

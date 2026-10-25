@@ -64,8 +64,14 @@ public sealed partial class MainWindow : Window
     private string? _directStatus;
     /// <summary>Identifies the current viewer, so events still queued from a replaced one are ignored.</summary>
     private object? _viewerToken;
-    /// <summary>Nearby is being re-checked (the refresh button shows progress until then).</summary>
-    private DateTimeOffset _refreshingUntil;
+    /// <summary>Viewing through a code (failures then mean the internet, not the local network).</summary>
+    private bool _viewingByCode;
+
+    /// <summary>Where sharing with a code is: null until asked for.</summary>
+    private InternetShare? _internet;
+    /// <summary>The code's "works for 9:46" line, ticked every second without rebuilding the page.</summary>
+    private TextBlock? _codeCountdown;
+    private DispatcherQueueTimer? _codeTimer;
 
     // Updates.
     private readonly Updater _updater = new();
@@ -84,6 +90,11 @@ public sealed partial class MainWindow : Window
     private bool _showNotSharing;
     // Text boxes survive page rebuilds so typing isn't interrupted by status updates.
     private readonly TextBox _addressBox = new() { PlaceholderText = "192.168.1.20 or host:port" };
+    private readonly TextBox _codeBox = new() { PlaceholderText = "K7P-4QX", CharacterCasing = CharacterCasing.Upper, MaxLength = 7 };
+    private readonly TextBox _serverBox = new() { PlaceholderText = "wss://…", Width = 240 };
+    private readonly TextBox _relayUrlBox = new() { PlaceholderText = "turn:host:3478", Width = 240 };
+    private readonly TextBox _relayUserBox = new() { Width = 240 };
+    private readonly PasswordBox _relayPasswordBox = new() { Width = 240 };
     private readonly TextBox _nameBox = new() { Width = 240 };
 
     public static string DataDirectory =>
@@ -107,7 +118,7 @@ public sealed partial class MainWindow : Window
             args.Cancel = true;
             AppWindow.Hide();
         };
-        _tray = new TrayIcon("Annex", Ui.AssetPath("Annex.ico"));
+        _tray = new TrayIcon("Annex", Ui.AssetPath("TrayOff.ico"));
         _tray.LeftClick += ShowFromTray;
         _tray.RightClick += ShowTrayMenu;
 
@@ -120,6 +131,18 @@ public sealed partial class MainWindow : Window
             if (e.Key == Windows.System.VirtualKey.Enter) Rename(_nameBox.Text);
         };
         _nameBox.LostFocus += (_, _) => Rename(_nameBox.Text);
+        _codeBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == Windows.System.VirtualKey.Enter) { _extend = false; ConnectByCode(); }
+        };
+        _serverBox.Text = _settings.RendezvousServer;
+        _serverBox.LostFocus += (_, _) => SaveInternet();
+        _relayUrlBox.Text = _settings.RelayUrl;
+        _relayUrlBox.LostFocus += (_, _) => SaveInternet();
+        _relayUserBox.Text = _settings.RelayUsername;
+        _relayUserBox.LostFocus += (_, _) => SaveInternet();
+        _relayPasswordBox.Password = _settings.RelayPassword;
+        _relayPasswordBox.LostFocus += (_, _) => _settings.RelayPassword = _relayPasswordBox.Password;
 
         try
         {
@@ -146,9 +169,10 @@ public sealed partial class MainWindow : Window
         if (Environment.GetEnvironmentVariable("ANNEX_SELFTEST") == "1") _ui.TryEnqueue(SelfTest);
     }
 
-    /// <summary>CI smoke test: opens every page twice (rebuilds reuse long-lived controls), then
-    /// writes selftest-ok to the data folder. Any exception lands in crash.log instead.</summary>
-    private void SelfTest()
+    /// <summary>CI smoke test: opens every page twice (rebuilds reuse long-lived controls), saves
+    /// pictures of the main screens to shots\, then writes selftest-ok to the data folder. Any
+    /// exception lands in crash.log instead.</summary>
+    private async void SelfTest()
     {
         foreach (var pane in new[] { "home", "share", "settings", "devices", "about", "home", "settings", "about", "share" })
             Go(pane);
@@ -160,10 +184,69 @@ public sealed partial class MainWindow : Window
         Go("home");
         ShowTrayMenu();
         _trayMenu?.Hide();
+        await SaveScreens();
         var x = TryExtendStatus();
         File.WriteAllText(Path.Combine(DataDirectory, "selftest-extend.json"),
             x is null ? "null" : $"{{\"state\":\"{x.State}\",\"problem\":{x.Problem},\"test_signing\":{(x.TestSigning ? "true" : "false")}}}");
+        // The relay password's encryption (DPAPI) round-trips.
+        var secret = Path.Combine(DataDirectory, "selftest-secret.dat");
+        Secret.Write(secret, "relay-password");
+        File.WriteAllText(Path.Combine(DataDirectory, "selftest-secret"), Secret.Read(secret) == "relay-password" ? "ok" : "fail");
+        Secret.Write(secret, "");
         File.WriteAllText(Path.Combine(DataDirectory, "selftest-ok"), DateTimeOffset.Now.ToString("O"));
+    }
+
+    /// <summary>Pictures of This PC with a code, Settings → Internet and Nearby while sharing, for
+    /// reviewing the design from CI. Settings are changed in memory only and put back.</summary>
+    private async Task SaveScreens()
+    {
+        var dir = Path.Combine(DataDirectory, "shots");
+        Directory.CreateDirectory(dir);
+        var (internet, server) = (_settings.InternetEnabled, _settings.RendezvousServer);
+        _settings.InternetEnabled = true;
+        _settings.RendezvousServer = "wss://rendezvous.example";
+        _serverBox.Text = _settings.RendezvousServer;
+        try
+        {
+            await Shot(dir, "nearby-idle");
+            SetHosting(true);
+            _internet = new InternetShare.Code("K7P-4QX", DateTimeOffset.UtcNow.AddSeconds(586));
+            Go("share");
+            await Shot(dir, "this-pc-code");
+            Go("settings");
+            await Shot(dir, "settings-internet");
+            Go("home");
+            await Shot(dir, "nearby-sharing");
+        }
+        catch (Exception e)
+        {
+            File.WriteAllText(Path.Combine(dir, "error.txt"), e.ToString());
+        }
+        finally
+        {
+            _internet = null;
+            SetHosting(false);
+            _settings.InternetEnabled = internet;
+            _settings.RendezvousServer = server;
+            _serverBox.Text = server;
+            Go("home");
+        }
+    }
+
+    private async Task Shot(string dir, string name)
+    {
+        await Task.Delay(600); // layout, then a frame
+        var bitmap = new Microsoft.UI.Xaml.Media.Imaging.RenderTargetBitmap();
+        await bitmap.RenderAsync(RootGrid);
+        var pixels = System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions.ToArray(await bitmap.GetPixelsAsync());
+        // The acrylic backdrop isn't captured; show the see-through parts over black, as on screen.
+        for (var i = 3; i < pixels.Length; i += 4) pixels[i] = 255;
+        using var file = File.Create(Path.Combine(dir, name + ".png"));
+        var encoder = await Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(Windows.Graphics.Imaging.BitmapEncoder.PngEncoderId,
+            file.AsRandomAccessStream());
+        encoder.SetPixelData(Windows.Graphics.Imaging.BitmapPixelFormat.Bgra8, Windows.Graphics.Imaging.BitmapAlphaMode.Premultiplied,
+            (uint)bitmap.PixelWidth, (uint)bitmap.PixelHeight, 96, 96, pixels);
+        await encoder.FlushAsync();
     }
 
     /// <summary>Opens at a comfortable size in effective pixels (so display scaling doesn't shrink it),
@@ -188,6 +271,14 @@ public sealed partial class MainWindow : Window
     [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
     private static partial uint SetThreadExecutionState(uint flags);
 
+    /// <summary>The tray icon, one look per state, so a glance says whether anyone can see this screen:
+    /// faded when not sharing, normal while sharing, with a green dot while connected.</summary>
+    private void UpdateTrayIcon()
+    {
+        var live = _viewer is not null || _sessions.Count > 0;
+        _tray?.SetIcon(Ui.AssetPath(live ? "TrayLive.ico" : _host is not null ? "Annex.ico" : "TrayOff.ico"));
+    }
+
     private const uint EsContinuous = 0x80000000, EsSystemRequired = 0x1, EsDisplayRequired = 0x2;
     private bool _keepingAwake;
 
@@ -196,6 +287,7 @@ public sealed partial class MainWindow : Window
     /// thread, which lives as long as the app, so the continuous state holds.
     private void UpdateKeepAwake()
     {
+        UpdateTrayIcon();
         bool active = _viewer is not null || _sessions.Count > 0;
         if (active == _keepingAwake) return;
         _keepingAwake = active;
@@ -380,57 +472,264 @@ public sealed partial class MainWindow : Window
         }
         if (_hostError is not null)
             p.Children.Add(Ui.Info("Sharing problem", _hostError, InfoBarSeverity.Warning));
-        ExtendCard(p);
-        p.Children.Add(Ui.Card("", "Direct Wi-Fi",
-            _hotspot.IsOn
-                ? $"Network “{_hotspot.Ssid}”, password {_hotspot.Passphrase}. Other computers can join it for less lag."
-                : "Runs a hotspot on this PC so another computer connects straight to it. Less lag.",
-            Ui.Switch(_hotspot.IsOn, on => _ = SetHotspotAsync(on))));
-
-        if (_host is null)
-        {
-            p.Children.Add(Ui.Section("How it works"));
-            p.Children.Add(Ui.Card("", "1. Turn on sharing here."));
-            p.Children.Add(Ui.Card("", "2. Open Annex on the other computer.", "This PC shows up under Nearby there."));
-            p.Children.Add(Ui.Card("", "3. Pick Extend or Show its screen.", "The first time, type the PIN this PC shows."));
-        }
-        else
-        {
-            p.Children.Add(Ui.Section("Connect from another computer"));
-            p.Children.Add(Ui.Card("", $"1. Open Annex on the other computer and choose “{_core?.DeviceName}”."));
-            p.Children.Add(Ui.Card("", "2. Pick Show its screen or Extend display."));
-            p.Children.Add(Ui.Card("", "3. Enter the PIN shown here (first time only).", ShowTech ? $"Identity code: {Fingerprint}" : null));
-            var addresses = LocalAddresses();
-            p.Children.Add(Ui.Card("", addresses.Count == 0 ? "This PC isn't on a network." : "Not listed there? Connect by address:",
-                addresses.Count == 0 ? "Connect it to Wi-Fi, Ethernet or a cable." : null));
-            foreach (var (ip, direct) in addresses)
-            {
-                var text = _host.Port == DefaultPort ? ip : $"{ip}:{_host.Port}";
-                var copy = new Button { Content = "Copy" };
-                copy.Click += (_, _) =>
-                {
-                    var data = new DataPackage();
-                    data.SetText(text);
-                    Clipboard.SetContent(data);
-                    copy.Content = "Copied";
-                };
-                var card = Ui.Card(direct ? "" : "", text, direct ? "Cable" : "Network", copy);
-                p.Children.Add(card);
-            }
-        }
 
         if (_sessions.Count > 0)
         {
             p.Children.Add(Ui.Section("Connected now"));
             foreach (var (id, s) in _sessions)
             {
-                var title = s.Mode == "extend" ? $"{s.Name} is extending this display" : $"{s.Name} is showing this screen";
+                var title = s.Mode == "extend" ? $"Extending onto {s.Name}" : $"{s.Name} is viewing this screen";
                 var detail = s.Mode == "extend" ? "Arrange it in Settings → System → Display" :
                     ShowTech && _hostStream is { } st ? $"{st.Width}×{st.Height} at {st.Fps} fps" : null;
-                if (s.Input) detail = (detail is null ? "" : detail + " · ") + "using your mouse and keyboard";
+                detail = (detail is null ? "" : detail + " · ") + (s.Input ? "can use your mouse and keyboard" : "view only");
                 p.Children.Add(Ui.Card("", title, detail, Ui.Button("Switch to direct Wi-Fi", () => _ = OfferDirectWifiToViewerAsync(id, s.Name))));
             }
         }
+
+        if (_host is null)
+        {
+            p.Children.Add(Ui.Section("How it works"));
+            p.Children.Add(Ui.Card("", "Turn on sharing, then pick this PC in Annex on the other computer.",
+                "The first time, it asks for a PIN shown here. After that, it just connects."));
+        }
+        else
+        {
+            InternetSection(p);
+            p.Children.Add(Ui.Section("On the same network"));
+            var addresses = LocalAddresses();
+            p.Children.Add(Ui.Card("", $"Pick “{_core?.DeviceName}” in Annex on the other computer.",
+                addresses.Count == 0 ? "This PC isn't on a network. Connect it to Wi-Fi, Ethernet or a cable."
+                    : "The first time, type the PIN this PC shows. Not listed? Connect by one of these addresses."
+                      + (ShowTech ? $" Identity code: {Fingerprint}" : "")));
+            foreach (var (ip, direct) in addresses)
+            {
+                var text = _host.Port == DefaultPort ? ip : $"{ip}:{_host.Port}";
+                p.Children.Add(Ui.Card(direct ? "" : "", text, direct ? "Cable" : "Network", CopyButton(text)));
+            }
+        }
+
+        ExtendCard(p);
+        p.Children.Add(Ui.Card("", "Direct Wi-Fi",
+            _hotspot.IsOn
+                ? $"Network “{_hotspot.Ssid}”, password {_hotspot.Passphrase}. Other computers can join it for less lag."
+                : "Runs a hotspot on this PC so another computer connects straight to it. Less lag.",
+            Ui.Switch(_hotspot.IsOn, on => _ = SetHotspotAsync(on))));
+    }
+
+    private static Button CopyButton(string text)
+    {
+        var copy = new Button { Content = "Copy" };
+        copy.Click += (_, _) =>
+        {
+            var data = new DataPackage();
+            data.SetText(text);
+            Clipboard.SetContent(data);
+            copy.Content = "Copied";
+        };
+        return copy;
+    }
+
+    // ---- Internet ---------------------------------------------------------------------
+
+    /// <summary>Where sharing with a code is.</summary>
+    private abstract record InternetShare
+    {
+        public sealed record Starting : InternetShare;
+        public sealed record Code(string Value, DateTimeOffset Expires) : InternetShare;
+        public sealed record Joining(string Name) : InternetShare;
+        /// <summary>The viewer couldn't connect directly. <c>Relayed</c>: it got a relay (<c>Limited</c>: ours).</summary>
+        public sealed record Relay(string Name, bool Relayed, bool Limited) : InternetShare;
+        /// <summary>The code no longer works: why (null when it was used).</summary>
+        public sealed record Ended(string? Why) : InternetShare;
+    }
+
+    /// <summary>This PC → Over the internet: a one-time code for a computer on another network.</summary>
+    private void InternetSection(StackPanel p)
+    {
+        _codeCountdown = null;
+        p.Children.Add(Ui.Section("Over the internet"));
+        if (!_settings.InternetReady)
+        {
+            p.Children.Add(Ui.Card("", "Share with a computer on another network",
+                _settings.InternetEnabled ? "Add a server address in Settings → Internet."
+                    : "Turn on Internet in Settings first. Off by default: it uses a server.",
+                Ui.Button("Open Settings", () => Go("settings"))));
+            return;
+        }
+        switch (_internet)
+        {
+            case null:
+                p.Children.Add(Ui.Card("", "Share with a code", "For a computer on another network. Works once, for 10 minutes.",
+                    Ui.Button("Get a code", ShareCode, accent: true)));
+                break;
+            case InternetShare.Starting:
+                p.Children.Add(Ui.Card("", "Getting a code…", null, Ui.Spinner()));
+                break;
+            case InternetShare.Code c:
+                p.Children.Add(CodeCard(c));
+                break;
+            case InternetShare.Joining j:
+                p.Children.Add(Ui.Card("", $"{j.Name} is connecting…", "Typed the code. The PIN comes next if it's new.", Ui.Spinner()));
+                break;
+            case InternetShare.Relay { Relayed: true } r:
+                p.Children.Add(Ui.Card("", $"Connecting {r.Name} through the relay…",
+                    r.Limited ? "Their network blocks direct connections. Our relay: up to 20 minutes, lower quality."
+                        : "Their network blocks direct connections. Using your relay.", Ui.Spinner()));
+                break;
+            case InternetShare.Relay r:
+                p.Children.Add(Ui.Card("", $"{r.Name} couldn't connect directly", "No relay is available right now."));
+                break;
+            case InternetShare.Ended { Why: null }:
+                p.Children.Add(Ui.Card("", "Code used", "Get another one for the next computer.",
+                    Ui.Button("New code", ShareCode, accent: true)));
+                break;
+            case InternetShare.Ended e:
+                p.Children.Add(Ui.Card("", e.Why!, null, Ui.Button("Try again", ShareCode, accent: true)));
+                break;
+        }
+        p.Children.Add(Ui.Text("The server only introduces the two computers. The screen goes straight between them, encrypted, "
+            + "or through a relay when a network blocks that.", "CaptionTextBlockStyle", Ui.Secondary));
+    }
+
+    /// <summary>The code itself: large, easy to read aloud, with how long it still works.</summary>
+    private Border CodeCard(InternetShare.Code c)
+    {
+        var grid = new Grid { ColumnSpacing = 16 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var text = new StackPanel { Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        var code = Ui.Text(c.Value, wrap: false);
+        code.FontFamily = new FontFamily("Consolas");
+        code.FontSize = 34;
+        code.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        code.CharacterSpacing = 160;
+        code.IsTextSelectionEnabled = true;
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(code, "Code " + string.Join(" ", c.Value.ToCharArray()));
+        text.Children.Add(code);
+        _codeCountdown = Ui.Text(Countdown(c.Expires), "BodyTextBlockStyle", Ui.Secondary);
+        text.Children.Add(_codeCountdown);
+        grid.Children.Add(text);
+        var buttons = new StackPanel { Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        buttons.Children.Add(CopyButton(c.Value));
+        buttons.Children.Add(Ui.Button("Stop", StopCode));
+        Grid.SetColumn(buttons, 1);
+        grid.Children.Add(buttons);
+        return Ui.Panel(grid, radius: 8, padding: new Thickness(18, 14, 18, 14));
+    }
+
+    private static string Countdown(DateTimeOffset expires)
+    {
+        var left = Math.Max(0, (int)(expires - DateTimeOffset.UtcNow).TotalSeconds);
+        return left > 0 ? $"On the other computer: Connect by code or address. Works for {left / 60}:{left % 60:00}." : "Expired.";
+    }
+
+    /// <summary>Host: get a code for a computer on another network to type.</summary>
+    private void ShareCode()
+    {
+        if (_host is null || !_settings.InternetReady) return;
+        _internet = new InternetShare.Starting();
+        try
+        {
+            var relay = _settings.RelayUrl.Trim();
+            _host.ShareCode(_settings.RendezvousServer.Trim(), relay.Length == 0 ? null : relay,
+                relay.Length == 0 ? null : _settings.RelayUsername, relay.Length == 0 ? null : _settings.RelayPassword);
+        }
+        catch (AnnexException ex)
+        {
+            _internet = new InternetShare.Ended(FriendlyInternetError(ex.Message));
+        }
+        RenderIf("share");
+    }
+
+    private void StopCode()
+    {
+        _host?.StopCode();
+        _internet = null;
+        RenderIf("share");
+    }
+
+    private void OnInternetEvent(CoreEvent e)
+    {
+        switch (e)
+        {
+            case CoreEvent.InternetCode c:
+                _internet = new InternetShare.Code(c.Code, DateTimeOffset.UtcNow.AddSeconds(c.ExpiresIn));
+                StartCodeTimer();
+                break;
+            case CoreEvent.InternetJoined j:
+                _internet = new InternetShare.Joining(j.PeerName);
+                break;
+            case CoreEvent.InternetRelay r when _internet is InternetShare.Joining j:
+                _internet = new InternetShare.Relay(j.Name, r.Relayed, r.Limited);
+                break;
+            case CoreEvent.InternetCodeEnded ended:
+                _internet = (ended.Reason, _internet) switch
+                {
+                    ("stopped", _) => null,
+                    ("used", InternetShare.Relay { Relayed: false }) => new InternetShare.Ended(
+                        "The other computer's network blocks direct connections, and no relay was available. "
+                        + "Add your own relay in Settings → Internet."),
+                    ("used", _) => new InternetShare.Ended(null),
+                    ("expired", _) => new InternetShare.Ended("The code expired."),
+                    (var r, _) => new InternetShare.Ended(FriendlyInternetError(r)),
+                };
+                break;
+            default:
+                return;
+        }
+        RenderIf("share");
+    }
+
+    /// <summary>Ticks the code's countdown once a second while a code is showing.</summary>
+    private void StartCodeTimer()
+    {
+        if (_codeTimer is not null) return;
+        _codeTimer = _ui.CreateTimer();
+        _codeTimer.Interval = TimeSpan.FromSeconds(1);
+        _codeTimer.Tick += (t, _) =>
+        {
+            if (_internet is not InternetShare.Code c)
+            {
+                t.Stop();
+                _codeTimer = null;
+                return;
+            }
+            if (_codeCountdown is not null) _codeCountdown.Text = Countdown(c.Expires);
+        };
+        _codeTimer.Start();
+    }
+
+    private static string FriendlyInternetError(string r)
+    {
+        var l = r.ToLowerInvariant();
+        if (l.Contains("stun") || l.Contains("didn't answer"))
+            return "Couldn't find this PC's internet address. Check the internet connection.";
+        if (l.Contains("rendezvous") || l.Contains("websocket") || l.Contains("i/o") || l.Contains("dns"))
+            return "Couldn't reach the server. Check the address in Settings → Internet.";
+        return r;
+    }
+
+    private void SaveInternet()
+    {
+        _settings.RendezvousServer = _serverBox.Text.Trim();
+        _settings.RelayUrl = _relayUrlBox.Text.Trim();
+        _settings.RelayUsername = _relayUserBox.Text.Trim();
+        _settings.Save();
+    }
+
+    /// <summary>Settings → Internet: off by default, the server, and optionally the user's own relay.</summary>
+    private void InternetSettings(StackPanel p)
+    {
+        p.Children.Add(Ui.Card("", "Connect over the internet", "Share and connect with codes, on any network. Off by default.",
+            Ui.Switch(_settings.InternetEnabled, on => { _settings.InternetEnabled = on; _settings.Save(); Render(); })));
+        if (!_settings.InternetEnabled) return;
+        p.Children.Add(Ui.Card("", "Server", "Its address, from whoever runs it.", Ui.Reuse(_serverBox)));
+        p.Children.Add(Ui.Card("", "Your relay", "Optional. A TURN server, for networks that block direct connections.",
+            Ui.Reuse(_relayUrlBox)));
+        p.Children.Add(Ui.Card("", "Relay username", null, Ui.Reuse(_relayUserBox)));
+        p.Children.Add(Ui.Card("", "Relay password", "Encrypted for your Windows account.", Ui.Reuse(_relayPasswordBox)));
+        p.Children.Add(Ui.Text("The server only introduces the two computers. The screen goes straight between them, encrypted, "
+            + "or through a relay when a network blocks that, yours if you set one here.", "CaptionTextBlockStyle", Ui.Secondary));
     }
 
     private static List<GpuInfo> TryGpus()
@@ -474,41 +773,6 @@ public sealed partial class MainWindow : Window
                 p.Children.Add(Ui.Card("", "Extend display isn't working", why));
                 break;
         }
-    }
-
-    /// <summary>Refresh button for Nearby, or a small spinner while the list is being re-checked.</summary>
-    private FrameworkElement RefreshControl()
-    {
-        var refreshing = DateTimeOffset.UtcNow < _refreshingUntil;
-        var content = refreshing
-            ? (UIElement)Ui.Spinner()
-            : Ui.Glyph("\uE72C", 14);
-        var b = Ui.Flat(content, Ui.White(0.1), Ui.White(0.16), Ui.White(1), RefreshNearby, radius: 18);
-        b.Width = 40;
-        b.Height = 36;
-        b.Padding = new Thickness(0);
-        b.HorizontalContentAlignment = HorizontalAlignment.Center;
-        b.IsEnabled = !refreshing;
-        ToolTipService.SetToolTip(b, "Look again");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, "Refresh Nearby");
-        return b;
-    }
-
-    private void RefreshNearby()
-    {
-        _discovery?.Refresh();
-        _refreshingUntil = DateTimeOffset.UtcNow.AddSeconds(3);
-        BuildNav();
-        RenderIf("connect");
-        var timer = _ui.CreateTimer();
-        timer.Interval = TimeSpan.FromSeconds(3.1);
-        timer.IsRepeating = false;
-        timer.Tick += (_, _) =>
-        {
-            BuildNav();
-            RenderIf("connect");
-        };
-        timer.Start();
     }
 
     private string ShareStatus()
@@ -575,8 +839,17 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>Session-end codes from the core, in words.</summary>
-    private static string FriendlyReason(string reason, string peer) => reason switch
+    internal static string FriendlyReason(string reason, string peer, bool byCode = false) => reason switch
     {
+        "unknown_code" => "That code doesn't work. Codes work once, for 10 minutes: ask for a new one.",
+        "too_many_attempts" => "Too many codes tried. Wait 10 minutes, then try again.",
+        "code_expired" => "The code expired. Ask for a new one.",
+        _ when byCode && (reason.Contains("timed out", StringComparison.OrdinalIgnoreCase) || reason.Contains("timeout", StringComparison.OrdinalIgnoreCase))
+            => "Couldn't connect across the internet. One of the networks blocks direct connections and no relay was available. "
+               + "Add your own relay in Settings → Internet on the sharing computer.",
+        _ when byCode && (reason.Contains("rendezvous", StringComparison.OrdinalIgnoreCase) || reason.Contains("i/o", StringComparison.OrdinalIgnoreCase)
+                          || reason.Contains("websocket", StringComparison.OrdinalIgnoreCase))
+            => FriendlyInternetError(reason),
         "extend_not_supported" => $"{peer} can't extend its display. Set up Extend on that computer, or use Show its screen.",
         "busy" => $"{peer} is already sharing with 4 computers.",
         "pairing_failed" => "Wrong PIN. Try again.",
@@ -601,23 +874,24 @@ public sealed partial class MainWindow : Window
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-        // Header: a plain title; the two controls on its right.
+        // Header: a plain title; Connect by code or address on its right.
         var header = new Grid { ColumnSpacing = 12 };
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var titles = new StackPanel { Spacing = 4 };
         titles.Children.Add(Ui.Title("Nearby"));
-        titles.Children.Add(Ui.Text("Click a computer for options. Double-click to connect.", "BodyTextBlockStyle", Ui.Secondary));
+        var anyFound = _hosts.Any(h => h.Sharing) || (_showNotSharing && _hosts.Count > 0);
+        titles.Children.Add(Ui.Text(anyFound ? "Click a computer for options. Double-click to connect."
+            : "Computers sharing on this network show up here by themselves.", "BodyTextBlockStyle", Ui.Secondary));
         header.Children.Add(titles);
-        var connectByAddress = Ui.Flat(Ui.Text("Connect by address…", wrap: false), Ui.White(0.1), Ui.White(0.16), Ui.White(1),
+        var connectOther = Ui.Flat(Ui.Text("Connect by code or address…", wrap: false), Ui.White(0.1), Ui.White(0.16), Ui.White(1),
             () => _ = ShowConnectDialogAsync(), radius: 18);
-        connectByAddress.Padding = new Thickness(16, 7, 16, 8);
-        var actions = Ui.Row(RefreshControl(), connectByAddress);
-        actions.VerticalAlignment = VerticalAlignment.Center;
-        Grid.SetColumn(actions, 1);
-        header.Children.Add(actions);
+        connectOther.Padding = new Thickness(16, 7, 16, 8);
+        connectOther.IsEnabled = _viewer is null;
+        connectOther.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(connectOther, 1);
+        header.Children.Add(connectOther);
         root.Children.Add(header);
 
         var notes = new StackPanel { Spacing = 8 };
@@ -628,6 +902,9 @@ public sealed partial class MainWindow : Window
             notes.Children.Add(Ui.Card("", "Direct Wi-Fi", _directStatus));
         if (_viewer is null && _viewerStatus is not null)
             notes.Children.Add(Ui.Card("", _viewerStatus));
+        // What's live comes first: it's what this PC is doing right now.
+        var live = _viewer is not null || _sessions.Count > 0;
+        if (SessionStrip() is { } strip) notes.Children.Add(strip);
         Grid.SetRow(notes, 1);
         root.Children.Add(notes);
 
@@ -642,11 +919,11 @@ public sealed partial class MainWindow : Window
         left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        left.Children.Add(SearchStatus(visible.Count));
+        if (visible.Count > 0) left.Children.Add(SearchStatus(visible.Count));
         UIElement list;
         if (visible.Count == 0)
         {
-            list = new ScrollViewer { Content = Waiting(), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            list = new ScrollViewer { Content = live ? null : Waiting(), VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         }
         else
         {
@@ -673,12 +950,6 @@ public sealed partial class MainWindow : Window
         }
         Grid.SetRow(body, 2);
         root.Children.Add(body);
-
-        if (SessionStrip() is { } strip)
-        {
-            Grid.SetRow(strip, 3);
-            root.Children.Add(strip);
-        }
         return root;
     }
 
@@ -724,14 +995,11 @@ public sealed partial class MainWindow : Window
         title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
         title.HorizontalAlignment = HorizontalAlignment.Center;
         panel.Children.Add(title);
-        var hint = Ui.Text("Open Annex on the other computer and turn on sharing.\nIt shows up here by itself.", "BodyTextBlockStyle", Ui.Secondary);
+        var hint = Ui.Text("Open Annex on the other computer and turn on sharing.\nOn another network? Use Connect by code or address.",
+            "BodyTextBlockStyle", Ui.Secondary);
         hint.TextAlignment = TextAlignment.Center;
         hint.HorizontalAlignment = HorizontalAlignment.Center;
         panel.Children.Add(hint);
-        var connect = Ui.Pill("Connect by address…", () => _ = ShowConnectDialogAsync(), prominent: false);
-        connect.HorizontalAlignment = HorizontalAlignment.Center;
-        connect.Margin = new Thickness(0, 6, 0, 0);
-        panel.Children.Add(connect);
 
         var outer = new StackPanel { Spacing = 0 };
         outer.Children.Add(Ui.Panel(panel, radius: 18, fill: 0.03, padding: new Thickness(24, 28, 24, 28)));
@@ -1015,7 +1283,7 @@ public sealed partial class MainWindow : Window
         head.Children.Add(live);
         var first = _sessions.Values.FirstOrDefault();
         var title = Ui.Text(_viewer is not null ? _viewerStatus ?? "Connected"
-            : first.Mode == "extend" ? $"Extending to {first.Name}" : $"Showing this screen on {first.Name}", wrap: false);
+            : first.Mode == "extend" ? $"Extending onto {first.Name}" : $"{first.Name} is viewing this screen", wrap: false);
         title.FontSize = 18;
         title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
         head.Children.Add(title);
@@ -1024,7 +1292,7 @@ public sealed partial class MainWindow : Window
                 : _onDirectWifi ? $"On direct Wi-Fi “{_hotspot.Ssid}”"
                 : "Press Esc to leave the viewer · encrypted end to end"
             : first.Mode == "extend" ? "Arrange it in Settings → System → Display"
-            : first.Input ? $"{first.Name} can use your mouse and keyboard" : "Encrypted end to end";
+            : first.Input ? $"{first.Name} can use your mouse and keyboard" : "View only: it can't use your mouse or keyboard";
         head.Children.Add(Ui.Text(subtitle, "CaptionTextBlockStyle", Ui.Secondary, wrap: false));
         grid.Children.Add(head);
 
@@ -1033,11 +1301,6 @@ public sealed partial class MainWindow : Window
         {
             stats.Add(($"{l.P50Ms:F0}", "ms", ShowTech ? $"Delay (p95 {l.P95Ms:F0} ms)" : "Delay"));
             stats.Add(($"{l.Fps:F0}", "fps", "Smoothness"));
-        }
-        else if (_viewer is null && _hostStream is { } st)
-        {
-            stats.Add(($"{st.Fps}", "fps", "Smoothness"));
-            stats.Add(($"{st.Width}×{st.Height}", "", "Picture"));
         }
         var column = 1;
         foreach (var (value, unit, label) in stats)
@@ -1075,13 +1338,29 @@ public sealed partial class MainWindow : Window
 
     private ContentDialog? _connectDialog;
 
-    /// <summary>Connect by address: for a computer that isn't listed. Replaces the old Connect page.</summary>
+    /// <summary>Connect by code or address: for a computer that isn't listed. A code (from a computer
+    /// sharing over the internet) wins when both are filled in.</summary>
     private async Task ShowConnectDialogAsync()
     {
         if (_connectDialog is not null) return;
-        var panel = new StackPanel { Spacing = 14, MinWidth = 420 };
+        var panel = new StackPanel { Spacing = 10, MinWidth = 420 };
         panel.Children.Add(Ui.Text("For a computer that isn't listed: on another network, or over Tailscale or ZeroTier.",
             "BodyTextBlockStyle", Ui.Secondary));
+        panel.Children.Add(Ui.Eyebrow("Code"));
+        if (_settings.InternetReady)
+        {
+            var code = Ui.Reuse(_codeBox);
+            code.HorizontalAlignment = HorizontalAlignment.Stretch;
+            code.FontFamily = new FontFamily("Consolas");
+            panel.Children.Add(code);
+            panel.Children.Add(Ui.Text("The other computer shows it under Over the internet. It works once.", "CaptionTextBlockStyle", Ui.Secondary));
+        }
+        else
+        {
+            panel.Children.Add(Ui.Text(_settings.InternetEnabled ? "Add a server address in Settings → Internet to use codes."
+                : "To use codes, turn on Internet in Settings.", "CaptionTextBlockStyle", Ui.Secondary));
+        }
+        panel.Children.Add(Ui.Eyebrow("Address"));
         var box = Ui.Reuse(_addressBox);
         box.HorizontalAlignment = HorizontalAlignment.Stretch;
         panel.Children.Add(box);
@@ -1091,7 +1370,7 @@ public sealed partial class MainWindow : Window
         {
             XamlRoot = Content.XamlRoot,
             RequestedTheme = ElementTheme.Dark,
-            Title = "Connect by address",
+            Title = "Connect by code or address",
             Content = panel,
             PrimaryButtonText = "Show its screen",
             SecondaryButtonText = "Extend display",
@@ -1104,7 +1383,8 @@ public sealed partial class MainWindow : Window
             if (result == ContentDialogResult.Primary || result == ContentDialogResult.Secondary)
             {
                 _extend = result == ContentDialogResult.Secondary;
-                ConnectManual();
+                if (_settings.InternetReady && _codeBox.Text.Trim().Length > 0) ConnectByCode();
+                else ConnectManual();
             }
         }
         catch (Exception)
@@ -1213,6 +1493,8 @@ public sealed partial class MainWindow : Window
         GeneralSection(p);
         p.Children.Add(Ui.Section("Sharing"));
         SharingSection(p);
+        p.Children.Add(Ui.Section("Internet"));
+        InternetSettings(p);
         p.Children.Add(Ui.Section("Viewing"));
         ViewingSection(p);
         p.Children.Add(Ui.Section("Developer"));
@@ -1566,10 +1848,8 @@ public sealed partial class MainWindow : Window
     private void ShowTrayMenu()
     {
         _trayMenu ??= new TrayMenu();
-        var status = _viewer is not null ? $"Connected to {_viewingName}"
-            : _host is null ? "Not sharing"
-            : _sessions.Count > 0 ? $"Sharing with {string.Join(", ", _sessions.Values.Select(s => s.Name).Distinct())}"
-            : "Sharing · waiting for a connection";
+        var status = _viewer is not null ? _viewerStatus ?? "Connecting…"
+            : _host is null ? "Not sharing" : "Sharing";
         _trayMenu.ShowAtCursor(
             new TrayMenu.Model(_core?.DeviceName ?? "Annex", status, _host is not null,
                 _viewer is not null ? $"Viewing {_viewingName}" : null, _hosts, TrayLive()),
@@ -1577,6 +1857,7 @@ public sealed partial class MainWindow : Window
                 SetSharing: on => SetHosting(on),
                 Connect: (peer, extend) => { _extend = extend; ConnectToPeer(peer); },
                 Disconnect: Disconnect,
+                ConnectOther: () => { ShowFromTray(); Go("home"); _ = ShowConnectDialogAsync(); },
                 Open: ShowFromTray,
                 OpenSettings: () => { ShowFromTray(); Go("settings"); },
                 Quit: Quit));
@@ -1590,8 +1871,8 @@ public sealed partial class MainWindow : Window
                 _lat is { } l ? $"{l.P50Ms:F0} ms delay · {l.Fps:F0} fps" : null);
         if (_sessions.Count == 0) return null;
         var s = _sessions.Values.First();
-        return (s.Mode == "extend" ? $"Extending to {s.Name}" : $"Showing this screen on {s.Name}",
-            _hostStream is { } st && s.Mode != "extend" ? $"{st.Width}×{st.Height} · {st.Fps} fps" : null);
+        return (s.Mode == "extend" ? $"Extending onto {s.Name}" : $"{s.Name} is viewing this screen",
+            s.Input ? $"{s.Name} can use your mouse and keyboard" : "View only: it can't use your mouse or keyboard");
     }
 
     private void ShowFromTray()
@@ -1660,6 +1941,7 @@ public sealed partial class MainWindow : Window
         h?.Dispose();
         _sessions.Clear();
         _hostStream = null;
+        _internet = null;
         _ = _hotspot.StopAsync();
         if (_tray is not null) _tray.Tooltip = "Annex";
     }
@@ -1725,6 +2007,9 @@ public sealed partial class MainWindow : Window
                 RenderIf("share");
                 break;
             }
+            case CoreEvent.InternetCode or CoreEvent.InternetJoined or CoreEvent.InternetRelay or CoreEvent.InternetCodeEnded:
+                OnInternetEvent(e);
+                break;
             case CoreEvent.DirectLinkOffer offer when _host is not null:
                 // Another Windows PC offers its hotspot; joining one from here isn't supported yet.
                 _host.RefuseDirectLink(offer.SessionId, "Joining a direct Wi-Fi link isn't supported on Windows yet. Run the switch from the other computer.");
@@ -1811,6 +2096,32 @@ public sealed partial class MainWindow : Window
         Connect(address, address, null);
     }
 
+    /// <summary>Viewer: connect by a code from a computer sharing over the internet.</summary>
+    private void ConnectByCode()
+    {
+        var code = _codeBox.Text.Trim();
+        if (_core is null || code.Length == 0 || !_settings.InternetReady) return;
+        _connectDialog?.Hide();
+        Disconnect();
+        var token = new object();
+        _viewerToken = token;
+        try
+        {
+            _viewer = ViewerHandle.ConnectCodeWindowed(_core, _settings.RendezvousServer.Trim(), code,
+                e => _ui.TryEnqueue(() => { if (ReferenceEquals(_viewerToken, token)) OnViewerEvent(e); }),
+                extend: _extend, input: _settings.UseMouseAndKeyboard, quality: _settings.Quality);
+            _viewingName = "the other computer";
+            _viewingByCode = true;
+            _viewerStatus = $"Connecting with code {code.ToUpperInvariant()}…";
+            if (_tray is not null) _tray.Tooltip = "Annex — connecting";
+        }
+        catch (AnnexException ex)
+        {
+            _viewerStatus = $"Couldn't connect: {ex.Message}";
+        }
+        RenderIf("connect", "peer");
+    }
+
     private void Connect(string address, string title, string? pinnedFingerprint)
     {
         if (_core is null) return;
@@ -1823,6 +2134,7 @@ public sealed partial class MainWindow : Window
                 e => _ui.TryEnqueue(() => { if (ReferenceEquals(_viewerToken, token)) OnViewerEvent(e); }),
                 extend: _extend, input: _settings.UseMouseAndKeyboard, quality: _settings.Quality);
             _viewingName = title;
+            _viewingByCode = false;
             _viewerStatus = $"Connecting to {title}…";
             if (_tray is not null) _tray.Tooltip = $"Annex — connecting to {title}";
         }
@@ -1845,7 +2157,7 @@ public sealed partial class MainWindow : Window
                 break;
             case CoreEvent.SessionStarted s:
                 _viewerStatus = (s.Mode == "extend" ? $"Extending {s.PeerName}'s display" : $"Viewing {s.PeerName}")
-                    + (s.Link == "direct" ? " · cable" : "");
+                    + s.Link switch { "direct" => " · cable", "internet" => " · internet", "relayed" => " · relay", _ => "" };
                 _viewingName = s.PeerName;
                 _viewerFingerprint = s.Fingerprint;
                 _viewerExtend = s.Mode == "extend";
@@ -1867,15 +2179,15 @@ public sealed partial class MainWindow : Window
                 _directStatus = u.Reason;
                 _ = _hotspot.StopAsync();
                 break;
-            case CoreEvent.StreamChanged(var st):
-                _viewerStatus = $"Viewing {_viewingName} · {st.Width}×{st.Height}";
-                break;
+            case CoreEvent.StreamChanged:
+                // The title from SessionStarted keeps how it's reached (" · relay"); the size is a detail.
+                return;
             case CoreEvent.Latency(var l):
                 _lat = l;
                 break;
             case CoreEvent.SessionEnded(_, var reason):
                 // Switching to direct Wi-Fi drops the old connection on purpose.
-                _viewerStatus = _directPending is not null ? null : reason == "user" ? null : FriendlyReason(reason, _viewingName);
+                _viewerStatus = _directPending is not null ? null : reason == "user" ? null : FriendlyReason(reason, _viewingName, _viewingByCode);
                 if (reason == "user" && _onDirectWifi)
                 {
                     _onDirectWifi = false;

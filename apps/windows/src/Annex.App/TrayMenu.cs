@@ -29,6 +29,7 @@ internal sealed partial class TrayMenu : Window
         Action<bool> SetSharing,
         Action<PeerInfo, bool> Connect,
         Action Disconnect,
+        Action ConnectOther,
         Action Open,
         Action OpenSettings,
         Action Quit);
@@ -99,9 +100,7 @@ internal sealed partial class TrayMenu : Window
         text.Children.Add(Ui.Text(m.Status, "CaptionTextBlockStyle", Ui.Secondary, wrap: false));
         Grid.SetColumn(text, 1);
         header.Children.Add(text);
-        var round = Ui.Row(Round("\uE8A7", "Open Annex", () => { Hide(); a.Open(); }),
-            Round("\uE713", "Settings", () => { Hide(); a.OpenSettings(); }));
-        round.Spacing = 6;
+        var round = Round("\uE713", "Settings", () => { Hide(); a.OpenSettings(); });
         round.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(round, 2);
         header.Children.Add(round);
@@ -115,7 +114,7 @@ internal sealed partial class TrayMenu : Window
         var shareTitle = Ui.Text("Share this PC", wrap: false);
         shareTitle.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
         shareText.Children.Add(shareTitle);
-        shareText.Children.Add(Ui.Text(m.Sharing ? "Nearby computers can see it." : "Other computers can't see it.",
+        shareText.Children.Add(Ui.Text(m.Sharing ? "Computers nearby can find it." : "Other computers can't see it.",
             "CaptionTextBlockStyle", Ui.Secondary, wrap: false));
         share.Children.Add(shareText);
         var toggle = new ToggleSwitch { IsOn = m.Sharing, OnContent = "", OffContent = "", MinWidth = 0, VerticalAlignment = VerticalAlignment.Center };
@@ -156,12 +155,9 @@ internal sealed partial class TrayMenu : Window
         nearbyHead.Children.Add(looking);
         stack.Children.Add(nearbyHead);
         var sharing = m.Nearby.Where(p => p.Sharing).ToList();
-        var notSharing = m.Nearby.Count - sharing.Count;
         if (sharing.Count == 0)
         {
-            var waiting = Ui.Text(notSharing > 0
-                ? $"Waiting for a computer to share · {notSharing} not sharing"
-                : "Waiting for a computer… Open Annex on it and turn on sharing.", "CaptionTextBlockStyle", Ui.Secondary);
+            var waiting = Ui.Text("No computers sharing nearby.", "CaptionTextBlockStyle", Ui.Secondary);
             waiting.Margin = new Thickness(4, 0, 4, 4);
             stack.Children.Add(waiting);
         }
@@ -171,21 +167,23 @@ internal sealed partial class TrayMenu : Window
             foreach (var peer in sharing.Take(6))
                 rows.Children.Add(PeerItem(peer, m.Viewing is null, a));
             stack.Children.Add(rows);
-            if (notSharing > 0)
-            {
-                var more = Ui.Text($"+{notSharing} not sharing", "CaptionTextBlockStyle", Ui.Tertiary, wrap: false);
-                more.Margin = new Thickness(4, 0, 0, 0);
-                stack.Children.Add(more);
-            }
         }
+        // Codes and addresses live in one dialog in the main window; the menu just opens it.
+        var other = Ui.Flat(Ui.Row(Ui.Glyph("\uE8C8", 12), Ui.Text("Connect by code or address…", wrap: false)),
+            Ui.White(0.05), Ui.White(0.1), Ui.White(0.92), () => { Hide(); a.ConnectOther(); }, radius: 15);
+        other.HorizontalAlignment = HorizontalAlignment.Stretch;
+        other.HorizontalContentAlignment = HorizontalAlignment.Left;
+        other.Padding = new Thickness(12, 6, 12, 7);
+        other.IsEnabled = m.Viewing is null;
+        stack.Children.Add(other);
 
         stack.Children.Add(new Border { Height = 1, Background = Ui.White(0.08), Margin = new Thickness(-12, 2, -12, 0) });
         var footer = new Grid { Padding = new Thickness(4, 0, 0, 0) };
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var version = Ui.Text($"Annex {AnnexNative.Version}", "CaptionTextBlockStyle", Ui.Tertiary, wrap: false);
-        version.VerticalAlignment = VerticalAlignment.Center;
-        footer.Children.Add(version);
+        var open = Ui.Pill("Open Annex", () => { Hide(); a.Open(); }, prominent: false);
+        open.VerticalAlignment = VerticalAlignment.Center;
+        footer.Children.Add(open);
         // A faint capsule like View on each computer: plain text here got lost on the acrylic.
         var quit = Ui.Pill("Quit Annex", () => { Hide(); a.Quit(); }, prominent: false);
         quit.VerticalAlignment = VerticalAlignment.Center;

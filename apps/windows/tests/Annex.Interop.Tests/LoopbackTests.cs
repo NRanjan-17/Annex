@@ -88,6 +88,23 @@ public class LoopbackTests
     }
 
     [NativeFact]
+    public void CodesGoThroughTheBindings()
+    {
+        using var core = CoreClient.Ephemeral("x");
+        Assert.Throws<AnnexException>(() => ViewerHandle.ConnectCode(core, "", "K7P-4QX", new DisplayInfo(1920, 1080), _ => { }, (_, _, _, _) => { }));
+        // Nothing listens there: the session ends instead of hanging.
+        var events = new BlockingCollection<CoreEvent>();
+        using var viewer = ViewerHandle.ConnectCode(core, "ws://127.0.0.1:9", "K7P-4QX", new DisplayInfo(1920, 1080), events.Add, (_, _, _, _) => { });
+        WaitFor<CoreEvent.SessionEnded>(events);
+
+        var hostEvents = new BlockingCollection<CoreEvent>();
+        using var host = new HostHandle(core, 0, 1280, 720, 30, false, hostEvents.Add);
+        host.ShareCode("ws://127.0.0.1:9");
+        WaitFor<CoreEvent.InternetCodeEnded>(hostEvents);
+        host.StopCode();
+    }
+
+    [NativeFact]
     public void ErrorsSurfaceAsExceptions()
     {
         using var core = CoreClient.Ephemeral("x");

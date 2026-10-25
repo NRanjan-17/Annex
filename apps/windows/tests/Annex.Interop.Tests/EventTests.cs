@@ -43,6 +43,18 @@ public class EventTests
         Assert.Equal("DISPLAY2 — 1920×1080", new MonitorInfo(1, @"\\.\DISPLAY2", 1920, 1080, 60, false).Label);
     }
 
+    [Fact]
+    public void ParsesInternetEvents()
+    {
+        Assert.Equal(new CoreEvent.InternetCode("K7P-4QX", 600), CoreEvent.Parse("""{"type":"internet_code","code":"K7P-4QX","expires_in":600}"""));
+        Assert.Equal(new CoreEvent.InternetJoined("Office Mac"), CoreEvent.Parse("""{"type":"internet_joined","peer_name":"Office Mac"}"""));
+        Assert.Equal(new CoreEvent.InternetRelay(true, true), CoreEvent.Parse("""{"type":"internet_relay","relayed":true,"limited":true}"""));
+        Assert.Equal(new CoreEvent.InternetCodeEnded("expired"), CoreEvent.Parse("""{"type":"internet_code_ended","reason":"expired"}"""));
+        var s = Assert.IsType<CoreEvent.SessionStarted>(CoreEvent.Parse(
+            """{"type":"session_started","session_id":0,"mode":"mirror","peer_name":"Mac","fingerprint":"ab","stream":{"codec":"h264","width":1,"height":1,"fps":60},"transport":"quic","link":"relayed"}"""));
+        Assert.Equal("QUIC · relay", s.ConnectionDescription);
+    }
+
     [Theory]
     [InlineData("""{"type":"from_the_future","x":1}""", "from_the_future")]
     [InlineData("not json", "invalid")]
