@@ -19,7 +19,16 @@ use tokio::sync::mpsc;
 const STUN: &str = "198.51.100.1:3478";
 const TURN: &str = "198.51.100.2:3478";
 const TURN_USER: &str = "annex";
-const TURN_PASS: &str = "s3cret";
+
+/// The test relay's password: made up per run, so no password sits in the source.
+fn turn_pass() -> &'static str {
+    static PASS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PASS.get_or_init(|| {
+        let mut bytes = [0u8; 12];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes).unwrap();
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    })
+}
 
 /// How a router maps and filters, the two kinds that matter for punching.
 #[derive(Clone, Copy)]
@@ -229,7 +238,7 @@ fn turn_server(net: &Arc<Net>) -> Arc<std::sync::atomic::AtomicUsize> {
     let counted = refreshes.clone();
     let sock = net.socket(TURN, None);
     let weak = Arc::downgrade(net);
-    let key = stun::long_term_key(TURN_USER, "annex.test", TURN_PASS);
+    let key = stun::long_term_key(TURN_USER, "annex.test", turn_pass());
     tokio::spawn(async move {
         // client address → (its relay socket, IPs allowed to send to it)
         let allocations: Arc<Mutex<HashMap<SocketAddr, Allocation>>> = Arc::default();
@@ -437,7 +446,7 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome
         let login = TurnServer {
             addr: TURN.parse().unwrap(),
             username: TURN_USER.into(),
-            password: if relay == Relay::WrongLogin { "wrong".into() } else { TURN_PASS.into() },
+            password: if relay == Relay::WrongLogin { format!("{}x", turn_pass()) } else { turn_pass().into() },
         };
         let ips = viewer_candidates.iter().map(|a| a.ip()).collect();
         match host.relay(login, ips, relay == Relay::Ours).await {
@@ -554,7 +563,7 @@ async fn a_second_viewer_shares_the_hosts_relay_address() {
     };
     let (hev, _hrx) = sink();
     let host = start_host(core("Host"), cfg, hev).await.unwrap();
-    let login = || TurnServer { addr: TURN.parse().unwrap(), username: TURN_USER.into(), password: TURN_PASS.into() };
+    let login = || TurnServer { addr: TURN.parse().unwrap(), username: TURN_USER.into(), password: turn_pass().into() };
     let first = host.relay(login(), vec!["203.0.113.20".parse().unwrap()], false).await.unwrap();
     // A relay refuses a second allocation from the same socket (437); this one reuses the first,
     // letting the new viewer in (with a nonce that has changed meanwhile).
