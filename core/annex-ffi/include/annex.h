@@ -104,6 +104,13 @@ int32_t annex_host_set_session_stream(const AnnexHost *host, uint64_t session_id
                                       uint32_t width, uint32_t height, uint32_t fps);
 /* Ends one session; its viewer is told "host_ended_session". */
 void annex_host_end_session(const AnnexHost *host, uint64_t session_id);
+/* Shares over the internet with one code via the rendezvous server (wss://...). stun (NULL:
+ * Cloudflare's) is host:port. turn_url (NULL or "": none) is the user's own relay, turn:host:port.
+ * Events: internet_code, internet_joined, internet_relay, then internet_code_ended. */
+int32_t annex_host_share_code(const AnnexHost *host, const char *rendezvous, const char *stun,
+                              const char *turn_url, const char *turn_username, const char *turn_password);
+/* Stops the code (internet_code_ended "stopped"); connected sessions carry on. */
+void annex_host_stop_code(const AnnexHost *host);
 void annex_host_free(AnnexHost *host);
 #ifdef _WIN32
 /* Windows: why Extend is or isn't available here (driver state, test signing). JSON; free it. */
@@ -128,6 +135,12 @@ int32_t annex_viewer_connect(const AnnexCore *core, const char *address,
                              const char *expected_fingerprint, const char *display_json, bool extend,
                              bool input, uint32_t quality, AnnexEventCallback on_event, AnnexFrameCallback on_frame, void *ctx,
                              AnnexViewer **out);
+/* Connects by a code from annex_host_share_code. stun may be NULL. A wrong, used or expired code
+ * ends with session_ended reason "unknown_code". */
+int32_t annex_viewer_connect_code(const AnnexCore *core, const char *rendezvous, const char *stun,
+                                  const char *code, const char *display_json, bool extend, bool input,
+                                  uint32_t quality, AnnexEventCallback on_event, AnnexFrameCallback on_frame,
+                                  void *ctx, AnnexViewer **out);
 #ifdef _WIN32
 /* Windows: decode + render in a full-screen window owned by the core. Esc closes it
  * (Ctrl+Alt+Shift+Q while forwarding input, which the window then does by itself). */

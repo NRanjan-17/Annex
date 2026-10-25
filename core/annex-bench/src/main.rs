@@ -104,6 +104,7 @@ async fn main() {
             quality: annex_session::Quality::Best,
             latency_csv: None,
             internet: None,
+            join: None,
         },
         Arc::new(|_| {}),
         frame_sink,

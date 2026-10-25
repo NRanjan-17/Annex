@@ -82,6 +82,24 @@ final class AnnexBTests: XCTestCase {
         XCTAssertFalse(refused.contains("Direct Wi-Fi"))
     }
 
+    @MainActor func testCodeFailuresSayWhatToDo() {
+        XCTAssertTrue(AppModel.friendlyReason("unknown_code", peer: "x").contains("ask for a new one"))
+        // Over the internet a timeout means no path, not "same network".
+        let lost = AppModel.friendlyReason("timed out: quic handshake", peer: "x", byCode: true)
+        XCTAssertTrue(lost.contains("relay"))
+        XCTAssertFalse(lost.contains("same network"))
+    }
+
+    func testInternetEventDecoding() {
+        func decode(_ s: String) -> CoreEvent { CoreEvent.decode(Data(s.utf8)) }
+        XCTAssertEqual(decode(#"{"type":"internet_code","code":"K7P-4QX","expires_in":600}"#),
+                       .internetCode(code: "K7P-4QX", expiresIn: 600))
+        XCTAssertEqual(decode(#"{"type":"internet_joined","peer_name":"Office PC"}"#), .internetJoined(peerName: "Office PC"))
+        XCTAssertEqual(decode(#"{"type":"internet_relay","relayed":true,"limited":true}"#),
+                       .internetRelay(relayed: true, limited: true))
+        XCTAssertEqual(decode(#"{"type":"internet_code_ended","reason":"expired"}"#), .internetCodeEnded(reason: "expired"))
+    }
+
     func testEventDecoding() {
         let ended = #"{"type":"session_ended","session_id":3,"reason":"user"}"#
         XCTAssertEqual(CoreEvent.decode(Data(ended.utf8)), .sessionEnded(sessionId: 3, reason: "user"))

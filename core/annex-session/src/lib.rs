@@ -9,6 +9,7 @@ mod conn;
 mod core;
 mod events;
 mod host;
+mod internet;
 mod pairing;
 mod punch;
 pub mod rate;
@@ -24,12 +25,13 @@ pub use events::{Event, EventSink, FrameOut, FrameSink, LinkKind, TransportKind}
 pub use host::{
     HostConfig, HostHandle, MAX_H264, MAX_SESSIONS, SessionId, SubmitResult, extend_stream_for, start_host,
 };
+pub use internet::{DEFAULT_STUN, InternetServers, OwnRelay, resolve_stun, share_code};
 pub use punch::TurnServer;
 #[doc(hidden)]
 pub use punch::set_relay_refresh;
 pub use stats::LatencyStats;
 pub use transport::is_link_local;
-pub use viewer::{InternetSocket, ViewerConfig, ViewerHandle, connect_viewer};
+pub use viewer::{InternetSocket, JoinCode, ViewerConfig, ViewerHandle, connect_viewer};
 
 pub use annex_crypto::KeyStorage;
 pub use annex_proto::{Codec, DEFAULT_PORT, DisplayInfo, InputEvent, Mode, MouseButton, Quality, StreamConfig, keys};

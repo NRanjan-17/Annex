@@ -227,6 +227,17 @@ final class HostHandle {
         if let raw { annex_host_end_session(raw, session) }
     }
 
+    /// Shares over the internet with one code (`internetCode`, …, `internetCodeEnded` events).
+    /// `ownRelay`: the user's TURN server, if they set one up.
+    func shareCode(server: String, ownRelay: (url: String, username: String, password: String)?) throws {
+        guard let raw else { return }
+        try check(annex_host_share_code(raw, server, nil, ownRelay?.url, ownRelay?.username, ownRelay?.password))
+    }
+
+    func stopCode() {
+        if let raw { annex_host_stop_code(raw) }
+    }
+
     /// One access unit for every mirror session. Thread-safe and non-blocking.
     @discardableResult
     func submit(_ data: Data, captureMicros: Int64, keyframe: Bool) -> SubmitResult {
@@ -272,6 +283,19 @@ final class ViewerHandle {
         var out: OpaquePointer?
         try check(annex_viewer_connect(core.raw, address, expectedFingerprint, displayJSON, extend, input, UInt32(quality),
                                        eventTrampoline, frameTrampoline, box.context, &out))
+        raw = out
+    }
+
+    /// Connects by a code from a Mac or PC sharing over the internet.
+    init(core: CoreClient, code: String, server: String, display: DisplayInfo, extend: Bool = false,
+         input: Bool = false, quality: Int = 0, onEvent: @escaping (CoreEvent) -> Void,
+         onFrame: @escaping (UnsafeRawBufferPointer, UInt32, Int64?, Bool) -> Void) throws {
+        self.core = core
+        box = CallbackBox(onEvent: onEvent, onFrame: onFrame)
+        let displayJSON = String(decoding: try Self.encoder.encode(display), as: UTF8.self)
+        var out: OpaquePointer?
+        try check(annex_viewer_connect_code(core.raw, server, nil, code, displayJSON, extend, input, UInt32(quality),
+                                            eventTrampoline, frameTrampoline, box.context, &out))
         raw = out
     }
 

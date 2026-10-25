@@ -214,11 +214,15 @@ JSON objects with a `type` field, delivered through the C ABI (`annex.h`):
 | `type` | Fields |
 |---|---|
 | `listening` | `port` |
-| `connecting` | `address` |
+| `connecting` | `address` (the code, when connecting by code) |
+| `internet_code` | `code` (`"K7P-4QX"`), `expires_in` (seconds): host, sharing over the internet; show it |
+| `internet_joined` | `peer_name`: a viewer typed the code and is connecting |
+| `internet_relay` | `relayed`, `limited`: the viewer couldn't connect directly; `relayed` if it got this host's relay address (`limited`: our relay) |
+| `internet_code_ended` | `reason`: `used`, `expired`, `stopped`, or what went wrong |
 | `pairing_pin` | `request_id`, `pin` (`"123 456"`), `peer_name`, `fingerprint_display`: host shows it; `annex_core_cancel_request` to refuse |
 | `pairing_pin_required` | `request_id`, `peer_name`, `fingerprint_display`: viewer asks the user; answer with `annex_core_submit_pin` |
 | `pairing_finished` | `request_id`, `success`, `peer_name` |
-| `session_started` | `session_id` (0 on viewers), `mode`, `peer_name`, `fingerprint`, `stream`, `transport` (`quic`/`tcp`), `link` (`direct`/`network`), `viewer_display` (host side only) |
+| `session_started` | `session_id` (0 on viewers), `mode`, `peer_name`, `fingerprint`, `stream`, `transport` (`quic`/`tcp`), `link` (`direct`/`network`/`internet`/`relayed`), `viewer_display` (host side only) |
 | `stream_config` | `stream` |
 | `keyframe_requested` | `session_id` |
 | `bitrate_hint` | `session_id`, `scale_percent` (host: set the session's encoder bitrate) |

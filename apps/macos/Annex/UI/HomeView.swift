@@ -61,6 +61,10 @@ struct HomeView: View {
         .animation(.spring(response: 0.5, dampingFraction: 0.86), value: model.isViewing)
         .animation(.spring(response: 0.5, dampingFraction: 0.86), value: model.hostStatus.viewerName)
         .sheet(isPresented: $showOtherWays) { OtherWaysSheet(model: model) }
+        #if DEBUG
+        // Screenshots: `ANNEX_PREVIEW_SHEET=1` opens Connect by Code or Address.
+        .onAppear { if ProcessInfo.processInfo.environment["ANNEX_PREVIEW_SHEET"] != nil { showOtherWays = true } }
+        #endif
         .onChange(of: model.discovered) { _, peers in
             if let id = selectedID, !peers.contains(where: { $0.id == id }) { selectedID = nil }
         }
@@ -176,7 +180,7 @@ private struct NearbyHeader: View {
                     .disabled(model.refreshingNearby)
                     .help("Look again")
                     .accessibilityLabel("Refresh Nearby")
-                    Button("Connect by Address…", action: otherWays)
+                    Button("Connect by Code or Address…", action: otherWays)
                         .secondaryGlassButton()
                 }
             }
@@ -249,7 +253,7 @@ private struct Waiting: View {
             }
             GlassGroup(spacing: 8) {
                 HStack(spacing: 8) {
-                    Button("Connect by Address…", action: otherWays)
+                    Button("Connect by Code or Address…", action: otherWays)
                         .secondaryGlassButton()
                     if model.isHosting && model.settings.peerToPeerWiFi && model.visibleToNewMacsUntil == nil {
                         Button("Let a New Mac Find This One") { model.letNewMacsFindThisOne() }

@@ -39,6 +39,12 @@ final class AppModel: ObservableObject {
     /// The current viewer's relay over peer-to-peer Wi-Fi, if it has one.
     private var peerToPeerTunnel: PeerToPeerTunnel?
     @Published var manualAddress = ""
+    /// Connect by Address sheet: a code from a computer sharing over the internet.
+    @Published var manualCode = ""
+    /// The current viewer connected by code (its errors read differently).
+    private var viewingByCode = false
+    /// Sharing over the internet: what the This Mac page shows.
+    @Published private(set) var internetShare: InternetShare?
     /// Viewer: ask hosts for a new virtual display instead of mirroring their screen.
     @Published var extendMode = false
     @Published private(set) var viewerStatus: String?
@@ -249,6 +255,7 @@ final class AppModel: ObservableObject {
     }
 
     private func stopHosting() {
+        internetShare = nil
         peerToPeerAdvertiser?.stop()
         peerToPeerAdvertiser = nil
         visibleToNewMacsUntil = nil
@@ -258,6 +265,126 @@ final class AppModel: ObservableObject {
         hostStatus = HostController.Status()
         hostDirectWiFi = nil
     }
+
+    // MARK: Internet
+
+    /// Where a code-sharing attempt is.
+    enum InternetShare: Equatable {
+        case starting
+        case code(String, expires: Date)
+        case joining(String)
+        /// The viewer couldn't connect directly. `relayed`: it got a relay address (`limited`: ours).
+        case relay(String, relayed: Bool, limited: Bool)
+        /// The code no longer works: why (nil when it was used).
+        case ended(String?)
+    }
+
+    var internetReady: Bool {
+        settings.internetEnabled && !settings.rendezvousServer.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Host: get a code for a computer on another network to type.
+    func shareCode() {
+        guard let host, internetReady else { return }
+        internetShare = .starting
+        do {
+            try host.shareCode(server: settings.rendezvousServer.trimmingCharacters(in: .whitespaces),
+                               ownRelay: settings.ownRelay)
+        } catch {
+            internetShare = .ended(error.localizedDescription)
+        }
+    }
+
+    func stopCode() {
+        host?.stopCode()
+        internetShare = nil
+    }
+
+    private func handleInternetEvent(_ e: CoreEvent) {
+        switch e {
+        case .internetCode(let code, let seconds):
+            internetShare = .code(code, expires: Date().addingTimeInterval(TimeInterval(seconds)))
+        case .internetJoined(let name):
+            internetShare = .joining(name)
+        case .internetRelay(let relayed, let limited):
+            if case .joining(let name) = internetShare {
+                internetShare = .relay(name, relayed: relayed, limited: limited)
+            }
+        case .internetCodeEnded(let reason):
+            switch (reason, internetShare) {
+            case ("stopped", _): internetShare = nil
+            case ("used", .relay(_, false, _)):
+                internetShare = .ended("The other computer's network blocks direct connections, and no relay was available. "
+                                       + "Add your own relay in Settings → Internet.")
+            case ("used", _): internetShare = .ended(nil)
+            case ("expired", _): internetShare = .ended("The code expired.")
+            case (let r, _): internetShare = .ended(Self.friendlyInternetError(r))
+            }
+        default: break
+        }
+    }
+
+    static func friendlyInternetError(_ r: String) -> String {
+        let l = r.lowercased()
+        if l.contains("stun") || l.contains("didn't answer") {
+            return "Couldn't find this Mac's internet address. Check the internet connection."
+        }
+        if l.contains("rendezvous") || l.contains("websocket") || l.contains("i/o") || l.contains("dns") {
+            return "Couldn't reach the server. Check the address in Settings → Internet."
+        }
+        return r
+    }
+
+    /// Viewer: connect by a code from a computer sharing over the internet.
+    func connectByCode() {
+        let code = manualCode.trimmingCharacters(in: .whitespaces)
+        guard let core, internetReady, !code.isEmpty else { return }
+        disconnectViewer()
+        switchOnStart = false
+        holdingWindow = false
+        let generation = viewerGeneration
+        let window = ViewerWindowController(title: "Annex — \(code.uppercased())")
+        window.onClose = { [weak self] in self?.disconnectViewer() }
+        do {
+            let v = try ViewerHandle(
+                core: core, code: code, server: settings.rendezvousServer.trimmingCharacters(in: .whitespaces),
+                display: Displays.mainDisplayInfo(), extend: extendMode, input: settings.controlWhenViewing,
+                quality: settings.quality,
+                onEvent: { [weak self] e in
+                    DispatchQueue.main.async {
+                        guard let self, self.viewerGeneration == generation else { return }
+                        self.handleViewerEvent(e)
+                    }
+                },
+                onFrame: { [weak window] buf, id, _, key in
+                    window?.enqueue(Data(buf), frameID: id, keyframe: key)
+                })
+            window.attach(v)
+            viewer = v
+            viewerWindow = window
+            viewerPeerName = "the other computer"
+            viewerStatus = "Connecting with code \(code.uppercased())…"
+            viewingByCode = true
+        } catch {
+            viewerStatus = "Couldn't connect: \(error.localizedDescription)"
+        }
+    }
+
+    #if DEBUG
+    /// Screenshots: `ANNEX_PREVIEW_PANE=share|settings` opens that page; with `ANNEX_PREVIEW_CODE=1`
+    /// (and sharing on) it also gets a code.
+    func openPreviewPane() {
+        let env = ProcessInfo.processInfo.environment
+        switch env["ANNEX_PREVIEW_PANE"] {
+        case "share": pane = .share
+        case "settings": pane = .settings
+        default: return
+        }
+        if env["ANNEX_PREVIEW_CODE"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.shareCode() }
+        }
+    }
+    #endif
 
     // MARK: Peer-to-peer visibility
 
@@ -383,6 +510,7 @@ final class AppModel: ObservableObject {
             viewerWindow = window
             viewerPeerName = title
             viewerStatus = "Connecting to \(title)…"
+            viewingByCode = false
         } catch {
             viewerStatus = "Couldn't connect: \(error.localizedDescription)"
         }
@@ -418,7 +546,12 @@ final class AppModel: ObservableObject {
     private func handleViewerEvent(_ e: CoreEvent) {
         switch e {
         case .sessionStarted(let s):
-            let via = s.link == "direct" ? " · cable" : ""
+            let via = switch s.link {
+            case "direct": " · cable"
+            case "internet": " · internet"
+            case "relayed": " · relay"
+            default: ""
+            }
             viewerStatus = (s.mode == "extend" ? "Extending \(s.peerName)" : "Viewing \(s.peerName)") + via
             viewerPeerName = s.peerName
             viewerFingerprint = s.fingerprint
@@ -470,7 +603,7 @@ final class AppModel: ObservableObject {
                     directStatus = "Couldn't reach \(viewerPeerName) on direct Wi-Fi. Connect again from Nearby."
                     directReconnect = nil
                 }
-                viewerStatus = reason == "user" ? nil : Self.friendlyReason(reason, peer: viewerPeerName)
+                viewerStatus = reason == "user" ? nil : Self.friendlyReason(reason, peer: viewerPeerName, byCode: viewingByCode)
             }
             let w = viewerWindow
             viewerWindow = nil
@@ -575,6 +708,8 @@ final class AppModel: ObservableObject {
 
     private func handleSessionEvent(_ e: CoreEvent) {
         switch e {
+        case .internetCode, .internetJoined, .internetRelay, .internetCodeEnded:
+            handleInternetEvent(e)
         case .directLinkRequested(let session):
             host?.refuseDirectLink(session: session)
         case .directLinkUnavailable(_, let reason):
@@ -660,7 +795,7 @@ final class AppModel: ObservableObject {
     }
 
     /// Session-end codes from the core, in words.
-    static func friendlyReason(_ reason: String, peer: String) -> String {
+    static func friendlyReason(_ reason: String, peer: String, byCode: Bool = false) -> String {
         switch reason {
         case "extend_not_supported":
             return "\(peer) can't extend its display. Set up Extend on that computer, or use Show Its Screen."
@@ -670,9 +805,19 @@ final class AppModel: ObservableObject {
         case "pairing_locked": return "Too many wrong PINs. Try again in 10 minutes."
         case "host_stopped": return "\(peer) stopped sharing."
         case "host_ended_session": return "\(peer) ended the session."
+        case "unknown_code": return "That code doesn't work. Codes work once, for 10 minutes: ask for a new one."
+        case "too_many_attempts": return "Too many codes tried. Wait 10 minutes, then try again."
+        case "code_expired": return "The code expired. Ask for a new one."
         case "closed", "connection closed": return "Disconnected from \(peer)."
         default:
             let r = reason.lowercased()
+            if byCode && (r.contains("timed out") || r.contains("timeout")) {
+                return "Couldn't connect across the internet. One of the networks blocks direct connections "
+                    + "and no relay was available. Add your own relay in Settings → Internet on the sharing computer."
+            }
+            if byCode && (r.contains("rendezvous") || r.contains("i/o") || r.contains("websocket")) {
+                return Self.friendlyInternetError(reason)
+            }
             if r.contains("timed out") || r.contains("timeout") {
                 // No answer at all: also what a network that keeps computers apart looks like.
                 return "Couldn't reach \(peer). Check that it's sharing and on the same network. "

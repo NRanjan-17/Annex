@@ -29,6 +29,9 @@ struct MainView: View {
             model.refreshTrusted()
             model.refreshPermissions()
             model.refreshDisplays()
+            #if DEBUG
+            model.openPreviewPane()
+            #endif
         }
     }
 
@@ -82,6 +85,13 @@ struct WindowChrome: NSViewRepresentable {
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
         allowFullScreen(window)
+        #if DEBUG
+        // Screenshots: `ANNEX_PREVIEW_SIZE=1080x940`.
+        if let size = ProcessInfo.processInfo.environment["ANNEX_PREVIEW_SIZE"]?.split(separator: "x").compactMap({ Double($0) }),
+           size.count == 2, let screen = window.screen?.visibleFrame {
+            window.setFrame(NSRect(x: screen.minX + 20, y: screen.maxY - size[1], width: size[0], height: size[1]), display: true)
+        }
+        #endif
     }
 
     static let id = NSUserInterfaceItemIdentifier("annex.main")
@@ -476,6 +486,9 @@ private struct SharePage: View {
                     }
                 }
             }
+            if model.isHosting {
+                InternetShareSection(model: model, settings: settings)
+            }
             if model.isHosting, let port = model.hostStatus.listeningPort {
                 HowToConnect(model: model, port: port)
             }
@@ -542,6 +555,105 @@ private struct HowToConnect: View {
     }
 }
 
+/// Sharing with a computer on another network: a one-time code, and what happens with it.
+private struct InternetShareSection: View {
+    @ObservedObject var model: AppModel
+    @ObservedObject var settings: AppSettings
+    @State private var copied = false
+
+    var body: some View {
+        GroupSection("Over the internet",
+                     footer: settings.internetEnabled ? "The server only introduces the two computers. The screen goes "
+                         + "straight between them, encrypted, or through a relay when a network blocks that." : nil) {
+            content
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        if !model.internetReady {
+            GroupRow(title: "Share with a computer on another network",
+                     subtitle: settings.internetEnabled ? "Add a server address in Settings → Internet."
+                                                        : "Turn on Internet in Settings first. Off by default: it uses a server.") {
+                Button("Open Settings") { withAnimation(.snappy) { model.pane = .settings } }
+            }
+        } else {
+            switch model.internetShare {
+            case nil:
+                getCode(title: "Share with a code", subtitle: "For a computer on another network. Works once, for 10 minutes.")
+            case .starting:
+                GroupRow(title: "Getting a code…", status: .spinner)
+            case .code(let code, let expires):
+                CodeCell(code: code, expires: expires, copied: $copied, stop: { model.stopCode() })
+            case .joining(let name):
+                GroupRow(title: "\(name) is connecting…", subtitle: "Typed the code. The PIN comes next if it's new.",
+                         status: .spinner)
+            case .relay(let name, true, let limited):
+                GroupRow(title: "Connecting \(name) through the relay…",
+                         subtitle: limited ? "Their network blocks direct connections. Our relay: up to 20 minutes, lower quality."
+                                           : "Their network blocks direct connections. Using your relay.",
+                         status: .spinner)
+            case .relay(let name, false, _):
+                GroupRow(title: "\(name) couldn't connect directly",
+                         subtitle: "No relay is available right now.",
+                         status: .symbol("exclamationmark.triangle.fill", .orange))
+            case .ended(nil):
+                getCode(title: "Code used", subtitle: "Get another one for the next computer.", again: true)
+            case .ended(let why?):
+                GroupRow(title: why, status: .symbol("exclamationmark.triangle.fill", .orange))
+                getCode(title: "Try again", subtitle: nil, again: true)
+            }
+        }
+    }
+
+    private func getCode(title: String, subtitle: String?, again: Bool = false) -> some View {
+        GroupRow(title: title, subtitle: subtitle) {
+            Button { copied = false; model.shareCode() } label: {
+                Label(again ? "New Code" : "Get a Code", systemImage: "number").padding(.horizontal, 4)
+            }
+            .primaryGlassButton()
+        }
+    }
+}
+
+/// The code itself: large, easy to read aloud, with how long it still works.
+private struct CodeCell: View {
+    let code: String
+    let expires: Date
+    @Binding var copied: Bool
+    let stop: () -> Void
+
+    var body: some View {
+        GroupCell {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(code)
+                        .font(.system(size: 34, weight: .semibold, design: .monospaced))
+                        .tracking(3)
+                        .textSelection(.enabled)
+                        .accessibilityLabel("Code \(code.map(String.init).joined(separator: " "))")
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        let left = max(0, Int(expires.timeIntervalSince(ctx.date)))
+                        Text(left > 0 ? "On the other computer: Connect by Code or Address. Works for \(left / 60):\(String(format: "%02d", left % 60))."
+                                      : "Expired.")
+                            .font(.callout).foregroundStyle(.secondary).monospacedDigit()
+                    }
+                }
+                .padding(.vertical, 6)
+                Spacer(minLength: 12)
+                VStack(alignment: .trailing, spacing: 8) {
+                    Button(copied ? "Copied" : "Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(code, forType: .string)
+                        copied = true
+                    }
+                    Button("Stop", role: .destructive, action: stop)
+                }
+                .fixedSize()
+            }
+        }
+    }
+}
+
 /// The port hosts use unless it's taken.
 private let annexDefaultPort: UInt16 = 47800
 
@@ -601,9 +713,10 @@ struct OtherWaysSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 22) {
-                    Hero(title: "Connect by Address",
+                    Hero(title: "Connect by Code or Address",
                          text: "For a computer that isn't in Nearby: another network, a VPN, or a PC's Direct Wi-Fi.") { EmptyView() }
-                    GroupSection("Address", footer: "Over the internet, use Tailscale or ZeroTier and type the address it gives.") {
+                    CodeSection(model: model, dismiss: { dismiss() })
+                    GroupSection("Address", footer: "Through a VPN like Tailscale or ZeroTier, type the address it gives.") {
                         GroupRow(title: "IP address or host:port") {
                             InputField(text: $model.manualAddress, placeholder: "192.168.1.20",
                                        onSubmit: { model.extendMode = false; model.connectManual(); dismiss() })
@@ -631,6 +744,37 @@ struct OtherWaysSheet: View {
         .frame(width: 560)
         .preferredColorScheme(.dark)
         .tint(Color(white: 0.82))
+    }
+}
+
+/// Connect with the code a computer on another network shows (This Mac → Over the internet).
+private struct CodeSection: View {
+    @ObservedObject var model: AppModel
+    let dismiss: () -> Void
+
+    var body: some View {
+        GroupSection("Code", footer: model.internetReady ? "The other computer shows it under Over the internet. It works once." : nil) {
+            if model.internetReady {
+                GroupRow(title: "Code from the other computer") {
+                    InputField(text: $model.manualCode, placeholder: "K7P-4QX",
+                               onSubmit: { model.extendMode = false; model.connectByCode(); dismiss() })
+                        .frame(width: 200)
+                }
+                GroupCell {
+                    HStack {
+                        Spacer()
+                        ConnectButtons(model: model, connect: { model.connectByCode(); dismiss() }, compact: true)
+                            .disabled(model.isViewing || model.manualCode.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+            } else {
+                GroupRow(title: "Connect over the internet with a code",
+                         subtitle: model.settings.internetEnabled ? "Add a server address in Settings → Internet."
+                                                                  : "Turn on Internet in Settings first.") {
+                    Button("Open Settings") { model.pane = .settings; dismiss() }
+                }
+            }
+        }
     }
 }
 
@@ -847,6 +991,7 @@ private struct SettingsPage: View {
                  symbol: "gearshape.fill", tint: .gray)
             general
             sharing
+            internet
             viewing
             developer
         }
@@ -901,6 +1046,33 @@ private struct SettingsPage: View {
             ToggleRow(title: "Extend display by default", isOn: $settings.extendByDefault)
             ToggleRow(title: "Control the other computer", subtitle: "When it allows it. Press ⌃⌥⇧Q to leave.",
                       isOn: $settings.controlWhenViewing)
+        }
+    }
+
+    private var internet: some View {
+        GroupSection("Internet",
+                     footer: "A server swaps the two computers' internet addresses for a code; the screen goes straight between "
+                         + "them, encrypted. Some networks block that: then it goes through a relay, yours if you set one here.") {
+            ToggleRow(title: "Connect over the internet",
+                      subtitle: "Share and connect with codes, on any network. Off by default.",
+                      isOn: $settings.internetEnabled)
+            if settings.internetEnabled {
+                GroupRow(title: "Server", subtitle: "Its address, from whoever runs it.") {
+                    InputField(text: $settings.rendezvousServer, placeholder: "wss://rendezvous.example.com").frame(width: 260)
+                }
+                GroupRow(title: "Your relay", subtitle: "Optional. A TURN server, for networks that block direct connections.") {
+                    InputField(text: $settings.relayURL, placeholder: "turn:relay.example.com:3478").frame(width: 260)
+                }
+                if !settings.relayURL.trimmingCharacters(in: .whitespaces).isEmpty {
+                    GroupRow(title: "Relay username") {
+                        InputField(text: $settings.relayUsername, placeholder: "Username").frame(width: 260)
+                    }
+                    GroupRow(title: "Relay password", subtitle: "Kept in the Keychain.") {
+                        SecureField("", text: $settings.relayPassword, prompt: Text("Password"))
+                            .textFieldStyle(.roundedBorder).frame(width: 260)
+                    }
+                }
+            }
         }
     }
 

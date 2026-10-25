@@ -474,6 +474,7 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome
             quality: Quality::Best,
             latency_csv: None,
             internet: Some(viewer_sock),
+            join: None,
         },
         vev,
         Arc::new(move |_| *counted.lock().unwrap() += 1),

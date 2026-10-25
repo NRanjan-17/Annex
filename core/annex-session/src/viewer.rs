@@ -47,6 +47,16 @@ pub struct ViewerConfig {
     /// Connect across the internet from this socket: `address` then lists the host's candidates
     /// from the rendezvous server. QUIC only.
     pub internet: Option<Arc<InternetSocket>>,
+    /// Connect by code instead of `address`: join through the rendezvous server, then connect
+    /// across the internet (on `internet`'s socket if set, else a new one).
+    pub join: Option<JoinCode>,
+}
+
+/// A code typed by the user, and the servers to use it with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinCode {
+    pub code: String,
+    pub servers: crate::InternetServers,
 }
 
 /// The viewer's side of an internet connection. It's bound before connecting, so its public
@@ -226,16 +236,19 @@ async fn run(
     frames: FrameSink,
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
 ) -> Result<String, SessionError> {
-    events(Event::Connecting { address: cfg.address.clone() });
-    let est = connect_best(&core, &cfg).await?;
+    events(Event::Connecting { address: cfg.join.as_ref().map_or_else(|| cfg.address.clone(), |j| j.code.clone()) });
+    let (est, net) = match &cfg.join {
+        Some(j) => join_by_code(&core, &cfg, j).await?,
+        None => (connect_best(&core, &cfg).await?, cfg.internet.clone()),
+    };
     let Established { kind, reader, writer, fingerprint: fp, exporter, remote, quic } = est;
     if fp == core.fingerprint() {
         return Err(SessionError::Violation("host uses our own identity".into()));
     }
     let canonical = std::net::SocketAddr::new(remote.ip().to_canonical(), remote.port());
-    let link = if cfg.internet.as_ref().is_some_and(|n| n.relayed.lock().unwrap().contains(&canonical)) {
+    let link = if net.as_ref().is_some_and(|n| n.relayed.lock().unwrap().contains(&canonical)) {
         LinkKind::Relayed
-    } else if cfg.internet.is_some() {
+    } else if net.is_some() {
         LinkKind::Internet
     } else if is_link_local(&remote) {
         LinkKind::Direct
@@ -500,6 +513,26 @@ async fn run(
 
 /// Resolves every candidate address and races connections: direct-cable (link-local) addresses
 /// first, QUIC first, falling back to TCP if no QUIC handshake succeeds.
+/// Joins the sharing computer by its code, then connects across the internet (and through its
+/// relay if the direct path fails).
+async fn join_by_code(
+    core: &Arc<Core>,
+    cfg: &ViewerConfig,
+    j: &JoinCode,
+) -> Result<(Established, Option<Arc<InternetSocket>>), SessionError> {
+    let net = match &cfg.internet {
+        Some(n) => n.clone(),
+        None => InternetSocket::bind()?,
+    };
+    let addrs = net.candidates(crate::resolve_stun(&j.servers.stun).await?).await?;
+    let joined = crate::rendezvous::join(&j.servers.rendezvous, &j.code, &core.device_name(), &addrs).await?;
+    let host = joined.peer.addrs.clone();
+    tracing::info!(name = %joined.peer.name, addrs = ?host, "joined by code");
+    net.relay_fallback(joined);
+    let est = connect_internet(core, cfg, &net, host).await?;
+    Ok((est, Some(net)))
+}
+
 async fn connect_best(core: &Arc<Core>, cfg: &ViewerConfig) -> Result<Established, SessionError> {
     let mut addrs = Vec::new();
     for part in cfg.address.split(',').map(str::trim).filter(|p| !p.is_empty()) {

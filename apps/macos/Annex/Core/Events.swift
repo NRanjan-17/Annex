@@ -152,6 +152,13 @@ extension InputEvent: Decodable {
 
 enum CoreEvent: Equatable {
     case listening(port: Int)
+    /// Sharing over the internet: the code to show, valid `expiresIn` seconds and once.
+    case internetCode(code: String, expiresIn: Int)
+    case internetJoined(peerName: String)
+    /// The viewer couldn't connect directly; `relayed` if it got a relay address (`limited`: ours).
+    case internetRelay(relayed: Bool, limited: Bool)
+    /// "used", "expired", "stopped", or what went wrong.
+    case internetCodeEnded(reason: String)
     case connecting(address: String)
     case pairingPin(PairingPin)
     case pairingPinRequired(PairingPinRequired)
@@ -187,6 +194,10 @@ enum CoreEvent: Equatable {
 
     private struct Tag: Decodable { let type: String }
     private struct Port: Decodable { let port: Int }
+    private struct Code: Decodable { let code: String; let expiresIn: Int }
+    private struct Joined: Decodable { let peerName: String }
+    private struct Relay: Decodable { let relayed: Bool; let limited: Bool }
+    private struct CodeEnded: Decodable { let reason: String }
     private struct Address: Decodable { let address: String }
     private struct Ended: Decodable { let sessionId: UInt64; let reason: String }
     private struct SessionRef: Decodable { let sessionId: UInt64 }
@@ -206,6 +217,14 @@ enum CoreEvent: Equatable {
         do {
             switch tag.type {
             case "listening": return .listening(port: try d.decode(Port.self, from: data).port)
+            case "internet_code":
+                let c = try d.decode(Code.self, from: data)
+                return .internetCode(code: c.code, expiresIn: c.expiresIn)
+            case "internet_joined": return .internetJoined(peerName: try d.decode(Joined.self, from: data).peerName)
+            case "internet_relay":
+                let r = try d.decode(Relay.self, from: data)
+                return .internetRelay(relayed: r.relayed, limited: r.limited)
+            case "internet_code_ended": return .internetCodeEnded(reason: try d.decode(CodeEnded.self, from: data).reason)
             case "connecting": return .connecting(address: try d.decode(Address.self, from: data).address)
             case "pairing_pin": return .pairingPin(try d.decode(PairingPin.self, from: data))
             case "pairing_pin_required": return .pairingPinRequired(try d.decode(PairingPinRequired.self, from: data))

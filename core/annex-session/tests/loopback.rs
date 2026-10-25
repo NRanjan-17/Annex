@@ -34,6 +34,7 @@ fn viewer_cfg(port: u16) -> ViewerConfig {
         quality: annex_session::Quality::Best,
         latency_csv: None,
         internet: None,
+        join: None,
     }
 }
 

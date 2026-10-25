@@ -28,6 +28,27 @@ pub enum Event {
     Listening {
         port: u16,
     },
+    /// Host, sharing over the internet: the code for the viewer to type, valid `expires_in`
+    /// seconds and once.
+    InternetCode {
+        code: String,
+        expires_in: u32,
+    },
+    /// Host: a viewer typed the code and is connecting.
+    InternetJoined {
+        peer_name: String,
+    },
+    /// Host: the viewer couldn't connect directly. `relayed`: it was given this computer's
+    /// address on a relay (`limited`: ours, with its time and bitrate limits); otherwise there was
+    /// no relay to give.
+    InternetRelay {
+        relayed: bool,
+        limited: bool,
+    },
+    /// Host: the code no longer works. `reason`: "used", "expired", "stopped", or what went wrong.
+    InternetCodeEnded {
+        reason: String,
+    },
     Connecting {
         address: String,
     },

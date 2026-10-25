@@ -284,19 +284,11 @@ fn internet_opts(o: &mut Opts) -> (String, String) {
         .value("--rendezvous")
         .or_else(|| std::env::var("ANNEX_RENDEZVOUS").ok())
         .unwrap_or_else(|| die("internet connections need --rendezvous wss://… (or ANNEX_RENDEZVOUS)"));
-    (server, o.value("--stun").unwrap_or_else(|| "stun.cloudflare.com:3478".into()))
+    (server, o.value("--stun").unwrap_or_else(|| DEFAULT_STUN.into()))
 }
 
 /// The STUN server's IPv4 address: what a home router's mapping is about.
-async fn stun_addr(stun: &str) -> std::net::SocketAddr {
-    tokio::net::lookup_host(stun)
-        .await
-        .ok()
-        .and_then(|mut a| a.find(std::net::SocketAddr::is_ipv4))
-        .unwrap_or_else(|| die(&format!("can't find the STUN server {stun}")))
-}
-
-/// Shows a code, waits for a viewer, opens the router towards it; then a new code for the next.
+/// Shares over the internet, one code after another, printing what happens.
 async fn share_over_internet(
     handle: Arc<HostHandle>,
     name: String,
@@ -304,76 +296,36 @@ async fn share_over_internet(
     stun: String,
     turn: Option<(String, String, String)>,
 ) {
-    let stun = stun_addr(&stun).await;
-    let own_relay = match turn {
-        Some((url, username, password)) => match rendezvous::turn_url_addr(&url).await {
-            Some(addr) => Some(TurnServer { addr, username, password }),
-            None => die(&format!("can't use the relay {url} (needs turn:host:port over UDP)")),
-        },
-        None => None,
-    };
-    loop {
-        let addrs = match handle.internet_candidates(stun).await {
-            Ok(a) => a,
-            Err(e) => die(&format!("couldn't find this computer's public address: {e}")),
-        };
-        let waiting =
-            rendezvous::host(&server, &name, &addrs, own_relay.is_some()).await.unwrap_or_else(|e| die(&e.to_string()));
-        eprintln!("internet code: {}  (reachable at {addrs:?})", waiting.code());
-        match waiting.wait().await {
-            Ok(mut matched) => {
-                let peer = matched.peer.clone();
-                eprintln!("\"{}\" is connecting from {:?}", peer.name, peer.addrs);
-                handle.punch(peer.addrs.clone());
-                let (handle, own_relay) = (handle.clone(), own_relay.clone());
-                tokio::spawn(async move {
-                    let Ok(Some(login)) = matched.relay_request().await else { return };
-                    let relay = match (own_relay, login) {
-                        (Some(own), _) => Some((own, false)),
-                        (None, Some(login)) => login.server().await.ok().map(|s| (s, true)),
-                        (None, None) => None,
-                    };
-                    let relayed = match relay {
-                        Some((relay, limited)) => {
-                            let ips = peer.addrs.iter().map(|a| a.ip()).collect();
-                            handle.relay(relay, ips, limited).await.inspect_err(|e| eprintln!("relay: {e}")).ok()
-                        }
-                        None => {
-                            eprintln!("no relay available (ours is off or used up for today)");
-                            None
-                        }
-                    };
-                    if let Some(a) = relayed {
-                        eprintln!("relaying through {a}");
-                    }
-                    let _ = matched.answer_relay(relayed).await;
-                });
-            }
-            Err(SessionError::Rejected(r)) if r == "code_expired" => eprintln!("the code expired"),
-            Err(e) => die(&e.to_string()),
+    let servers = InternetServers { rendezvous: server, stun };
+    let own_relay = turn.map(|(url, username, password)| OwnRelay { url, username, password });
+    let events: EventSink = Arc::new(|e: Event| match e {
+        Event::InternetCode { code, .. } => eprintln!("internet code: {code}"),
+        Event::InternetJoined { peer_name } => eprintln!("\"{peer_name}\" is connecting"),
+        Event::InternetRelay { relayed: true, limited } => {
+            eprintln!("relaying ({})", if limited { "our relay, limited" } else { "your relay" })
         }
+        Event::InternetRelay { relayed: false, .. } => {
+            eprintln!("no relay available (ours is off or used up for today)")
+        }
+        Event::InternetCodeEnded { reason } => eprintln!("code ended: {reason}"),
+        _ => {}
+    });
+    loop {
+        share_code(handle.clone(), name.clone(), servers.clone(), own_relay.clone(), events.clone()).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 
 async fn viewer(o: &mut Opts) {
     let core = open_core(o);
     let code = o.value("--code");
-    let net = code.as_ref().map(|_| internet_opts(o));
-    let mut internet = None;
-    let address = match (code, net) {
-        (Some(code), Some((server, stun))) => {
-            let socket = InternetSocket::bind().unwrap_or_else(|e| die(&e.to_string()));
-            let addrs = socket.candidates(stun_addr(&stun).await).await.unwrap_or_else(|e| die(&e.to_string()));
-            let joined = rendezvous::join(&server, &code, &core.device_name(), &addrs)
-                .await
-                .unwrap_or_else(|e| die(&e.to_string()));
-            let peer_addrs = joined.peer.addrs.clone();
-            eprintln!("joining \"{}\" at {:?}", joined.peer.name, peer_addrs);
-            socket.relay_fallback(joined);
-            internet = Some(socket);
-            peer_addrs.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
-        }
-        _ => o.positional().unwrap_or_else(|| die("viewer <address> or viewer --code <code>")),
+    let join = code.map(|code| {
+        let (rendezvous, stun) = internet_opts(o);
+        JoinCode { code, servers: InternetServers { rendezvous, stun } }
+    });
+    let address = match &join {
+        Some(_) => String::new(),
+        None => o.positional().unwrap_or_else(|| die("viewer <address> or viewer --code <code>")),
     };
     let dump = o.value("--dump").map(PathBuf::from);
     let expected = o.value("--expect");
@@ -416,7 +368,8 @@ async fn viewer(o: &mut Opts) {
         input: false,
         quality: annex_session::Quality::Best,
         latency_csv,
-        internet,
+        internet: None,
+        join,
     };
     let v = Arc::new(connect_viewer(core, cfg, events, frames));
     let presenter = {

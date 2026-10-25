@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Security
 import ServiceManagement
 
 /// User preferences, persisted in UserDefaults (removed by "Uninstall Annex").
@@ -33,6 +34,16 @@ final class AppSettings: ObservableObject {
     @Published var peerToPeerWiFi: Bool { didSet { defaults.set(peerToPeerWiFi, forKey: Keys.peerToPeer) } }
     /// The name other devices see; nil = this Mac's name from System Settings.
     @Published var customDeviceName: String? { didSet { defaults.set(customDeviceName, forKey: Keys.name) } }
+    /// Share and connect over the internet with codes. Off by default: it uses a server.
+    @Published var internetEnabled: Bool { didSet { defaults.set(internetEnabled, forKey: Keys.internet) } }
+    /// The rendezvous server (`wss://…`) that swaps the two computers' addresses.
+    @Published var rendezvousServer: String { didSet { defaults.set(rendezvousServer, forKey: Keys.rendezvous) } }
+    /// The user's own relay (`turn:host:port`) for networks that block direct connections; empty =
+    /// the rendezvous server's relay, if it offers one.
+    @Published var relayURL: String { didSet { defaults.set(relayURL, forKey: Keys.relayURL) } }
+    @Published var relayUsername: String { didSet { defaults.set(relayUsername, forKey: Keys.relayUser) } }
+    /// Kept in the Keychain, not in preferences.
+    @Published var relayPassword: String { didSet { Keychain.set(relayPassword, account: Keys.relayPassword) } }
     @Published private(set) var launchAtLogin = false
     @Published private(set) var launchAtLoginError: String?
 
@@ -51,6 +62,17 @@ final class AppSettings: ObservableObject {
         static let dismissedUpdate = "dismissedUpdateVersion"
         static let lastCheck = "lastUpdateCheck"
         static let peerToPeer = "peerToPeerWiFi"
+        static let internet = "internetEnabled"
+        static let rendezvous = "rendezvousServer"
+        static let relayURL = "relayURL"
+        static let relayUser = "relayUsername"
+        static let relayPassword = "relayPassword"
+    }
+
+    /// The user's own relay, if they filled it in.
+    var ownRelay: (url: String, username: String, password: String)? {
+        let url = relayURL.trimmingCharacters(in: .whitespaces)
+        return url.isEmpty ? nil : (url, relayUsername, relayPassword)
     }
 
     /// This copy is a pre-release (`0.2.0-pre.1`).
@@ -76,6 +98,11 @@ final class AppSettings: ObservableObject {
         dismissedUpdateVersion = defaults.string(forKey: Keys.dismissedUpdate)
         lastUpdateCheck = defaults.object(forKey: Keys.lastCheck) as? Date
         peerToPeerWiFi = defaults.bool(forKey: Keys.peerToPeer)
+        internetEnabled = defaults.bool(forKey: Keys.internet)
+        rendezvousServer = defaults.string(forKey: Keys.rendezvous) ?? ""
+        relayURL = defaults.string(forKey: Keys.relayURL) ?? ""
+        relayUsername = defaults.string(forKey: Keys.relayUser) ?? ""
+        relayPassword = Keychain.get(account: Keys.relayPassword) ?? ""
         refreshLaunchAtLogin()
     }
 
@@ -91,5 +118,28 @@ final class AppSettings: ObservableObject {
             launchAtLoginError = error.localizedDescription
         }
         refreshLaunchAtLogin()
+    }
+}
+
+/// Small secrets in the login Keychain, under the app's bundle ID (which "Uninstall Annex" removes).
+enum Keychain {
+    private static var service: String { Bundle.main.bundleIdentifier ?? "Annex" }
+
+    static func get(account: String) -> String? {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                    kSecAttrAccount as String: account, kSecReturnData as String: true]
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func set(_ value: String, account: String) {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+                                    kSecAttrAccount as String: account]
+        SecItemDelete(query as CFDictionary)
+        guard !value.isEmpty else { return }
+        var add = query
+        add[kSecValueData as String] = Data(value.utf8)
+        SecItemAdd(add as CFDictionary, nil)
     }
 }
