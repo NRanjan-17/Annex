@@ -662,7 +662,7 @@ private struct NotShowingUp: View {
             GroupRow(title: "Allow Local Network for Annex") {
                 Button("Open Settings") { openPrivacySettings("Privacy_LocalNetwork") }
             }
-            GroupRow(title: "On Windows, allow the firewall", subtitle: "In Annex on the PC: Connect → Allow.")
+            GroupRow(title: "On Windows, allow the firewall", subtitle: "In Annex on the PC: Nearby → Allow Annex through the firewall.")
         }
     }
 }
@@ -781,7 +781,7 @@ private struct PCHotspotSection: View {
 
     var body: some View {
         GroupSection("Direct Wi-Fi to a PC",
-                     footer: "When this network won't connect the two computers: on the PC, turn on Share → Direct Wi-Fi "
+                     footer: "When this network won't connect the two computers: on the PC, turn on This PC → Direct Wi-Fi "
                          + "and type the network and password it shows. Works whether this Mac views or shares.") {
             GroupRow(title: "Network") {
                 InputField(text: $model.pcHotspotName, placeholder: "Annex-1A2B").frame(width: 200)
