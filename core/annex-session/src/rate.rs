@@ -48,7 +48,7 @@ pub fn quality_ceiling(q: Quality) -> u32 {
     }
 }
 
-/// Our relay's bitrate limit. With its login lifetime (30 minutes) that's at most about 1.4 GB a
+/// Our relay's bitrate limit. With its login lifetime (20 minutes) that's at most about 0.9 GB a
 /// session, so the daily login cap keeps it inside Cloudflare's free relay allowance.
 pub const RELAY_BPS: u64 = 6_000_000;
 

@@ -93,13 +93,14 @@ To turn it off again: `npx wrangler secret delete TURN_KEY_ID`.
 
 | Limit | Default | Effect |
 |---|---|---|
-| `RELAY_TTL_SECONDS` | 1800 | Each login works 30 minutes; then Cloudflare drops the session. |
-| `RELAY_PER_DAY` | 8 | Logins a day in total (UTC). After that, no relay until tomorrow. |
+| `RELAY_TTL_SECONDS` | 1200 | Each login works 20 minutes; then Cloudflare drops the session. |
+| `RELAY_PER_DAY` | 20 | Logins a day in total (UTC). After that, no relay until tomorrow. |
 | `RELAY_PER_IP_PER_DAY` | 2 | Logins a day per sharing computer's address. |
 | Bitrate (in the app) | ~6 Mbit/s | Sessions on our relay are held to about 6 Mbit/s, whatever the screen size. Known gap: it's worked out when the session starts, so switching an Extend session to a bigger resolution afterwards goes over it. |
 
-Worst case with the defaults: 8 sessions × 30 minutes × 6 Mbit/s ≈ 11 GB a day, plus error
-correction (up to 40 %) ≈ 15 GB a day, about **460 GB a month**, under the 1,000 GB free allowance.
+Worst case with the defaults: 20 sessions × 20 minutes × 6 Mbit/s ≈ 18 GB a day, plus error
+correction (up to 40 %) ≈ 25 GB a day, about **760 GB a month**, under the 1,000 GB free allowance.
+(20 sessions at 30 minutes would be ~1,130 GB, over it.)
 If you raise a limit, redo this sum. Setting `RELAY_PER_DAY` to `0` turns the relay off without
 removing the secrets.
 

@@ -22,8 +22,8 @@
   //   npx wrangler secret put TURN_KEY_API_TOKEN
   // Worst case per day: RELAY_PER_DAY × RELAY_TTL_SECONDS of relayed video. See README.md.
   "vars": {
-    "RELAY_TTL_SECONDS": "1800",
-    "RELAY_PER_DAY": "8",
+    "RELAY_TTL_SECONDS": "1200",
+    "RELAY_PER_DAY": "20",
     "RELAY_PER_IP_PER_DAY": "2"
   }
 }

@@ -164,8 +164,8 @@ describe("relay budget", () => {
       return cloudflare(_url, init);
     }) as unknown as typeof fetch;
     const login = await relayLogin(configured("budget-a"), "192.0.2.1", spy);
-    expect(login).toEqual({ urls: ["turn:turn.cloudflare.com:3478?transport=udp"], username: "u", credential: "c", ttl: 1800 });
-    expect(JSON.parse(asked!.body as string)).toEqual({ ttl: 1800 });
+    expect(login).toEqual({ urls: ["turn:turn.cloudflare.com:3478?transport=udp"], username: "u", credential: "c", ttl: 1200 });
+    expect(JSON.parse(asked!.body as string)).toEqual({ ttl: 1200 });
   });
 
   it("stops at the per-address and daily caps", async () => {

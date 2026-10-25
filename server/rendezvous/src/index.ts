@@ -13,7 +13,7 @@
 // After the match both sockets stay open for MATCH_WINDOW, for the relay fallback:
 //   Viewer (direct failed)                → {"type":"need_relay"}
 //   Sharing computer                      ← {"type":"need_relay","turn":{"urls":[…],"username":"…",
-//                                            "credential":"…","ttl":1800}}   (or "turn":null)
+//                                            "credential":"…","ttl":1200}}   (or "turn":null)
 //                                         → {"type":"relay","addrs":["198.51.100.5:61000"]}
 //                                           (its relayed address; or {"type":"no_relay"})
 //   Viewer                                ← {"type":"relay","addrs":[…]}  or  {"type":"no_relay"}
@@ -231,8 +231,8 @@ type Secrets = { TURN_KEY_ID?: string; TURN_KEY_API_TOKEN?: string };
 export async function relayLogin(env: Env, ip: string, fetcher: typeof fetch = fetch): Promise<TurnLogin | null> {
   const { TURN_KEY_ID, TURN_KEY_API_TOKEN } = env as Env & Secrets;
   if (!TURN_KEY_ID || !TURN_KEY_API_TOKEN) return null;
-  const ttl = numberVar(env.RELAY_TTL_SECONDS, 1800);
-  const perDay = numberVar(env.RELAY_PER_DAY, 8);
+  const ttl = numberVar(env.RELAY_TTL_SECONDS, 1200);
+  const perDay = numberVar(env.RELAY_PER_DAY, 20);
   const perIp = numberVar(env.RELAY_PER_IP_PER_DAY, 2);
   if (ttl === 0 || !(await env.BUDGET.getByName("global").take(ip, perDay, perIp))) return null;
   const response = await fetcher(

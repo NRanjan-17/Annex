@@ -196,7 +196,7 @@ Phase 1 without phase 2 is Option 2. It's a working stopping point if relay cost
 3. **Phase 2:** ~~later~~ built with phase 1 (2026-10-25): the relay is used only when the
    direct connection fails. Two kinds: the user's own TURN server (a setting on the sharing
    computer, no limits), or ours, which is **off unless its TURN secrets are set** and capped at
-   8 logins a day, 2 per address, 30 minutes each, about 6 Mbit/s (worst case ~460 GB a month,
+   20 logins a day, 2 per address, 20 minutes each, about 6 Mbit/s (worst case ~760 GB a month,
    inside the free 1,000 GB). Turning ours on waits on confirming with Cloudflare that a no-card
    account can't be billed past the free allowance. Details:
    [server/rendezvous/README.md](../server/rendezvous/README.md).
