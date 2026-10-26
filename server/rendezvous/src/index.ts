@@ -41,6 +41,8 @@ const MAX_NAME = 64;
 interface Peer {
   name: string;
   addrs: string[];
+  /** Home-network addresses, passed on only to a computer on the same network. */
+  local: string[];
 }
 
 interface HostInfo extends Peer {
@@ -76,12 +78,33 @@ function parseAddrs(addrs: unknown): string[] | null {
   return addrs.every((a) => typeof a === "string" && ADDR.test(a)) ? (addrs as string[]) : null;
 }
 
-/** A message from a client: a name and up to 8 `ip:port` addresses. */
+/** Home-network addresses: 10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/7, fe80::/10. */
+export function isLocal(addr: string): boolean {
+  const v4 = addr.match(/^(\d+)\.(\d+)\./);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+  return /^\[(f[cd]|fe[89ab])/i.test(addr);
+}
+
+/** What one side may learn of the other: its home-network addresses only when both connect
+ * from the same public address (the same home or office, where they're how the two reach each
+ * other); anyone else gets just the public ones. */
+export function shareable(peer: Peer, sameNetwork: boolean): string[] {
+  const public_ = peer.addrs.filter((a) => !isLocal(a));
+  return sameNetwork ? [...public_, ...peer.local].slice(0, MAX_ADDRS) : public_;
+}
+
+/** A message from a client: a name, up to 8 `ip:port` addresses and, optionally, up to 8
+ * home-network ones (`local`; ones that aren't are dropped). */
 export function parsePeer(message: string | ArrayBuffer, type: string): Peer | null {
   const m = parseObject(message);
   if (!m || m.type !== type || typeof m.name !== "string") return null;
   const addrs = parseAddrs(m.addrs);
-  return addrs ? { name: m.name.slice(0, MAX_NAME), addrs } : null;
+  const local = m.local === undefined ? [] : parseAddrs(m.local);
+  if (!addrs || !local) return null;
+  return { name: m.name.slice(0, MAX_NAME), addrs, local: local.filter(isLocal) };
 }
 
 function upgradePair(): [WebSocket, WebSocket] {
@@ -109,7 +132,7 @@ export class CodeRoom extends DurableObject<Env> {
       return new Response("unknown code", { status: 404 });
     }
     const [client, server] = upgradePair();
-    this.ctx.acceptWebSocket(server, ["viewer"]);
+    this.ctx.acceptWebSocket(server, ["viewer", `ip:${request.headers.get("CF-Connecting-IP") ?? "local"}`]);
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -138,8 +161,10 @@ export class CodeRoom extends DurableObject<Env> {
     // Single use: mark it before telling anyone, so a second viewer can't join.
     await this.ctx.storage.put("matched", true);
     await this.ctx.storage.setAlarm(Date.now() + MATCH_WINDOW_MS);
-    ws.send(JSON.stringify({ type: "peer", name: host.name, addrs: host.addrs }));
-    hostWs.send(JSON.stringify({ type: "peer", ...join }));
+    const viewerIp = this.ctx.getTags(ws).find((t) => t.startsWith("ip:"))?.slice(3);
+    const same = viewerIp === host.ip;
+    ws.send(JSON.stringify({ type: "peer", name: host.name, addrs: shareable(host, same) }));
+    hostWs.send(JSON.stringify({ type: "peer", name: join.name, addrs: shareable(join, same) }));
   }
 
   private async fromViewerAfterMatch(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {

@@ -85,14 +85,20 @@ enum Msg {
         code: String,
         expires_in: u32,
     },
+    /// `local`: home-network addresses, separate so a server that doesn't know to keep them
+    /// from strangers drops them instead of passing them on.
     Hello {
         name: String,
         addrs: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        local: Vec<String>,
         own_relay: bool,
     },
     Join {
         name: String,
         addrs: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        local: Vec<String>,
     },
     Peer {
         name: String,
@@ -229,7 +235,8 @@ pub async fn host(server: &str, name: &str, addrs: &[SocketAddr], own_relay: boo
         Msg::Code { code, expires_in } => (code, Duration::from_secs(expires_in.into())),
         _ => return Err(SessionError::Violation("rendezvous: expected a code".into())),
     };
-    send(&mut ws, &Msg::Hello { name: name.into(), addrs: strings(addrs), own_relay }).await?;
+    let (addrs, local) = split(addrs);
+    send(&mut ws, &Msg::Hello { name: name.into(), addrs, local, own_relay }).await?;
     Ok(HostCode { ws, code, expires_in })
 }
 
@@ -238,11 +245,23 @@ pub async fn host(server: &str, name: &str, addrs: &[SocketAddr], own_relay: boo
 pub async fn join(server: &str, code: &str, name: &str, addrs: &[SocketAddr]) -> Result<Joined, SessionError> {
     let code: String = code.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     let mut ws = open(server, &format!("/v1/join/{code}")).await?;
-    send(&mut ws, &Msg::Join { name: name.into(), addrs: strings(addrs) }).await?;
+    let (addrs, local) = split(addrs);
+    send(&mut ws, &Msg::Join { name: name.into(), addrs, local }).await?;
     match next_msg(&mut ws).await? {
         Msg::Peer { name, addrs } => Ok(Joined { peer: peer(name, addrs), ws }),
         _ => Err(SessionError::Violation("rendezvous: expected the other computer".into())),
     }
+}
+
+/// Public addresses, then home-network ones (private IPv4, unique-local and link-local IPv6).
+fn split(addrs: &[SocketAddr]) -> (Vec<String>, Vec<String>) {
+    let local = |a: &&SocketAddr| match a.ip().to_canonical() {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => v6.is_unique_local() || v6.is_unicast_link_local(),
+    };
+    let (home, public): (Vec<&SocketAddr>, Vec<&SocketAddr>) = addrs.iter().partition(local);
+    let owned = |v: Vec<&SocketAddr>| strings(&v.into_iter().copied().collect::<Vec<_>>());
+    (owned(public), owned(home))
 }
 
 fn strings(addrs: &[SocketAddr]) -> Vec<String> {
@@ -320,4 +339,30 @@ fn tls_config() -> Result<Arc<rustls::ClientConfig>, SessionError> {
         .map_err(|e| SessionError::Violation(format!("tls: {e}")))?
         .with_no_client_auth();
     Ok(Arc::new(config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn home_addresses_travel_separately() {
+        let addrs: Vec<SocketAddr> = [
+            "203.0.113.9:47800",
+            "[2a02:8070::5]:47800",
+            "192.168.1.5:47800",
+            "[fd00::2]:47800",
+            "[::ffff:10.0.0.4]:1",
+        ]
+        .iter()
+        .map(|a| a.parse().unwrap())
+        .collect();
+        let (public, local) = split(&addrs);
+        assert_eq!(public, ["203.0.113.9:47800", "[2a02:8070::5]:47800"]);
+        assert_eq!(local, ["192.168.1.5:47800", "[fd00::2]:47800", "10.0.0.4:1"]);
+        // A server that doesn't know `local` never sees it as an address.
+        let hello =
+            serde_json::to_value(Msg::Hello { name: "n".into(), addrs: public, local, own_relay: false }).unwrap();
+        assert_eq!(hello["addrs"].as_array().unwrap().len(), 2);
+    }
 }

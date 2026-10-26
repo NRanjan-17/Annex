@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { runDurableObjectAlarm } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { normalizeCode, parsePeer, relayLogin } from "../src/index";
+import { isLocal, normalizeCode, parsePeer, relayLogin } from "../src/index";
 
 /** A test client: opens a WebSocket on a path and queues what it receives. */
 async function open(path: string, ip = "198.51.100.7") {
@@ -57,6 +57,30 @@ describe("rendezvous", () => {
     expect(await host.next!()).toEqual({ type: "peer", ...VIEWER });
     // Used: a second viewer finds nothing.
     expect((await open(`/v1/join/${code}`, "198.51.100.8")).status).toBe(404);
+  });
+
+  it("passes home-network addresses only between computers on the same network", async () => {
+    const lan = { type: "join", name: "Office PC", addrs: ["198.51.100.20:51234"], local: ["192.168.1.5:51234"] };
+    // A local address in `addrs` (as a client might send by mistake) is kept from strangers too.
+    const hostLan = { type: "hello", name: "Dev's Mac", addrs: ["203.0.113.10:47800", "10.0.0.3:47800"], local: ["10.0.0.2:47800"] };
+    // Different networks: public addresses only, both ways.
+    let host = await open("/v1/host", "203.0.113.10");
+    let code = ((await host.next!()) as { code: string }).code;
+    host.send!(hostLan);
+    await new Promise((r) => setTimeout(r, 50));
+    let viewer = await open(`/v1/join/${code}`, "198.51.100.20");
+    viewer.send!(lan);
+    expect(await viewer.next!()).toEqual({ type: "peer", name: "Dev's Mac", addrs: ["203.0.113.10:47800"] });
+    expect(await host.next!()).toEqual({ type: "peer", name: "Office PC", addrs: ["198.51.100.20:51234"] });
+    // Same public address: everything, so they can reach each other at home.
+    host = await open("/v1/host", "203.0.113.11");
+    code = ((await host.next!()) as { code: string }).code;
+    host.send!(hostLan);
+    await new Promise((r) => setTimeout(r, 50));
+    viewer = await open(`/v1/join/${code}`, "203.0.113.11");
+    viewer.send!(lan);
+    expect(await viewer.next!()).toEqual({ type: "peer", name: "Dev's Mac", addrs: ["203.0.113.10:47800", "10.0.0.2:47800"] });
+    expect(await host.next!()).toEqual({ type: "peer", name: "Office PC", addrs: ["198.51.100.20:51234", "192.168.1.5:51234"] });
   });
 
   it("refuses unknown codes and codes whose host hasn't said where it is", async () => {
@@ -191,9 +215,18 @@ describe("validation", () => {
     expect(normalizeCode("K7P4")).toBeNull();
   });
 
+  it("knows home-network addresses", () => {
+    for (const a of ["10.1.2.3:1", "172.16.0.1:1", "172.31.9.9:1", "192.168.0.4:1", "169.254.1.1:1", "[fd12::1]:1", "[fe80::1]:1"]) {
+      expect(isLocal(a), a).toBe(true);
+    }
+    for (const a of ["203.0.113.10:1", "172.32.0.1:1", "11.0.0.1:1", "[2001:db8::5]:1"]) expect(isLocal(a), a).toBe(false);
+  });
+
   it("accepts only names and ip:port addresses", () => {
     const ok = JSON.stringify({ type: "join", name: "n".repeat(100), addrs: ["1.2.3.4:5", "[::1]:6"] });
-    expect(parsePeer(ok, "join")).toEqual({ name: "n".repeat(64), addrs: ["1.2.3.4:5", "[::1]:6"] });
+    expect(parsePeer(ok, "join")).toEqual({ name: "n".repeat(64), addrs: ["1.2.3.4:5", "[::1]:6"], local: [] });
+    const withLocal = JSON.stringify({ type: "join", name: "n", addrs: ["1.2.3.4:5"], local: ["192.168.0.2:5", "8.8.8.8:5"] });
+    expect(parsePeer(withLocal, "join")?.local).toEqual(["192.168.0.2:5"]);
     expect(parsePeer(ok, "hello")).toBeNull();
     expect(parsePeer(JSON.stringify({ type: "join", name: "n", addrs: [] }), "join")).toBeNull();
     expect(parsePeer(JSON.stringify({ type: "join", name: "n", addrs: Array(9).fill("1.2.3.4:5") }), "join")).toBeNull();
