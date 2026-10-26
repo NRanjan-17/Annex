@@ -6,7 +6,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Version>0.1.0</Version>
     <Company>Nalinish Ranjan</Company>
-    <Copyright>Copyright © 2026 Nalinish Ranjan. MIT License.</Copyright>
+    <Copyright>Copyright © 2026 Nalinish Ranjan and Saidev Dhal. MIT License.</Copyright>
     <!-- No telemetry from the build either. -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
