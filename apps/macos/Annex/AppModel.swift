@@ -562,7 +562,7 @@ final class AppModel: ObservableObject {
             case "direct": " · cable"
             case "internet": " · internet"
             case "relayed": " · relay"
-            default: ""
+            default: peerToPeerTunnel != nil ? " · peer-to-peer" : ""
             }
             viewerStatus = (s.mode == "extend" ? "Extending \(s.peerName)" : "Viewing \(s.peerName)") + via
             viewerPeerName = s.peerName
@@ -577,7 +577,7 @@ final class AppModel: ObservableObject {
             case "direct": "Over a cable"
             case "internet": "Over the internet"
             case "relayed": "Through a relay"
-            default: onDirectWiFi ? "On direct Wi-Fi" : ""
+            default: peerToPeerTunnel != nil ? "Over peer-to-peer Wi-Fi" : onDirectWiFi ? "On direct Wi-Fi" : ""
             }
             viewerWindow?.setPeer(s.peerName, detail: route)
             viewerWindow?.setStreamSize(width: s.stream.width, height: s.stream.height)

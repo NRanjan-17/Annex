@@ -108,7 +108,7 @@ final class ExtendSession {
         let id = display.displayID
         guard let current = CGDisplayCopyDisplayMode(id) else { return }  // no mode yet: retried later
         scaleToApply = nil
-        guard CGDisplayMirrorsDisplay(id) == kCGNullDirectDisplay else { return }
+        guard Self.mirrorSource(of: id) == nil else { return }
         let step = Self.resolvedScale(scale, viewerScalePercent: viewerScalePercent)
         let points = ((viewerPixels.0 * 100 / step) & ~1, (viewerPixels.1 * 100 / step) & ~1)
         let pixelWidth = step > 100 ? points.0 * 2 : points.0
@@ -245,8 +245,14 @@ final class ExtendSession {
     /// Settings → Displays → Mirror, which it remembers for this display), that screen. A display
     /// in a mirror set draws nothing of its own, so ScreenCaptureKit refuses it.
     private var captureSource: CGDirectDisplayID {
-        let source = CGDisplayMirrorsDisplay(display.displayID)
-        return source == kCGNullDirectDisplay ? display.displayID : source
+        Self.mirrorSource(of: display.displayID) ?? display.displayID
+    }
+
+    /// The screen `id` mirrors, if any. A display macOS hasn't set up yet answers 0xFFFFFFFF
+    /// (no such display), which isn't mirroring.
+    nonisolated static func mirrorSource(of id: CGDirectDisplayID) -> CGDirectDisplayID? {
+        let source = CGDisplayMirrorsDisplay(id)
+        return source == kCGNullDirectDisplay || source == CGDirectDisplayID.max ? nil : source
     }
 
     /// The display being captured now.

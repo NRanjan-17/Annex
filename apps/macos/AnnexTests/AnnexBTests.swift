@@ -98,6 +98,12 @@ final class AnnexBTests: XCTestCase {
         XCTAssertFalse(lost.contains("same network"))
     }
 
+    func testDisplaysThatAreNotSetUpAreNotMirrors() {
+        // A display macOS doesn't know answers 0xFFFFFFFF; that's not a screen to capture.
+        XCTAssertNil(ExtendSession.mirrorSource(of: 0x7fff_fff0))
+        XCTAssertNil(ExtendSession.mirrorSource(of: CGMainDisplayID()))
+    }
+
     func testInternetEventDecoding() {
         func decode(_ s: String) -> CoreEvent { CoreEvent.decode(Data(s.utf8)) }
         XCTAssertEqual(decode(#"{"type":"internet_code","code":"K7P-4QX","expires_in":600}"#),

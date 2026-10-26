@@ -58,8 +58,10 @@ final class H264Encoder {
             // Keyframes are mostly on demand (viewer join / loss); this is only a backstop.
             kVTCompressionPropertyKey_MaxKeyFrameInterval: fps * 30,
             kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: 30,
+            // Screen pixels are sRGB (the capturer converts to it). Tagged as video (BT.709), macOS
+            // shows them lighter on the viewer, washing dark greys out by about 14 %.
             kVTCompressionPropertyKey_ColorPrimaries: kCVImageBufferColorPrimaries_ITU_R_709_2,
-            kVTCompressionPropertyKey_TransferFunction: kCVImageBufferTransferFunction_ITU_R_709_2,
+            kVTCompressionPropertyKey_TransferFunction: kCVImageBufferTransferFunction_sRGB,
             kVTCompressionPropertyKey_YCbCrMatrix: kCVImageBufferYCbCrMatrix_ITU_R_709_2,
         ]
         for (key, value) in props {

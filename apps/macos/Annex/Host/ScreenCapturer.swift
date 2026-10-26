@@ -32,6 +32,8 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
+        // sRGB, as the stream is tagged; left alone, a P3 screen's colours come out dull.
+        config.colorSpaceName = CGColorSpace.sRGB
         config.showsCursor = true
         config.queueDepth = 4
         config.capturesAudio = false
