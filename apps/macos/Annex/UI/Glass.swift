@@ -75,6 +75,9 @@ extension View {
         }
     }
 
+    /// The pointing hand over anything clickable, unless it's disabled.
+    func pointingHand() -> some View { modifier(PointingHand()) }
+
     /// The main action on a screen: glass, filled with the accent.
     @ViewBuilder func primaryGlassButton() -> some View {
         if #available(macOS 26.0, *) {
@@ -146,5 +149,23 @@ struct LiveDot: View {
             .background(Circle().fill(color.opacity(0.35)).scaleEffect(on ? 2.6 : 1).opacity(on ? 0 : 1))
             .onAppear { withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) { on = true } }
             .accessibilityHidden(true)
+    }
+}
+
+private struct PointingHand: ViewModifier {
+    @Environment(\.isEnabled) private var enabled
+    @State private var pushed = false
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.pointerStyle(enabled ? .link : nil)
+        } else {
+            content
+                .onHover { inside in
+                    if inside, enabled, !pushed { NSCursor.pointingHand.push(); pushed = true }
+                    if !inside, pushed { NSCursor.pop(); pushed = false }
+                }
+                .onDisappear { if pushed { NSCursor.pop(); pushed = false } }
+        }
     }
 }

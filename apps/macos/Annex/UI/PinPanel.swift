@@ -51,6 +51,7 @@ private struct PinView: View {
                 Text("Its identity code: \(fingerprint)").font(.caption).foregroundStyle(.secondary)
             }
             Button("Don’t Allow", role: .cancel, action: cancel).keyboardShortcut(.cancelAction)
+                .pointingHand()
         }
         .padding(20)
         .frame(width: 360)

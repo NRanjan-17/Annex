@@ -177,6 +177,7 @@ private struct NearbyHeader: View {
             }
             Spacer(minLength: 12)
             Button("Connect by Code or Address…", action: otherWays)
+                .pointingHand()
                 .secondaryGlassButton()
                 .disabled(model.isViewing)
         }
@@ -286,6 +287,7 @@ private struct NotSharingToggle: View {
                 .frame(height: 26)
                 .contentShape(Capsule())
         }
+        .pointingHand()
         .buttonStyle(.plain)
         .glassCapsule(interactive: true)
     }
@@ -364,6 +366,7 @@ private struct NearbyRow: View {
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
             .fill(selected ? Color.white.opacity(0.92) : Color.white.opacity(hovered ? 0.07 : 0.035)))
         .contentShape(Rectangle())
+        .pointingHand()
         .onTapGesture(count: 2, perform: connect)
         .onTapGesture(perform: select)
         .onHover { hovered = $0 }
@@ -399,6 +402,7 @@ private struct PeerCard: View {
                     .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.white.opacity(0.08)))
                 Spacer()
                 Button(action: close) { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)) }
+                    .pointingHand()
                     .buttonStyle(.plain)
                     .frame(width: 26, height: 26)
                     .background(Circle().fill(Color.white.opacity(0.08)))
@@ -446,6 +450,7 @@ private struct PeerCard: View {
                         Text(lastConnected(trusted)).font(.system(size: 11)).foregroundStyle(.secondary)
                         Spacer()
                         Button("Forget…") { confirmForget = true }
+                            .pointingHand()
                             .buttonStyle(.plain)
                             .font(.system(size: 11.5, weight: .medium))
                             .foregroundStyle(.secondary)
@@ -500,6 +505,7 @@ private struct SwitchRow: View {
             Detail(title: title, text: text)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Toggle(title, isOn: $isOn)
+                .pointingHand()
                 .labelsHidden()
         }
     }
@@ -533,6 +539,7 @@ private struct Action: View {
             .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(prominent ? Color.white.opacity(0.94) : Color.white.opacity(hovered ? 0.12 : 0.07)))
         }
+        .pointingHand()
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
         .disabled(disabled)
@@ -567,6 +574,7 @@ private struct SessionStrip: View {
                 }
             }
             Button(role: .destructive) { stop() } label: { Text(model.isViewing ? "Disconnect" : "Stop Sharing") }
+                .pointingHand()
                 .secondaryGlassButton()
         }
         .padding(.horizontal, 22)

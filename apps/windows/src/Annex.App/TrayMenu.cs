@@ -46,6 +46,7 @@ internal sealed partial class TrayMenu : Window
         // Black over the acrylic, like the main window.
         _root.RequestedTheme = ElementTheme.Dark;
         _root.Background = Ui.Black(0.72);
+        Ui.PointingHand(_root);
         Content = _root;
         PopupBehavior.ConfigureChrome(this);
         _popup = new PopupBehavior(this);

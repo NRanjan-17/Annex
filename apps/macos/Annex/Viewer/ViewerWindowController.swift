@@ -41,7 +41,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func disconnectAccessory() -> NSTitlebarAccessoryViewController {
-        let button = NSButton(title: "Disconnect", target: self, action: #selector(disconnect))
+        let button = PointingButton(title: "Disconnect", target: self, action: #selector(disconnect))
         button.bezelStyle = .push
         button.controlSize = .small
         button.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
@@ -413,5 +413,12 @@ private final class HUDView: NSVisualEffectView {
     func set(title t: String, detail d: String) {
         title.stringValue = t
         detail.stringValue = d
+    }
+}
+
+/// A button that shows the pointing hand, like every other clickable thing in Annex.
+private final class PointingButton: NSButton {
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .pointingHand)
     }
 }

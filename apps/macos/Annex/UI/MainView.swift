@@ -192,6 +192,7 @@ private struct SidebarItem: View {
             }
             .contentShape(Rectangle())
         }
+        .pointingHand()
         .buttonStyle(.plain)
         .focusEffectDisabled()
         .onHover { hovered = $0 }
@@ -360,7 +361,7 @@ private struct ToggleRow: View {
 
     var body: some View {
         GroupRow(title: title, subtitle: subtitle) {
-            Toggle("", isOn: $isOn).toggleStyle(.switch).labelsHidden().disabled(disabled)
+            Toggle("", isOn: $isOn).toggleStyle(.switch).labelsHidden().pointingHand().disabled(disabled)
         }
     }
 }
@@ -428,11 +429,13 @@ private struct SharePage: View {
                         Button(role: .destructive) { model.setHosting(false) } label: {
                             Label("Stop Sharing", systemImage: "stop.fill").padding(.horizontal, 6)
                         }
+                        .pointingHand()
                         .controlSize(.large)
                     } else {
                         Button { model.setHosting(true) } label: {
                             Label("Start Sharing", systemImage: "play.fill").padding(.horizontal, 6)
                         }
+                        .pointingHand()
                         .primaryGlassButton()
                         .controlSize(.large)
                     }
@@ -443,6 +446,7 @@ private struct SharePage: View {
                         Picker("", selection: $model.selectedDisplayID) {
                             ForEach(model.displays) { d in Text(d.name).tag(Optional(d.id)) }
                         }
+                        .pointingHand()
                         .labelsHidden()
                         .fixedSize()
                         .disabled(model.isHosting)
@@ -453,6 +457,7 @@ private struct SharePage: View {
                              subtitle: "Allow Annex in Privacy & Security, then reopen Annex. After an update, remove it with − and add it again.",
                              status: .symbol("exclamationmark.triangle.fill", .orange)) {
                         Button("Open Settings") { openPrivacySettings("Privacy_ScreenCapture") }
+                            .pointingHand()
                     }
                 }
                 if let err = model.hostStatus.error {
@@ -469,6 +474,7 @@ private struct SharePage: View {
                                          ? s.stream.map { "\($0.width)×\($0.height) at \($0.fps) fps" } : nil) {
                             if model.hostDirectWiFi == nil {
                                 Button("Direct Wi-Fi") { model.switchViewerToDirectWiFi(v) }
+                                    .pointingHand()
                                     .help("Join \(v.name)'s hotspot for less lag. Works with a Windows PC.")
                             }
                         }
@@ -543,6 +549,7 @@ private struct HowToConnect: View {
                             NSPasteboard.general.setString(text, forType: .string)
                             copied = text
                         }
+                        .pointingHand()
                         .controlSize(.small)
                     }
                 }
@@ -599,6 +606,7 @@ private struct InternetShareSection: View {
             Button { copied = false; model.shareCode() } label: {
                 Label(again ? "New Code" : "Get a Code", systemImage: "number").padding(.horizontal, 4)
             }
+            .pointingHand()
             .primaryGlassButton()
         }
     }
@@ -635,7 +643,9 @@ private struct CodeCell: View {
                         NSPasteboard.general.setString(code, forType: .string)
                         copied = true
                     }
+                        .pointingHand()
                     Button("Stop", role: .destructive, action: stop)
+                        .pointingHand()
                 }
                 .fixedSize()
             }
@@ -653,6 +663,7 @@ private struct NotShowingUp: View {
             GroupRow(title: "Use the same network", subtitle: "Guest Wi-Fi and VPNs can hide computers.")
             GroupRow(title: "Allow Local Network for Annex") {
                 Button("Open Settings") { openPrivacySettings("Privacy_LocalNetwork") }
+                    .pointingHand()
             }
             GroupRow(title: "On Windows, allow the firewall", subtitle: "In Annex on the PC: Nearby → Allow Annex through the firewall.")
         }
@@ -676,6 +687,7 @@ private struct ConnectButtons: View {
             } label: {
                 Label("Show Its Screen", systemImage: "rectangle.on.rectangle")
             }
+            .pointingHand()
             .primaryGlassButton()
             .help("Use the other computer's screen on this Mac.")
             Button {
@@ -684,6 +696,7 @@ private struct ConnectButtons: View {
             } label: {
                 Label("Extend Display", systemImage: "rectangle.split.2x1")
             }
+            .pointingHand()
             .help(peer?.canExtend == false
                   ? "Extend isn't set up on that computer."
                   : "This Mac becomes a second screen for it.")
@@ -727,6 +740,7 @@ struct OtherWaysSheet: View {
             HStack {
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                    .pointingHand()
             }
             .padding(16)
         }
@@ -780,6 +794,7 @@ private struct PCHotspotSection: View {
                     Spacer()
                     if model.joiningPCHotspot { ProgressView().controlSize(.small) }
                     Button("Join") { model.joinPCHotspot() }
+                        .pointingHand()
                         .disabled(model.joiningPCHotspot || model.isViewing
                                   || model.pcHotspotName.trimmingCharacters(in: .whitespaces).isEmpty
                                   || model.pcHotspotPassword.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -803,10 +818,12 @@ private struct NewMacSection: View {
                          subtitle: "Until \(until.formatted(date: .omitted, time: .shortened)).",
                          status: .symbol("person.2.wave.2.fill", .primary)) {
                     Button("Stop") { model.hideFromNewMacs() }
+                        .pointingHand()
                 }
             } else {
                 GroupRow(title: "Let a new Mac find this one", subtitle: "For 5 minutes, like AirDrop’s Everyone.") {
                     Button("Allow") { model.letNewMacsFindThisOne() }
+                        .pointingHand()
                 }
             }
         }
@@ -850,6 +867,7 @@ private struct ViewerStatusSection: View {
                             Button(role: .destructive) { model.disconnectViewer() } label: {
                                 Label("Disconnect", systemImage: "xmark")
                             }
+                                .pointingHand()
                         }
                     }
                     if model.isViewing && model.controllingHost {
@@ -860,6 +878,7 @@ private struct ViewerStatusSection: View {
                     } else if model.isViewing {
                         GroupRow(title: "Switch to direct Wi-Fi", subtitle: "Less lag: connect straight to the PC's hotspot.") {
                             Button("Switch") { model.switchToDirectWiFi() }
+                                .pointingHand()
                         }
                     }
                 }
@@ -890,6 +909,7 @@ private struct PeerPage: View {
                         model.extendMode = false
                         model.connect(to: peer)
                     }
+                    .pointingHand()
                     .primaryGlassButton()
                     .disabled(model.isViewing || !peer.isSharing)
                 }
@@ -898,6 +918,7 @@ private struct PeerPage: View {
                         model.extendMode = true
                         model.connect(to: peer)
                     }
+                    .pointingHand()
                     .disabled(model.isViewing || !peer.isSharing || !peer.canExtend)
                 }
             }
@@ -986,6 +1007,7 @@ private struct SettingsPage: View {
                     Text("Balanced").tag(1)
                     Text("Fast (Wi-Fi)").tag(2)
                 }
+                .pointingHand()
                 .labelsHidden()
                 .fixedSize()
             }
@@ -1009,6 +1031,7 @@ private struct SettingsPage: View {
             .padding(.horizontal, 4)
             .contentShape(Rectangle())
         }
+        .pointingHand()
         .buttonStyle(.plain)
     }
 
@@ -1027,6 +1050,7 @@ private struct SettingsPage: View {
                     Text("Sharpest").tag(0)
                     ForEach(ExtendSession.scales, id: \.self) { Text("\($0) %").tag($0) }
                 }
+                .pointingHand()
                 .labelsHidden()
                 .fixedSize()
             }
@@ -1073,8 +1097,10 @@ private struct SettingsPage: View {
                             let log = AppModel.dataDirectory.appendingPathComponent("annex.log")
                             NSWorkspace.shared.activateFileViewerSelecting([log])
                         }
+                            .pointingHand()
                     }
                     Toggle("", isOn: $settings.saveLog).toggleStyle(.switch).labelsHidden()
+                        .pointingHand()
                 }
             }
         }
@@ -1105,6 +1131,7 @@ private struct DevicesPage: View {
                              subtitle: "Needed for remote control. After an update, remove Annex with − and add it again.",
                              status: .symbol("exclamationmark.triangle.fill", .orange)) {
                         Button("Open Settings") { InputInjector.openAccessibilitySettings() }
+                            .pointingHand()
                     }
                 }
             }
@@ -1134,6 +1161,7 @@ private struct DeviceGroup: View {
         GroupSection {
             GroupRow(title: peer.name, subtitle: lastSeen) {
                 Button("Remove…", role: .destructive) { confirmRemove = true }
+                    .pointingHand()
             }
             ToggleRow(title: "Can use this Mac's mouse and keyboard",
                       isOn: Binding(get: { peer.allowInput }, set: { model.setAllowInput(peer, $0) }))
@@ -1172,6 +1200,7 @@ private struct AboutPage: View {
                 status
                 GroupCell {
                     Button("Check Now") { Task { await updater.check() } }
+                        .pointingHand()
                         .disabled(updater.isBusy)
                 }
                 GroupCell {
@@ -1181,6 +1210,7 @@ private struct AboutPage: View {
             GroupSection {
                 GroupRow(title: "Uninstall Annex", subtitle: "Removes Annex, its settings and paired devices from this Mac.") {
                     Button("Uninstall…") { SettingsPage.runUninstaller() }
+                        .pointingHand()
                 }
             }
         }
@@ -1203,8 +1233,11 @@ private struct AboutPage: View {
                     Button("Release Notes") {
                         NSWorkspace.shared.open(Self.repo.appendingPathComponent("releases/tag/v\(Annex.version)"))
                     }
+                        .pointingHand()
                     Button("Report an Issue") { NSWorkspace.shared.open(Self.repo.appendingPathComponent("issues")) }
+                        .pointingHand()
                     Link("View on GitHub", destination: Self.repo)
+                        .pointingHand()
                 }
                 .controlSize(.large)
                 .padding(.top, 16)
@@ -1232,8 +1265,9 @@ private struct AboutPage: View {
         return GroupRow(title: text, status: state) {
             if case .available(let info) = updater.state {
                 HStack(spacing: 12) {
-                    if let page = URL(string: info.pageUrl) { Link("What's New", destination: page) }
+                    if let page = URL(string: info.pageUrl) { Link("What's New", destination: page).pointingHand() }
                     Button("Install") { updater.confirmAndInstall() }
+                        .pointingHand()
                 }
             }
         }
@@ -1255,7 +1289,9 @@ struct UpdateBanner: View {
                 GroupRow(title: Updater.headline(info), status: .symbol("arrow.down.circle.fill", .primary)) {
                     HStack(spacing: 8) {
                         Button("Not Now") { updater.dismissBanner() }
+                            .pointingHand()
                         Button("Install") { updater.confirmAndInstall() }
+                            .pointingHand()
                     }
                 }
             }
