@@ -39,8 +39,14 @@ final class AppSettings: ObservableObject {
     @Published var customDeviceName: String? { didSet { defaults.set(customDeviceName, forKey: Keys.name) } }
     /// Share and connect over the internet with codes. Off by default: it uses a server.
     @Published var internetEnabled: Bool { didSet { defaults.set(internetEnabled, forKey: Keys.internet) } }
-    /// The rendezvous server (`wss://…`) that swaps the two computers' addresses.
+    /// The rendezvous server (`wss://…`) that swaps the two computers' addresses; empty = Annex's.
     @Published var rendezvousServer: String { didSet { defaults.set(rendezvousServer, forKey: Keys.rendezvous) } }
+    static let annexServer = "wss://connect.getannex.dev"
+    /// The server codes use: the one set here, else Annex's.
+    var server: String {
+        let s = rendezvousServer.trimmingCharacters(in: .whitespaces)
+        return s.isEmpty ? Self.annexServer : s
+    }
     /// The user's own relay (`turn:host:port`) for networks that block direct connections; empty =
     /// the rendezvous server's relay, if it offers one.
     @Published var relayURL: String { didSet { defaults.set(relayURL, forKey: Keys.relayURL) } }

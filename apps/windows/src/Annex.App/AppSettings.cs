@@ -44,16 +44,19 @@ public sealed class AppSettings
     public Annex.Interop.Quality Quality { get; set; } = Annex.Interop.Quality.Best;
     /// <summary>Share and connect over the internet with codes. Off by default: it uses a server.</summary>
     public bool InternetEnabled { get; set; }
-    /// <summary>The rendezvous server (wss://…) that swaps the two computers' addresses.</summary>
+    /// <summary>The rendezvous server (wss://…) that swaps the two computers' addresses; empty = Annex's.</summary>
     public string RendezvousServer { get; set; } = "";
+    public const string AnnexServer = "wss://connect.getannex.dev";
+    /// <summary>The server codes use: the one set here, else Annex's.</summary>
+    [JsonIgnore]
+    public string Server => RendezvousServer.Trim() is { Length: > 0 } s ? s : AnnexServer;
     /// <summary>The user's own relay (turn:host:port) for networks that block direct connections;
     /// empty = the server's relay, if it offers one. The password is in <see cref="RelayPassword"/>.</summary>
     public string RelayUrl { get; set; } = "";
     public string RelayUsername { get; set; } = "";
 
-    /// <summary>Codes work once both are set.</summary>
     [JsonIgnore]
-    public bool InternetReady => InternetEnabled && RendezvousServer.Trim().Length > 0;
+    public bool InternetReady => InternetEnabled;
 
     /// <summary>Kept out of settings.json: encrypted for this Windows user (DPAPI) in relay.dat.</summary>
     [JsonIgnore]
