@@ -37,8 +37,6 @@ final class AppSettings: ObservableObject {
     @Published var peerToPeerWiFi: Bool { didSet { defaults.set(peerToPeerWiFi, forKey: Keys.peerToPeer) } }
     /// The name other devices see; nil = this Mac's name from System Settings.
     @Published var customDeviceName: String? { didSet { defaults.set(customDeviceName, forKey: Keys.name) } }
-    /// Share and connect over the internet with codes. Off by default: it uses a server.
-    @Published var internetEnabled: Bool { didSet { defaults.set(internetEnabled, forKey: Keys.internet) } }
     /// The rendezvous server (`wss://…`) that swaps the two computers' addresses; empty = Annex's.
     @Published var rendezvousServer: String { didSet { defaults.set(rendezvousServer, forKey: Keys.rendezvous) } }
     static let annexServer = "wss://connect.getannex.dev"
@@ -72,7 +70,6 @@ final class AppSettings: ObservableObject {
         static let lastCheck = "lastUpdateCheck"
         static let peerToPeer = "peerToPeerWiFi"
         static let extendScale = "extendScale"
-        static let internet = "internetEnabled"
         static let rendezvous = "rendezvousServer"
         static let relayURL = "relayURL"
         static let relayUser = "relayUsername"
@@ -108,7 +105,6 @@ final class AppSettings: ObservableObject {
         dismissedUpdateVersion = defaults.string(forKey: Keys.dismissedUpdate)
         lastUpdateCheck = defaults.object(forKey: Keys.lastCheck) as? Date
         peerToPeerWiFi = defaults.bool(forKey: Keys.peerToPeer)
-        internetEnabled = defaults.bool(forKey: Keys.internet)
         rendezvousServer = defaults.string(forKey: Keys.rendezvous) ?? ""
         relayURL = defaults.string(forKey: Keys.relayURL) ?? ""
         relayUsername = defaults.string(forKey: Keys.relayUser) ?? ""

@@ -47,6 +47,8 @@ public sealed partial class MainWindow : Window
 
     // Viewer state.
     private bool _extend;
+    /// <summary>Settings → Advanced is open. Closed each time Annex starts.</summary>
+    private bool _showAdvanced;
     private string _viewingName = "";
     private string? _viewerStatus;
     private LatencyStats? _lat;
@@ -196,14 +198,13 @@ public sealed partial class MainWindow : Window
         File.WriteAllText(Path.Combine(DataDirectory, "selftest-ok"), DateTimeOffset.Now.ToString("O"));
     }
 
-    /// <summary>Pictures of This PC with a code, Settings → Internet and Nearby while sharing, for
+    /// <summary>Pictures of This PC with a code, Settings → Advanced and Nearby while sharing, for
     /// reviewing the design from CI. Settings are changed in memory only and put back.</summary>
     private async Task SaveScreens()
     {
         var dir = Path.Combine(DataDirectory, "shots");
         Directory.CreateDirectory(dir);
-        var (internet, server) = (_settings.InternetEnabled, _settings.RendezvousServer);
-        _settings.InternetEnabled = true;
+        var server = _settings.RendezvousServer;
         _settings.RendezvousServer = "wss://rendezvous.example";
         _serverBox.Text = _settings.RendezvousServer;
         try
@@ -214,7 +215,10 @@ public sealed partial class MainWindow : Window
             Go("share");
             await Shot(dir, "this-pc-code");
             Go("settings");
-            await Shot(dir, "settings-internet");
+            await Shot(dir, "settings");
+            _showAdvanced = true;
+            Go("settings");
+            await Shot(dir, "settings-advanced");
             Go("home");
             await Shot(dir, "nearby-sharing");
         }
@@ -226,7 +230,7 @@ public sealed partial class MainWindow : Window
         {
             _internet = null;
             SetHosting(false);
-            _settings.InternetEnabled = internet;
+            _showAdvanced = false;
             _settings.RendezvousServer = server;
             _serverBox.Text = server;
             Go("home");
@@ -548,13 +552,6 @@ public sealed partial class MainWindow : Window
     {
         _codeCountdown = null;
         p.Children.Add(Ui.Section("Over the internet"));
-        if (!_settings.InternetReady)
-        {
-            p.Children.Add(Ui.Card("", "Share with a computer on another network",
-                "Turn on Internet in Settings first. Off by default: it uses a server.",
-                Ui.Button("Open Settings", () => Go("settings"))));
-            return;
-        }
         switch (_internet)
         {
             case null:
@@ -628,7 +625,7 @@ public sealed partial class MainWindow : Window
     /// <summary>Host: get a code for a computer on another network to type.</summary>
     private void ShareCode()
     {
-        if (_host is null || !_settings.InternetReady) return;
+        if (_host is null) return;
         _internet = new InternetShare.Starting();
         try
         {
@@ -670,7 +667,7 @@ public sealed partial class MainWindow : Window
                     ("stopped", _) => null,
                     ("used", InternetShare.Relay { Relayed: false }) => new InternetShare.Ended(
                         "The other computer's network blocks direct connections, and no relay was available. "
-                        + "Add your own relay in Settings → Internet."),
+                        + "Add your own relay in Settings → Advanced."),
                     ("used", _) => new InternetShare.Ended(null),
                     ("expired", _) => new InternetShare.Ended("The code expired."),
                     (var r, _) => new InternetShare.Ended(FriendlyInternetError(r)),
@@ -707,7 +704,7 @@ public sealed partial class MainWindow : Window
         if (l.Contains("stun") || l.Contains("didn't answer"))
             return "Couldn't find this PC's internet address. Check the internet connection.";
         if (l.Contains("rendezvous") || l.Contains("websocket") || l.Contains("i/o") || l.Contains("dns"))
-            return "Couldn't reach the server. Check the address in Settings → Internet.";
+            return "Couldn't reach the server. Check the internet connection, or the server address in Settings → Advanced.";
         return r;
     }
 
@@ -719,19 +716,17 @@ public sealed partial class MainWindow : Window
         _settings.Save();
     }
 
-    /// <summary>Settings → Internet: off by default, the server, and optionally the user's own relay.</summary>
+    /// <summary>Settings → Advanced → Internet: the server, and optionally the user's own relay.</summary>
     private void InternetSettings(StackPanel p)
     {
-        p.Children.Add(Ui.Card("", "Connect over the internet", "Share and connect with codes, on any network. Off by default.",
-            Ui.Switch(_settings.InternetEnabled, on => { _settings.InternetEnabled = on; _settings.Save(); Render(); })));
-        if (!_settings.InternetEnabled) return;
         p.Children.Add(Ui.Card("", "Server", "Optional. Leave empty to use Annex's server.", Ui.Reuse(_serverBox)));
         p.Children.Add(Ui.Card("", "Your relay", "Optional. A TURN server, for networks that block direct connections.",
             Ui.Reuse(_relayUrlBox)));
         p.Children.Add(Ui.Card("", "Relay username", null, Ui.Reuse(_relayUserBox)));
         p.Children.Add(Ui.Card("", "Relay password", "Encrypted for your Windows account.", Ui.Reuse(_relayPasswordBox)));
-        p.Children.Add(Ui.Text("The server only introduces the two computers. The screen goes straight between them, encrypted, "
-            + "or through a relay when a network blocks that, yours if you set one here.", "CaptionTextBlockStyle", Ui.Secondary));
+        p.Children.Add(Ui.Text("Codes use Annex's server to swap the two computers' internet addresses; the screen goes straight "
+            + "between them, encrypted. Some networks block that: then it goes through a relay, yours if you set one here.",
+            "CaptionTextBlockStyle", Ui.Secondary));
     }
 
     private static List<GpuInfo> TryGpus()
@@ -848,7 +843,7 @@ public sealed partial class MainWindow : Window
         "code_expired" => "The code expired. Ask for a new one.",
         _ when byCode && (reason.Contains("timed out", StringComparison.OrdinalIgnoreCase) || reason.Contains("timeout", StringComparison.OrdinalIgnoreCase))
             => "Couldn't connect across the internet. One of the networks blocks direct connections and no relay was available. "
-               + "Add your own relay in Settings → Internet on the sharing computer.",
+               + "Add your own relay in Settings → Advanced on the sharing computer.",
         _ when byCode && (reason.Contains("rendezvous", StringComparison.OrdinalIgnoreCase) || reason.Contains("i/o", StringComparison.OrdinalIgnoreCase)
                           || reason.Contains("websocket", StringComparison.OrdinalIgnoreCase))
             => FriendlyInternetError(reason),
@@ -1351,18 +1346,11 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(Ui.Text("For a computer that isn't listed: on another network, or over Tailscale or ZeroTier.",
             "BodyTextBlockStyle", Ui.Secondary));
         panel.Children.Add(Ui.Eyebrow("Code"));
-        if (_settings.InternetReady)
-        {
-            var code = Ui.Reuse(_codeBox);
-            code.HorizontalAlignment = HorizontalAlignment.Stretch;
-            code.FontFamily = new FontFamily("Consolas");
-            panel.Children.Add(code);
-            panel.Children.Add(Ui.Text("The other computer shows it under Over the internet. It works once.", "CaptionTextBlockStyle", Ui.Secondary));
-        }
-        else
-        {
-            panel.Children.Add(Ui.Text("To use codes, turn on Internet in Settings.", "CaptionTextBlockStyle", Ui.Secondary));
-        }
+        var code = Ui.Reuse(_codeBox);
+        code.HorizontalAlignment = HorizontalAlignment.Stretch;
+        code.FontFamily = new FontFamily("Consolas");
+        panel.Children.Add(code);
+        panel.Children.Add(Ui.Text("The other computer shows it under Over the internet. It works once.", "CaptionTextBlockStyle", Ui.Secondary));
         panel.Children.Add(Ui.Eyebrow("Address"));
         var box = Ui.Reuse(_addressBox);
         box.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -1386,7 +1374,7 @@ public sealed partial class MainWindow : Window
             if (result == ContentDialogResult.Primary || result == ContentDialogResult.Secondary)
             {
                 _extend = result == ContentDialogResult.Secondary;
-                if (_settings.InternetReady && _codeBox.Text.Trim().Length > 0) ConnectByCode();
+                if (_codeBox.Text.Trim().Length > 0) ConnectByCode();
                 else ConnectManual();
             }
         }
@@ -1489,19 +1477,56 @@ public sealed partial class MainWindow : Window
         Connect($"{direct}:{peer.Port}", d.Name, d.Fingerprint);
     }
 
+    /// <summary>The five settings most people change, then everything else under Advanced, closed by default.</summary>
     private void SettingsPage(StackPanel p)
     {
         p.Children.Add(Ui.Hero("\uE713", "Settings", "How Annex starts, shares and shows other computers."));
-        p.Children.Add(Ui.Section("General"));
         GeneralSection(p);
+        p.Children.Add(AdvancedHeader());
+        if (!_showAdvanced) return;
         p.Children.Add(Ui.Section("Sharing"));
         SharingSection(p);
-        p.Children.Add(Ui.Section("Internet"));
-        InternetSettings(p);
         p.Children.Add(Ui.Section("Viewing"));
         ViewingSection(p);
+        p.Children.Add(Ui.Section("Internet"));
+        InternetSettings(p);
         p.Children.Add(Ui.Section("Developer"));
         DeveloperSection(p);
+    }
+
+    /// <summary>Opens and closes Settings → Advanced.</summary>
+    private Button AdvancedHeader()
+    {
+        var header = new Grid { ColumnSpacing = 8 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var chevron = Ui.Glyph(_showAdvanced ? "\uE70D" : "\uE76C", 12);
+        chevron.VerticalAlignment = VerticalAlignment.Center;
+        var title = Ui.Text("Advanced", "BodyStrongTextBlockStyle", wrap: false);
+        Grid.SetColumn(title, 1);
+        header.Children.Add(chevron);
+        header.Children.Add(title);
+        if (!_showAdvanced)
+        {
+            var hint = Ui.Text("You don't need to change these.", "CaptionTextBlockStyle", Ui.Secondary, wrap: false);
+            hint.HorizontalAlignment = HorizontalAlignment.Right;
+            hint.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(hint, 2);
+            header.Children.Add(hint);
+        }
+        var button = new Button
+        {
+            Content = header,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(4, 8, 4, 8),
+            Margin = new Thickness(0, 12, 0, 0),
+        };
+        button.Click += (_, _) => { _showAdvanced = !_showAdvanced; Render(); };
+        return button;
     }
 
     /// <summary>Identity codes, addresses, stream and latency figures (Settings → Developer).</summary>
@@ -1509,12 +1534,28 @@ public sealed partial class MainWindow : Window
 
     private void GeneralSection(StackPanel p)
     {
+        var quality = new ComboBox
+        {
+            ItemsSource = new[] { "Best", "Balanced", "Fast (Wi-Fi)" },
+            SelectedIndex = (int)_settings.Quality,
+            MinWidth = 220,
+        };
+        quality.SelectionChanged += (_, _) =>
+        {
+            _settings.Quality = (Quality)Math.Max(0, quality.SelectedIndex);
+            _settings.Save();
+        };
         p.Children.Add(Ui.Card("", "Device name",
             "Shown to other computers. Leave empty to use this PC's name.", Ui.Reuse(_nameBox)));
         p.Children.Add(Ui.Card("", "Start with Windows", "Opens in the tray when you sign in.",
             Ui.Switch(AppSettings.StartWithWindows, on => AppSettings.StartWithWindows = on)));
         p.Children.Add(Ui.Card("", "Start sharing when Annex opens", null,
             Ui.Switch(_settings.StartSharingAtLaunch, on => { _settings.StartSharingAtLaunch = on; _settings.Save(); })));
+        p.Children.Add(Ui.Card("", "Quality",
+            "Use Fast if the picture stutters on Wi-Fi.", quality));
+        p.Children.Add(Ui.Card("", "Control the other computer",
+            "When it allows it. Press Ctrl+Alt+Shift+Q to leave.",
+            Ui.Switch(_settings.UseMouseAndKeyboard, on => { _settings.UseMouseAndKeyboard = on; _settings.Save(); })));
     }
 
     private void SharingSection(StackPanel p)
@@ -1541,24 +1582,8 @@ public sealed partial class MainWindow : Window
 
     private void ViewingSection(StackPanel p)
     {
-        var quality = new ComboBox
-        {
-            ItemsSource = new[] { "Best", "Balanced", "Fast (Wi-Fi)" },
-            SelectedIndex = (int)_settings.Quality,
-            MinWidth = 220,
-        };
-        quality.SelectionChanged += (_, _) =>
-        {
-            _settings.Quality = (Quality)Math.Max(0, quality.SelectedIndex);
-            _settings.Save();
-        };
-        p.Children.Add(Ui.Card("", "Quality",
-            "Use Fast on Wi-Fi.", quality));
         p.Children.Add(Ui.Card("", "Extend display by default", null,
             Ui.Switch(_settings.ExtendByDefault, on => { _settings.ExtendByDefault = on; _extend = on; _settings.Save(); })));
-        p.Children.Add(Ui.Card("", "Control the other computer",
-            "When it allows it. Press Ctrl+Alt+Shift+Q to leave.",
-            Ui.Switch(_settings.UseMouseAndKeyboard, on => { _settings.UseMouseAndKeyboard = on; _settings.Save(); })));
         DirectWifiOption(p);
     }
 
@@ -2103,7 +2128,7 @@ public sealed partial class MainWindow : Window
     private void ConnectByCode()
     {
         var code = _codeBox.Text.Trim();
-        if (_core is null || code.Length == 0 || !_settings.InternetReady) return;
+        if (_core is null || code.Length == 0) return;
         _connectDialog?.Hide();
         Disconnect();
         var token = new object();

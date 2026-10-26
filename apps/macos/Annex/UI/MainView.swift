@@ -560,44 +560,37 @@ private struct InternetShareSection: View {
 
     var body: some View {
         GroupSection("Over the internet",
-                     footer: settings.internetEnabled ? "The server only introduces the two computers. The screen goes "
-                         + "straight between them, encrypted, or through a relay when a network blocks that." : nil) {
+                     footer: "The server only introduces the two computers. The screen goes "
+                         + "straight between them, encrypted, or through a relay when a network blocks that.") {
             content
         }
     }
 
     @ViewBuilder private var content: some View {
-        if !model.internetReady {
-            GroupRow(title: "Share with a computer on another network",
-                     subtitle: "Turn on Internet in Settings first. Off by default: it uses a server.") {
-                Button("Open Settings") { withAnimation(.snappy) { model.pane = .settings } }
-            }
-        } else {
-            switch model.internetShare {
-            case nil:
-                getCode(title: "Share with a code", subtitle: "For a computer on another network. Works once, for 10 minutes.")
-            case .starting:
-                GroupRow(title: "Getting a code…", status: .spinner)
-            case .code(let code, let expires):
-                CodeCell(code: code, expires: expires, copied: $copied, stop: { model.stopCode() })
-            case .joining(let name):
-                GroupRow(title: "\(name) is connecting…", subtitle: "Typed the code. The PIN comes next if it's new.",
-                         status: .spinner)
-            case .relay(let name, true, let limited):
-                GroupRow(title: "Connecting \(name) through the relay…",
-                         subtitle: limited ? "Their network blocks direct connections. Our relay: up to 20 minutes, lower quality."
-                                           : "Their network blocks direct connections. Using your relay.",
-                         status: .spinner)
-            case .relay(let name, false, _):
-                GroupRow(title: "\(name) couldn't connect directly",
-                         subtitle: "No relay is available right now.",
-                         status: .symbol("exclamationmark.triangle.fill", .orange))
-            case .ended(nil):
-                getCode(title: "Code used", subtitle: "Get another one for the next computer.", again: true)
-            case .ended(let why?):
-                GroupRow(title: why, status: .symbol("exclamationmark.triangle.fill", .orange))
-                getCode(title: "Try again", subtitle: nil, again: true)
-            }
+        switch model.internetShare {
+        case nil:
+            getCode(title: "Share with a code", subtitle: "For a computer on another network. Works once, for 10 minutes.")
+        case .starting:
+            GroupRow(title: "Getting a code…", status: .spinner)
+        case .code(let code, let expires):
+            CodeCell(code: code, expires: expires, copied: $copied, stop: { model.stopCode() })
+        case .joining(let name):
+            GroupRow(title: "\(name) is connecting…", subtitle: "Typed the code. The PIN comes next if it's new.",
+                     status: .spinner)
+        case .relay(let name, true, let limited):
+            GroupRow(title: "Connecting \(name) through the relay…",
+                     subtitle: limited ? "Their network blocks direct connections. Our relay: up to 20 minutes, lower quality."
+                                       : "Their network blocks direct connections. Using your relay.",
+                     status: .spinner)
+        case .relay(let name, false, _):
+            GroupRow(title: "\(name) couldn't connect directly",
+                     subtitle: "No relay is available right now.",
+                     status: .symbol("exclamationmark.triangle.fill", .orange))
+        case .ended(nil):
+            getCode(title: "Code used", subtitle: "Get another one for the next computer.", again: true)
+        case .ended(let why?):
+            GroupRow(title: why, status: .symbol("exclamationmark.triangle.fill", .orange))
+            getCode(title: "Try again", subtitle: nil, again: true)
         }
     }
 
@@ -749,24 +742,17 @@ private struct CodeSection: View {
     let dismiss: () -> Void
 
     var body: some View {
-        GroupSection("Code", footer: model.internetReady ? "The other computer shows it under Over the internet. It works once." : nil) {
-            if model.internetReady {
-                GroupRow(title: "Code from the other computer") {
-                    InputField(text: $model.manualCode, placeholder: "K7P-4QX",
-                               onSubmit: { model.extendMode = false; model.connectByCode(); dismiss() })
-                        .frame(width: 200)
-                }
-                GroupCell {
-                    HStack {
-                        Spacer()
-                        ConnectButtons(model: model, connect: { model.connectByCode(); dismiss() }, compact: true)
-                            .disabled(model.isViewing || model.manualCode.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                }
-            } else {
-                GroupRow(title: "Connect over the internet with a code",
-                         subtitle: "Turn on Internet in Settings first.") {
-                    Button("Open Settings") { model.pane = .settings; dismiss() }
+        GroupSection("Code", footer: "The other computer shows it under Over the internet. It works once.") {
+            GroupRow(title: "Code from the other computer") {
+                InputField(text: $model.manualCode, placeholder: "K7P-4QX",
+                           onSubmit: { model.extendMode = false; model.connectByCode(); dismiss() })
+                    .frame(width: 200)
+            }
+            GroupCell {
+                HStack {
+                    Spacer()
+                    ConnectButtons(model: model, connect: { model.connectByCode(); dismiss() }, compact: true)
+                        .disabled(model.isViewing || model.manualCode.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         }
@@ -952,27 +938,32 @@ private struct PeerDetails: View {
 
 // MARK: Settings
 
-/// Preferences: General, Sharing, Viewing and Developer.
+/// Preferences: the five most people change, then everything else under Advanced, closed by default.
 private struct SettingsPage: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: AppSettings
     @State private var name = ""
+    // Screenshots: `ANNEX_PREVIEW_ADVANCED=1` opens Advanced.
+    @State private var showAdvanced = ProcessInfo.processInfo.environment["ANNEX_PREVIEW_ADVANCED"] != nil
 
     var body: some View {
         Page(title: "Settings") {
             Hero(title: "Settings", text: "How Annex starts, shares and shows other computers.",
                  symbol: "gearshape.fill", tint: .gray)
             general
-            sharing
-            internet
-            viewing
-            developer
+            advancedHeader
+            if showAdvanced {
+                sharing
+                viewing
+                internet
+                developer
+            }
         }
         .modifier(WatchesPermissions(model: model))
     }
 
     private var general: some View {
-        GroupSection("General") {
+        GroupSection {
             GroupRow(title: "Device name", subtitle: "Shown to other computers. Leave empty to use the Mac's own name.") {
                 // Empty = the Mac's own name (shown as the placeholder).
                 InputField(text: $name, placeholder: AppModel.systemName, onSubmit: {
@@ -989,7 +980,36 @@ private struct SettingsPage: View {
                 GroupRow(title: err, status: .symbol("exclamationmark.triangle.fill", .orange))
             }
             ToggleRow(title: "Start sharing when Annex opens", isOn: $settings.startSharingAtLaunch)
+            GroupRow(title: "Quality", subtitle: "Use Fast if the picture stutters on Wi-Fi.") {
+                Picker("", selection: $settings.quality) {
+                    Text("Best").tag(0)
+                    Text("Balanced").tag(1)
+                    Text("Fast (Wi-Fi)").tag(2)
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+            ToggleRow(title: "Control the other computer", subtitle: "When it allows it. Press ⌃⌥⇧Q to leave.",
+                      isOn: $settings.controlWhenViewing)
         }
+    }
+
+    private var advancedHeader: some View {
+        Button { withAnimation(.snappy) { showAdvanced.toggle() } } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .rotationEffect(.degrees(showAdvanced ? 90 : 0))
+                Text("Advanced").font(.headline)
+                Spacer()
+                if !showAdvanced {
+                    Text("You don't need to change these.").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var sharing: some View {
@@ -1015,44 +1035,28 @@ private struct SettingsPage: View {
 
     private var viewing: some View {
         GroupSection("Viewing") {
-            GroupRow(title: "Quality", subtitle: "Use Fast on Wi-Fi.") {
-                Picker("", selection: $settings.quality) {
-                    Text("Best").tag(0)
-                    Text("Balanced").tag(1)
-                    Text("Fast (Wi-Fi)").tag(2)
-                }
-                .labelsHidden()
-                .fixedSize()
-            }
             ToggleRow(title: "Open in full screen", isOn: $settings.openFullScreen)
             ToggleRow(title: "Extend display by default", isOn: $settings.extendByDefault)
-            ToggleRow(title: "Control the other computer", subtitle: "When it allows it. Press ⌃⌥⇧Q to leave.",
-                      isOn: $settings.controlWhenViewing)
         }
     }
 
     private var internet: some View {
         GroupSection("Internet",
-                     footer: "A server swaps the two computers' internet addresses for a code; the screen goes straight between "
-                         + "them, encrypted. Some networks block that: then it goes through a relay, yours if you set one here.") {
-            ToggleRow(title: "Connect over the internet",
-                      subtitle: "Share and connect with codes, on any network. Off by default.",
-                      isOn: $settings.internetEnabled)
-            if settings.internetEnabled {
-                GroupRow(title: "Server", subtitle: "Optional. Leave empty to use Annex's server.") {
-                    InputField(text: $settings.rendezvousServer, placeholder: AppSettings.annexServer).frame(width: 260)
+                     footer: "Codes use Annex's server to swap the two computers' internet addresses; the screen goes straight "
+                         + "between them, encrypted. Some networks block that: then it goes through a relay, yours if you set one here.") {
+            GroupRow(title: "Server", subtitle: "Optional. Leave empty to use Annex's server.") {
+                InputField(text: $settings.rendezvousServer, placeholder: AppSettings.annexServer).frame(width: 260)
+            }
+            GroupRow(title: "Your relay", subtitle: "Optional. A TURN server, for networks that block direct connections.") {
+                InputField(text: $settings.relayURL, placeholder: "turn:relay.example.com:3478").frame(width: 260)
+            }
+            if !settings.relayURL.trimmingCharacters(in: .whitespaces).isEmpty {
+                GroupRow(title: "Relay username") {
+                    InputField(text: $settings.relayUsername, placeholder: "Username").frame(width: 260)
                 }
-                GroupRow(title: "Your relay", subtitle: "Optional. A TURN server, for networks that block direct connections.") {
-                    InputField(text: $settings.relayURL, placeholder: "turn:relay.example.com:3478").frame(width: 260)
-                }
-                if !settings.relayURL.trimmingCharacters(in: .whitespaces).isEmpty {
-                    GroupRow(title: "Relay username") {
-                        InputField(text: $settings.relayUsername, placeholder: "Username").frame(width: 260)
-                    }
-                    GroupRow(title: "Relay password", subtitle: "Kept in the Keychain.") {
-                        SecureField("", text: $settings.relayPassword, prompt: Text("Password"))
-                            .textFieldStyle(.roundedBorder).frame(width: 260)
-                    }
+                GroupRow(title: "Relay password", subtitle: "Kept in the Keychain.") {
+                    SecureField("", text: $settings.relayPassword, prompt: Text("Password"))
+                        .textFieldStyle(.roundedBorder).frame(width: 260)
                 }
             }
         }

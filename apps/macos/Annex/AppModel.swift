@@ -287,13 +287,9 @@ final class AppModel: ObservableObject {
         case ended(String?)
     }
 
-    var internetReady: Bool {
-        settings.internetEnabled
-    }
-
     /// Host: get a code for a computer on another network to type.
     func shareCode() {
-        guard let host, internetReady else { return }
+        guard let host else { return }
         internetShare = .starting
         do {
             try host.shareCode(server: settings.server,
@@ -323,7 +319,7 @@ final class AppModel: ObservableObject {
             case ("stopped", _): internetShare = nil
             case ("used", .relay(_, false, _)):
                 internetShare = .ended("The other computer's network blocks direct connections, and no relay was available. "
-                                       + "Add your own relay in Settings → Internet.")
+                                       + "Add your own relay in Settings → Advanced.")
             case ("used", _): internetShare = .ended(nil)
             case ("expired", _): internetShare = .ended("The code expired.")
             case (let r, _): internetShare = .ended(Self.friendlyInternetError(r))
@@ -338,7 +334,7 @@ final class AppModel: ObservableObject {
             return "Couldn't find this Mac's internet address. Check the internet connection."
         }
         if l.contains("rendezvous") || l.contains("websocket") || l.contains("i/o") || l.contains("dns") {
-            return "Couldn't reach the server. Check the address in Settings → Internet."
+            return "Couldn't reach the server. Check the internet connection, or the server address in Settings → Advanced."
         }
         return r
     }
@@ -346,7 +342,7 @@ final class AppModel: ObservableObject {
     /// Viewer: connect by a code from a computer sharing over the internet.
     func connectByCode() {
         let code = manualCode.trimmingCharacters(in: .whitespaces)
-        guard let core, internetReady, !code.isEmpty else { return }
+        guard let core, !code.isEmpty else { return }
         disconnectViewer()
         switchOnStart = false
         holdingWindow = false
@@ -833,7 +829,7 @@ final class AppModel: ObservableObject {
             let r = reason.lowercased()
             if byCode && (r.contains("timed out") || r.contains("timeout")) {
                 return "Couldn't connect across the internet. One of the networks blocks direct connections "
-                    + "and no relay was available. Add your own relay in Settings → Internet on the sharing computer."
+                    + "and no relay was available. Add your own relay in Settings → Advanced on the sharing computer."
             }
             if byCode && (r.contains("rendezvous") || r.contains("i/o") || r.contains("websocket")) {
                 return Self.friendlyInternetError(reason)
