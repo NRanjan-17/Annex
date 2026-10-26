@@ -6,6 +6,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
+  // The apps connect to wss://connect.getannex.dev.
+  "routes": [{ "pattern": "connect.getannex.dev", "custom_domain": true }],
   "durable_objects": {
     "bindings": [
       { "name": "CODES", "class_name": "CodeRoom" },

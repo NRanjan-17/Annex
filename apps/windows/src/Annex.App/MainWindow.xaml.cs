@@ -91,7 +91,7 @@ public sealed partial class MainWindow : Window
     // Text boxes survive page rebuilds so typing isn't interrupted by status updates.
     private readonly TextBox _addressBox = new() { PlaceholderText = "192.168.1.20 or host:port" };
     private readonly TextBox _codeBox = new() { PlaceholderText = "K7P-4QX", CharacterCasing = CharacterCasing.Upper, MaxLength = 7 };
-    private readonly TextBox _serverBox = new() { PlaceholderText = "wss://…", Width = 240 };
+    private readonly TextBox _serverBox = new() { PlaceholderText = AppSettings.AnnexServer, Width = 240 };
     private readonly TextBox _relayUrlBox = new() { PlaceholderText = "turn:host:3478", Width = 240 };
     private readonly TextBox _relayUserBox = new() { Width = 240 };
     private readonly PasswordBox _relayPasswordBox = new() { Width = 240 };
@@ -551,8 +551,7 @@ public sealed partial class MainWindow : Window
         if (!_settings.InternetReady)
         {
             p.Children.Add(Ui.Card("", "Share with a computer on another network",
-                _settings.InternetEnabled ? "Add a server address in Settings → Internet."
-                    : "Turn on Internet in Settings first. Off by default: it uses a server.",
+                "Turn on Internet in Settings first. Off by default: it uses a server.",
                 Ui.Button("Open Settings", () => Go("settings"))));
             return;
         }
@@ -634,7 +633,7 @@ public sealed partial class MainWindow : Window
         try
         {
             var relay = _settings.RelayUrl.Trim();
-            _host.ShareCode(_settings.RendezvousServer.Trim(), relay.Length == 0 ? null : relay,
+            _host.ShareCode(_settings.Server, relay.Length == 0 ? null : relay,
                 relay.Length == 0 ? null : _settings.RelayUsername, relay.Length == 0 ? null : _settings.RelayPassword);
         }
         catch (AnnexException ex)
@@ -726,7 +725,7 @@ public sealed partial class MainWindow : Window
         p.Children.Add(Ui.Card("", "Connect over the internet", "Share and connect with codes, on any network. Off by default.",
             Ui.Switch(_settings.InternetEnabled, on => { _settings.InternetEnabled = on; _settings.Save(); Render(); })));
         if (!_settings.InternetEnabled) return;
-        p.Children.Add(Ui.Card("", "Server", "Its address, from whoever runs it.", Ui.Reuse(_serverBox)));
+        p.Children.Add(Ui.Card("", "Server", "Optional. Leave empty to use Annex's server.", Ui.Reuse(_serverBox)));
         p.Children.Add(Ui.Card("", "Your relay", "Optional. A TURN server, for networks that block direct connections.",
             Ui.Reuse(_relayUrlBox)));
         p.Children.Add(Ui.Card("", "Relay username", null, Ui.Reuse(_relayUserBox)));
@@ -1362,8 +1361,7 @@ public sealed partial class MainWindow : Window
         }
         else
         {
-            panel.Children.Add(Ui.Text(_settings.InternetEnabled ? "Add a server address in Settings → Internet to use codes."
-                : "To use codes, turn on Internet in Settings.", "CaptionTextBlockStyle", Ui.Secondary));
+            panel.Children.Add(Ui.Text("To use codes, turn on Internet in Settings.", "CaptionTextBlockStyle", Ui.Secondary));
         }
         panel.Children.Add(Ui.Eyebrow("Address"));
         var box = Ui.Reuse(_addressBox);
@@ -2112,7 +2110,7 @@ public sealed partial class MainWindow : Window
         _viewerToken = token;
         try
         {
-            _viewer = ViewerHandle.ConnectCodeWindowed(_core, _settings.RendezvousServer.Trim(), code,
+            _viewer = ViewerHandle.ConnectCodeWindowed(_core, _settings.Server, code,
                 e => _ui.TryEnqueue(() => { if (ReferenceEquals(_viewerToken, token)) OnViewerEvent(e); }),
                 extend: _extend, input: _settings.UseMouseAndKeyboard, quality: _settings.Quality);
             _viewingName = "the other computer";

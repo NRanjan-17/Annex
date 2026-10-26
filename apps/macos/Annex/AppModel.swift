@@ -288,7 +288,7 @@ final class AppModel: ObservableObject {
     }
 
     var internetReady: Bool {
-        settings.internetEnabled && !settings.rendezvousServer.trimmingCharacters(in: .whitespaces).isEmpty
+        settings.internetEnabled
     }
 
     /// Host: get a code for a computer on another network to type.
@@ -296,7 +296,7 @@ final class AppModel: ObservableObject {
         guard let host, internetReady else { return }
         internetShare = .starting
         do {
-            try host.shareCode(server: settings.rendezvousServer.trimmingCharacters(in: .whitespaces),
+            try host.shareCode(server: settings.server,
                                ownRelay: settings.ownRelay)
         } catch {
             internetShare = .ended(error.localizedDescription)
@@ -355,7 +355,7 @@ final class AppModel: ObservableObject {
         window.onClose = { [weak self] in self?.disconnectViewer() }
         do {
             let v = try ViewerHandle(
-                core: core, code: code, server: settings.rendezvousServer.trimmingCharacters(in: .whitespaces),
+                core: core, code: code, server: settings.server,
                 display: Displays.mainDisplayInfo(), extend: extendMode, input: settings.controlWhenViewing,
                 quality: settings.quality,
                 onEvent: { [weak self] e in

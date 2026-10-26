@@ -179,8 +179,9 @@ Phase 1 without phase 2 is Option 2. It's a working stopping point if relay cost
   - Anycast: computers reach the nearest Cloudflare location, so there's no region to choose.
 - **What Cloudflare sees:** the same as "the server" above (addresses, timing, relay byte counts).
   SECURITY.md names Cloudflare.
-- **Self-hosting:** the server address is a setting. Running your own means deploying the Worker
-  to your own Cloudflare account with `wrangler`; any TURN server works for the relay.
+- **Self-hosting:** the apps use Annex's server, `wss://connect.getannex.dev`, unless another
+  address is set in Settings → Internet. Running your own means deploying the Worker to your own
+  Cloudflare account with `wrangler`; any TURN server works for the relay.
 
 ### Doc changes before building
 
@@ -194,8 +195,8 @@ Phase 1 without phase 2 is Option 2. It's a working stopping point if relay cost
 
 1. ~~**Change the "no servers" rule?**~~ **Yes** (2026-10-25). PLAN.md updated.
 2. **Hosting:** Cloudflare Workers + Durable Objects for rendezvous, Cloudflare STUN, and
-   Cloudflare TURN when the relay comes. Whose Cloudflare account is decided before release; built
-   with the server address as a setting and tested with `wrangler dev`.
+   Cloudflare TURN when the relay comes. Runs on the project's Cloudflare account at
+   `wss://connect.getannex.dev` (2026-10-26), the apps' default; the address is still a setting.
 3. **Phase 2:** ~~later~~ built with phase 1 (2026-10-25): the relay is used only when the
    direct connection fails. Two kinds: the user's own TURN server (a setting on the sharing
    computer, no limits), or ours, which is **off unless its TURN secrets are set** and capped at

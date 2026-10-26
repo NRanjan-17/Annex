@@ -569,8 +569,7 @@ private struct InternetShareSection: View {
     @ViewBuilder private var content: some View {
         if !model.internetReady {
             GroupRow(title: "Share with a computer on another network",
-                     subtitle: settings.internetEnabled ? "Add a server address in Settings → Internet."
-                                                        : "Turn on Internet in Settings first. Off by default: it uses a server.") {
+                     subtitle: "Turn on Internet in Settings first. Off by default: it uses a server.") {
                 Button("Open Settings") { withAnimation(.snappy) { model.pane = .settings } }
             }
         } else {
@@ -766,8 +765,7 @@ private struct CodeSection: View {
                 }
             } else {
                 GroupRow(title: "Connect over the internet with a code",
-                         subtitle: model.settings.internetEnabled ? "Add a server address in Settings → Internet."
-                                                                  : "Turn on Internet in Settings first.") {
+                         subtitle: "Turn on Internet in Settings first.") {
                     Button("Open Settings") { model.pane = .settings; dismiss() }
                 }
             }
@@ -1041,8 +1039,8 @@ private struct SettingsPage: View {
                       subtitle: "Share and connect with codes, on any network. Off by default.",
                       isOn: $settings.internetEnabled)
             if settings.internetEnabled {
-                GroupRow(title: "Server", subtitle: "Its address, from whoever runs it.") {
-                    InputField(text: $settings.rendezvousServer, placeholder: "wss://rendezvous.example.com").frame(width: 260)
+                GroupRow(title: "Server", subtitle: "Optional. Leave empty to use Annex's server.") {
+                    InputField(text: $settings.rendezvousServer, placeholder: AppSettings.annexServer).frame(width: 260)
                 }
                 GroupRow(title: "Your relay", subtitle: "Optional. A TURN server, for networks that block direct connections.") {
                     InputField(text: $settings.relayURL, placeholder: "turn:relay.example.com:3478").frame(width: 260)
