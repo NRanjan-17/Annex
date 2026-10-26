@@ -48,6 +48,8 @@ public sealed partial class MainWindow : Window
 
     // Viewer state.
     private bool _extend;
+    /// <summary>Hosts and viewers being freed, one after another (see FreeLater).</summary>
+    private Task _teardown = Task.CompletedTask;
     /// <summary>Settings → Advanced is open. Closed each time Annex starts.</summary>
     private bool _showAdvanced;
     private string _viewingName = "";
@@ -1947,6 +1949,8 @@ public sealed partial class MainWindow : Window
     private void StartHosting()
     {
         if (_core is null || _host is not null) return;
+        // A host that was just stopped may still hold the port.
+        _teardown.Wait();
         _hostError = null;
         var hardware = _settings.PreferHardwareEncoder;
         try
@@ -1972,7 +1976,7 @@ public sealed partial class MainWindow : Window
     {
         var h = _host;
         _host = null;
-        h?.Dispose();
+        FreeLater(h);
         _sessions.Clear();
         _hostStream = null;
         _internet = null;
@@ -2296,7 +2300,16 @@ public sealed partial class MainWindow : Window
         var v = _viewer;
         _viewer = null;
         _viewerToken = null;
-        v?.Dispose();
+        FreeLater(v);
+    }
+
+    /// <summary>Frees a host or viewer off the UI thread: it says goodbye and waits for the connection
+    /// to close (half a second or more), which froze the window. In order, so a new host waits for
+    /// the old one to let go of the port.</summary>
+    private void FreeLater(IDisposable? handle)
+    {
+        if (handle is null) return;
+        _teardown = _teardown.ContinueWith(_ => handle.Dispose(), TaskScheduler.Default);
     }
 
     private void Shutdown()
@@ -2307,6 +2320,7 @@ public sealed partial class MainWindow : Window
         _trayMenu = null;
         StopHosting();
         Disconnect();
+        _teardown.Wait(TimeSpan.FromSeconds(5));
         _hotspot.StopAsync().Wait(TimeSpan.FromSeconds(3));
         _discovery?.Dispose();
         _discovery = null;

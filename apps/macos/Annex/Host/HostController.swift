@@ -73,7 +73,13 @@ final class HostController {
 
     static var extendSupported: Bool { AnnexVirtualDisplay.isSupported() }
 
+    /// Stopping waits for viewers to get the bye and for the connections to close (half a second or
+    /// more), so it runs here instead of freezing the app. Serial: a new host waits for the old one
+    /// to let go of the port.
+    static let teardown = DispatchQueue(label: "annex.host.teardown", qos: .userInitiated)
+
     func start() throws {
+        Self.teardown.sync {}
         let (w, h) = streamSize
         let injector = self.injector
         let extendDisplays = self.extendDisplays
@@ -106,8 +112,9 @@ final class HostController {
         injector.releaseAll()
         mirrorSessions.removeAll()
         stopMirrorCapture()
-        host?.stop()
-        host = nil
+        let host = self.host
+        self.host = nil
+        Self.teardown.async { host?.stop() }
         status = Status()
     }
 

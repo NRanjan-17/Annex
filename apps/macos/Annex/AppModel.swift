@@ -912,6 +912,8 @@ final class AppModel: ObservableObject {
     func quit() {
         disconnectViewer()
         stopHosting()
+        // Let viewers get the bye before the process ends.
+        HostController.teardown.sync {}
         NSApp.terminate(nil)
     }
 }

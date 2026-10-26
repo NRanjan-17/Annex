@@ -1819,12 +1819,13 @@ pub unsafe extern "C" fn annex_viewer_free(viewer: *mut AnnexViewer) {
         return;
     }
     let v = unsafe { Box::from_raw(viewer) };
-    if let Some(c) = unsafe { v.core.as_ref() } {
-        c.rt.block_on(v.handle.disconnect());
-    }
+    // The window goes first: disconnecting waits for the bye to go out.
     #[cfg(windows)]
     if let Some(w) = &v.window {
         w.close();
+    }
+    if let Some(c) = unsafe { v.core.as_ref() } {
+        c.rt.block_on(v.handle.disconnect());
     }
     v.callbacks.clear();
 }

@@ -252,7 +252,8 @@ final class HostHandle {
         }
     }
 
-    /// Ends any session and stops listening. Blocks briefly; call from the main thread.
+    /// Ends any session and stops listening. Blocks for half a second or more: the app calls it on
+    /// `HostController.teardown`.
     func stop() {
         if let raw {
             annex_host_free(raw)
