@@ -1204,7 +1204,7 @@ private struct AboutPage: View {
                 }
                 .controlSize(.large)
                 .padding(.top, 16)
-                Text("MIT License · © 2026 Nalinish Ranjan")
+                Text("MIT License · © 2026 Nalinish Ranjan and [Saidev Dhal](https://saidev.codes)")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .padding(.top, 16)

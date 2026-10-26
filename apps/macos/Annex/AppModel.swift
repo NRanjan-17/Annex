@@ -379,7 +379,7 @@ final class AppModel: ObservableObject {
     }
 
     #if DEBUG
-    /// Screenshots: `ANNEX_PREVIEW_PANE=share|settings` opens that page; with `ANNEX_PREVIEW_CODE=1`
+    /// Screenshots: `ANNEX_PREVIEW_PANE=share|settings|about` opens that page; with `ANNEX_PREVIEW_CODE=1`
     /// (and sharing on) it also gets a code. `ANNEX_PREVIEW_CONNECT=address` connects there.
     /// `ANNEX_PREVIEW_MESH=name` lists a computer as found on a private network.
     func openPreviewPane() {
@@ -400,6 +400,7 @@ final class AppModel: ObservableObject {
         switch env["ANNEX_PREVIEW_PANE"] {
         case "share": pane = .share
         case "settings": pane = .settings
+        case "about": pane = .about
         default: return
         }
         if env["ANNEX_PREVIEW_CODE"] != nil {

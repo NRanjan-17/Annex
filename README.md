@@ -246,6 +246,10 @@ apps handle capture, hardware video encoding and decoding, and the UI: SwiftUI o
 More: [roadmap](docs/PLAN.md) · [manual test plans](docs/TESTING.md) ·
 [CI/CD, signing and releases](docs/CICD.md) · [dependencies and licenses](docs/DEPENDENCIES.md).
 
+## Credits
+
+Made by Nalinish Ranjan and [Saidev Dhal](https://saidev.codes).
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
