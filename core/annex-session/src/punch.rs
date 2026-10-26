@@ -485,18 +485,30 @@ impl AsyncUdpSocket for PunchSocket {
     }
 }
 
-/// This computer's own public address with `port`, if it has one: its main IPv6 address when
-/// that's global (two IPv6 homes then need no punching at all). Private, link-local and LAN
-/// addresses are left out: computers on the same network find each other through Nearby, and
-/// they'd tell the other side about this home network for nothing. Found by asking the system
-/// which address it would use towards the internet; nothing is sent.
+/// This computer's own addresses with `port`, besides the public one STUN finds: its main IPv6
+/// address when that's global (two IPv6 homes then need no punching at all), and its main
+/// home-network IPv4 address, for a viewer on the same network (most routers won't loop a
+/// connection to their own public address back inside). The server passes that one on only to a
+/// computer connecting from the same public address. Found by asking the system which address it
+/// would use towards the internet; nothing is sent.
 pub fn own_addresses(port: u16) -> Vec<SocketAddr> {
-    let s = UdpSocket::bind("[::]:0").ok();
-    let ip = s.and_then(|s| s.connect("[2001:db8::1]:9").ok().and(s.local_addr().ok())).map(|a| a.ip());
-    match ip {
-        Some(IpAddr::V6(v6)) if is_global_v6(&v6) => vec![SocketAddr::new(IpAddr::V6(v6), port)],
-        _ => Vec::new(),
+    let towards = |bind: &str, to: &str| {
+        let s = UdpSocket::bind(bind).ok()?;
+        s.connect(to).ok()?;
+        s.local_addr().ok().map(|a| a.ip())
+    };
+    let mut out = Vec::new();
+    if let Some(IpAddr::V6(v6)) = towards("[::]:0", "[2001:db8::1]:9")
+        && is_global_v6(&v6)
+    {
+        out.push(SocketAddr::new(IpAddr::V6(v6), port));
     }
+    if let Some(IpAddr::V4(v4)) = towards("0.0.0.0:0", "192.0.2.1:9")
+        && v4.is_private()
+    {
+        out.push(SocketAddr::new(IpAddr::V4(v4), port));
+    }
+    out
 }
 
 /// Global unicast (2000::/3), minus the documentation range 2001:db8::/32. Excludes link-local,
