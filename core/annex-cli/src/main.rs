@@ -60,17 +60,19 @@ fn die(msg: &str) -> ! {
     std::process::exit(2)
 }
 
+/// Never the apps' own folder: the CLI keeps its key in a file, so sharing the folder would
+/// replace the app's certificate and break its TLS (KeyMismatch).
 fn default_data_dir() -> PathBuf {
     let home = || std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| ".".into());
     if cfg!(target_os = "macos") {
-        home().join("Library/Application Support/Annex")
+        home().join("Library/Application Support/Annex CLI")
     } else if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(home).join("Annex")
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(home).join("Annex CLI")
     } else {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home().join(".local/share"))
-            .join("annex")
+            .join("annex-cli")
     }
 }
 
@@ -138,7 +140,11 @@ fn event_printer(core: Arc<Core>) -> EventSink {
 #[tokio::main]
 async fn main() {
     let mut o = Opts { args: std::env::args().skip(1).collect() };
-    let cmd = o.positional().unwrap_or_else(|| "help".into());
+    let mut cmd = o.positional().unwrap_or_else(|| "help".into());
+    // `annex host --help` shows help instead of starting a host.
+    if o.flag("--help") || o.flag("-h") {
+        cmd = "help".into();
+    }
     match cmd.as_str() {
         "identity" => {
             let core = open_core(&mut o);

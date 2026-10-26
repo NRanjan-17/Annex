@@ -46,7 +46,16 @@ impl Identity {
         {
             let key = KeyPair::from_pem(&pem)?;
             let cert_der = fs::read(&cert_path)?;
-            return Ok(Identity { key_der: key.serialize_der(), fingerprint: fingerprint(&cert_der), cert_der });
+            if keys_match(&key, &cert_der) {
+                return Ok(Identity { key_der: key.serialize_der(), fingerprint: fingerprint(&cert_der), cert_der });
+            }
+            // Something replaced one of the two (TLS would fail with KeyMismatch on every
+            // connection): keep the stored key and make its certificate again. Paired computers
+            // then ask for the PIN once more, as the fingerprint changes.
+            tracing::warn!("identity certificate doesn't match the stored key; making a new certificate");
+            let id = Self::from_key(key)?;
+            write_atomic(&cert_path, &id.cert_der)?;
+            return Ok(id);
         }
         let key = KeyPair::generate_for(&PKCS_ED25519)?;
         let pem = key.serialize_pem();
@@ -77,6 +86,16 @@ impl Identity {
     pub(crate) fn key_der(&self) -> &[u8] {
         &self.key_der
     }
+}
+
+/// Whether `cert_der` is the certificate for `key`.
+fn keys_match(key: &KeyPair, cert_der: &[u8]) -> bool {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    let der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der()));
+    let Ok(signer) = rustls::crypto::ring::default_provider().key_provider.load_private_key(der) else {
+        return false;
+    };
+    rustls::sign::CertifiedKey::new(vec![CertificateDer::from(cert_der.to_vec())], signer).keys_match().is_ok()
 }
 
 /// Lowercase hex SHA-256 of a DER certificate.
@@ -140,6 +159,19 @@ mod tests {
             let mode = fs::metadata(dir.path().join(crate::keystore::PEM_FILE)).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn replaced_certificate_is_made_again_for_the_stored_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = Identity::load_or_create_with(dir.path(), KeyStorage::File).unwrap();
+        // Another identity's certificate, as a tool writing into the same folder would leave.
+        fs::write(dir.path().join(CERT_FILE), Identity::generate().unwrap().cert_der()).unwrap();
+        let b = Identity::load_or_create_with(dir.path(), KeyStorage::File).unwrap();
+        assert_eq!(a.key_der(), b.key_der());
+        assert!(crate::tls::server_config(&b).is_ok());
+        let c = Identity::load_or_create_with(dir.path(), KeyStorage::File).unwrap();
+        assert_eq!(b.fingerprint(), c.fingerprint());
     }
 
     #[test]
