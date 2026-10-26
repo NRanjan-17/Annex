@@ -307,6 +307,7 @@ public sealed partial class MainWindow : Window
         // corner (Windows Settings' two-tone layout, in black).
         RootGrid.RequestedTheme = ElementTheme.Dark;
         RootGrid.Background = Ui.Black(0.6);
+        Ui.PointingHand(RootGrid);
         RootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(236) });
         RootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         RootGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
@@ -1096,6 +1097,7 @@ public sealed partial class MainWindow : Window
         row.PointerExited += (_, _) => row.Background = idle;
         // A click rebuilds the page, so WinUI's DoubleTapped never reaches the new row: two clicks on
         // the same computer within the double-click time count as one double-click.
+        Ui.Clickable(row);
         row.Tapped += (_, _) =>
         {
             var now = Environment.TickCount64;
@@ -1370,7 +1372,7 @@ public sealed partial class MainWindow : Window
         };
         try
         {
-            var result = await _connectDialog.ShowAsync();
+            var result = await Ui.PointingHand(_connectDialog).ShowAsync();
             if (result == ContentDialogResult.Primary || result == ContentDialogResult.Secondary)
             {
                 _extend = result == ContentDialogResult.Secondary;
@@ -1774,7 +1776,7 @@ public sealed partial class MainWindow : Window
             };
             try
             {
-                if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+                if (await Ui.PointingHand(dialog).ShowAsync() != ContentDialogResult.Primary) return;
             }
             catch (Exception)
             {
@@ -1845,7 +1847,7 @@ public sealed partial class MainWindow : Window
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Close,
         };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+        if (await Ui.PointingHand(dialog).ShowAsync() == ContentDialogResult.Primary)
         {
             _core?.Untrust(peer.Fingerprint);
             RefreshTrusted();
@@ -2014,7 +2016,7 @@ public sealed partial class MainWindow : Window
                 };
                 try
                 {
-                    if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+                    if (await Ui.PointingHand(dialog).ShowAsync() == ContentDialogResult.Primary)
                     {
                         _core.SetAllowInput(ask.Fingerprint, true);
                         RefreshTrusted();
@@ -2068,7 +2070,7 @@ public sealed partial class MainWindow : Window
         };
         try
         {
-            var result = await _pinDialog.ShowAsync();
+            var result = await Ui.PointingHand(_pinDialog).ShowAsync();
             // Closed by the user (not by pairing finishing): refuse the pairing.
             if (result == ContentDialogResult.None && _pinRequest == pin.RequestId && _host is not null)
                 _core.CancelRequest(pin.RequestId);
@@ -2264,7 +2266,7 @@ public sealed partial class MainWindow : Window
         ContentDialogResult result;
         try
         {
-            result = await dialog.ShowAsync();
+            result = await Ui.PointingHand(dialog).ShowAsync();
         }
         catch (Exception)
         {

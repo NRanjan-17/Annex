@@ -1,7 +1,12 @@
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using Microsoft.UI.Input;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 
@@ -14,6 +19,48 @@ namespace Annex.App;
 /// </summary>
 internal static class Ui
 {
+    // ---- Pointer -----------------------------------------------------------------------
+    //
+    // WinUI keeps the arrow over buttons, and only an element itself can change its cursor
+    // (ProtectedCursor). So each window root watches the pointer and shows the hand while it's over
+    // anything clickable: buttons, links, switches, lists and rows marked with Clickable.
+
+    private static readonly PropertyInfo CursorProperty =
+        typeof(UIElement).GetProperty("ProtectedCursor", BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly ConditionalWeakTable<UIElement, object> Marked = [];
+
+    /// <summary>Shows the hand over anything clickable inside <paramref name="root"/>.</summary>
+    public static T PointingHand<T>(T root) where T : UIElement
+    {
+        var hand = InputSystemCursor.Create(InputSystemCursorShape.Hand);
+        root.AddHandler(UIElement.PointerMovedEvent, new PointerEventHandler((_, e) =>
+            CursorProperty.SetValue(root, IsClickable(e.OriginalSource as DependencyObject, root) ? hand : null)), true);
+        root.AddHandler(UIElement.PointerExitedEvent, new PointerEventHandler((_, _) => CursorProperty.SetValue(root, null)), true);
+        return root;
+    }
+
+    /// <summary>A row or tile that handles its own clicks (Tapped) shows the hand too.</summary>
+    public static T Clickable<T>(T element) where T : UIElement
+    {
+        Marked.AddOrUpdate(element, true);
+        return element;
+    }
+
+    private static bool IsClickable(DependencyObject? d, UIElement root)
+    {
+        for (; d is not null && d != root; d = VisualTreeHelper.GetParent(d))
+        {
+            switch (d)
+            {
+                case TextBox or PasswordBox or RichEditBox: return false;
+                case Control { IsEnabled: false }: return false;
+                case ButtonBase or ToggleSwitch or ComboBox or SelectorItem: return true;
+                case UIElement e when Marked.TryGetValue(e, out _): return true;
+            }
+        }
+        return false;
+    }
+
     public static T Res<T>(string key) => (T)Application.Current.Resources[key];
 
     public static Brush Secondary => Res<Brush>("TextFillColorSecondaryBrush");

@@ -67,11 +67,13 @@ struct MenuContent: View {
     private var footer: some View {
         HStack {
             Button("Open Annex") { open(.home) }
+                .pointingHand()
                 .buttonStyle(.plain)
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer()
             Button("Quit Annex") { model.quit() }
+                .pointingHand()
                 .buttonStyle(.plain)
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -102,6 +104,7 @@ private struct ShareRow: View {
                 }
                 Spacer(minLength: 0)
                 Toggle("Share this Mac", isOn: Binding(get: { model.isHosting }, set: { model.setHosting($0) }))
+                    .pointingHand()
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
@@ -110,6 +113,7 @@ private struct ShareRow: View {
                 Picker("Screen", selection: $model.selectedDisplayID) {
                     ForEach(model.displays) { d in Text(d.name).tag(Optional(d.id)) }
                 }
+                .pointingHand()
                 .controlSize(.small)
                 .disabled(model.isHosting)
             }
@@ -164,11 +168,13 @@ private struct LiveBlock: View {
                 Button(model.isViewing ? "Disconnect" : "Stop Sharing") {
                     if model.isViewing { model.disconnectViewer() } else { model.setHosting(false) }
                 }
+                .pointingHand()
                 .buttonStyle(PillStyle(prominent: true))
                 if !model.isViewing, !model.hostStatus.extendViewers.isEmpty {
                     Button("Arrange Displays") {
                         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension")!)
                     }
+                    .pointingHand()
                     .buttonStyle(PillStyle(prominent: false))
                 }
             }
@@ -266,6 +272,7 @@ private struct PeerRow: View {
                     model.extendMode = true
                     model.connect(to: peer)
                 }
+                .pointingHand()
                 .buttonStyle(PillStyle(prominent: true))
                 .disabled(!peer.canExtend)
                 .help("This Mac becomes a second screen for it")
@@ -273,6 +280,7 @@ private struct PeerRow: View {
                     model.extendMode = false
                     model.connect(to: peer)
                 }
+                .pointingHand()
                 .buttonStyle(PillStyle(prominent: false))
                 .help("Show its screen here, in a window")
             }
@@ -311,6 +319,7 @@ private struct ConnectRow: View {
             .overlay(Capsule().strokeBorder(Color.white.opacity(0.08)))
             .contentShape(Capsule())
         }
+        .pointingHand()
         .buttonStyle(.plain)
         .disabled(model.isViewing)
         .onHover { hovered = $0 }
@@ -333,6 +342,7 @@ private struct PillStyle: ButtonStyle {
             .background(Capsule().fill(prominent ? Color.white.opacity(0.92) : Color.white.opacity(0.1)))
             .opacity(enabled ? (configuration.isPressed ? 0.7 : 1) : 0.4)
             .contentShape(Capsule())
+            .pointingHand()
     }
 }
 
@@ -350,6 +360,7 @@ private struct CircleButton: View {
                 .background(Circle().fill(Color.white.opacity(hovered ? 0.12 : 0.06)))
                 .contentShape(Circle())
         }
+        .pointingHand()
         .buttonStyle(.plain)
         .focusEffectDisabled()
         .foregroundStyle(.secondary)
