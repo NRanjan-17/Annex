@@ -1016,7 +1016,8 @@ public sealed partial class MainWindow : Window
 
     /// <summary>How this PC would reach a computer, from the addresses it announced.</summary>
     internal static (string Label, string Glyph) LinkKind(PeerInfo h) =>
-        h.Addresses.Any(a => a.StartsWith("169.254.", StringComparison.Ordinal) || a.StartsWith("fe80", StringComparison.OrdinalIgnoreCase))
+        h.Mesh ? ("Private network", "\uE705")
+        : h.Addresses.Any(a => a.StartsWith("169.254.", StringComparison.Ordinal) || a.StartsWith("fe80", StringComparison.OrdinalIgnoreCase))
             ? ("Cable", "")
             : h.Addresses.Any(a => a.StartsWith("192.168.137.", StringComparison.Ordinal))
                 ? ("Direct Wi-Fi", "")

@@ -16,12 +16,15 @@ a picture.
    covers *Private* and *Domain* networks. If Windows put the VPN adapter under *Public*, set
    it to Private (Settings → Network & internet → the adapter → Network profile → Private), or
    allow Annex on public networks when Windows asks.
-3. On the viewing computer, open **Connect → Connect by address** and type the sharing
-   computer's VPN address (or its name, such as `my-pc.tailnet-name.ts.net` with Tailscale
-   MagicDNS). The first time, pair with the PIN as usual.
+3. On the viewing computer, open Annex. Computers on the same VPN that have Annex open show up
+   in **Nearby**, labelled *Private network*. Click one to connect; the first time, pair with
+   the PIN as usual.
 
-Nearby doesn't list computers on the VPN: discovery uses mDNS, which these VPNs don't carry.
-Connect by address instead. After pairing once, the address is all you need.
+How Nearby finds them: these VPNs don't carry mDNS, so Annex asks the VPN's own app which
+computers are online (Tailscale and Headscale through `tailscale status`, NetBird through
+`netbird status`), then asks each one directly whether Annex is there (UDP port 47790). VPNs
+that do carry mDNS, such as ZeroTier, show up like any computer on the network. With any other
+VPN, use **Connect by code or address** and type the computer's VPN address.
 
 ## What to expect
 
@@ -36,5 +39,5 @@ Connect by address instead. After pairing once, the address is all you need.
 
 ## Status
 
-Not yet tested end to end over Tailscale or ZeroTier. If you try it, the `connected` line in
+Not yet tested end to end between two computers over Tailscale or ZeroTier. If you try it, the `connected` line in
 `annex.log` on the viewer shows the address and transport used.

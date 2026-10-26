@@ -34,7 +34,9 @@ busy handling. `core/annex-proto/tests/fuzz.rs` fuzzes every decoder.
   its own key in a 0600 file. Development builds signed ad hoc trigger a Keychain access
   prompt after each rebuild ("Always Allow" is fine for your own builds).
 - Discovery TXT records reveal device names and IDs to anyone on the LAN (by design; they are
-  not secrets).
+  not secrets). Annex also answers the same fields on UDP port 47790, only to private,
+  shared-address-space (100.64.0.0/10), unique-local and link-local addresses, so computers on
+  the same mesh VPN learn them too. Questions must be at least as large as the answer.
 - Windows secure desktop (UAC prompt, lock screen) is not captured.
 
 ## Reporting a vulnerability

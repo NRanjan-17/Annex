@@ -6,6 +6,14 @@
 //! the app is open. The fingerprint is public information (it is
 //! what users compare), never a secret; pairing secrets are never put in TXT records.
 //! Discovery is only a convenience: the TLS handshake and trust store decide who is genuine.
+//!
+//! Private networks that don't carry multicast (mesh VPNs) are covered by [`mesh`]: the same
+//! fields, asked for directly.
+
+pub mod mesh;
+
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -38,6 +46,8 @@ pub struct PeerInfo {
     pub sharing: bool,
     /// Can add an extra display for a viewer (Extend). `None` if the peer doesn't say.
     pub extend: Option<bool>,
+    /// Found on a private network (mesh VPN) rather than the local one.
+    pub mesh: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -91,6 +101,7 @@ pub fn peer_from_parts<'a>(
         proto_major: txt("v").and_then(|v| v.parse().ok()),
         sharing: txt("sharing") != Some("0"),
         extend: txt("extend").map(|v| v == "1"),
+        mesh: false,
     }
 }
 
@@ -98,6 +109,9 @@ pub fn peer_from_parts<'a>(
 pub struct Discovery {
     daemon: ServiceDaemon,
     own_fingerprint: String,
+    /// What this device answers presence questions with (see [`mesh`]): what it advertises.
+    presence: Arc<Mutex<Option<mesh::Presence>>>,
+    _responder: Option<mesh::Responder>,
 }
 
 /// Keeps an advertisement alive; unregisters on drop.
@@ -137,7 +151,9 @@ pub struct Browser {
     daemon: ServiceDaemon,
     stop: Arc<AtomicBool>,
     refresh: Arc<AtomicBool>,
+    mesh_refresh: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    mesh_thread: Option<JoinHandle<()>>,
 }
 
 impl Browser {
@@ -145,6 +161,7 @@ impl Browser {
     /// network again, so the list matches what's there now.
     pub fn refresh(&self) {
         self.refresh.store(true, Ordering::Release);
+        self.mesh_refresh.store(true, Ordering::Release);
     }
 }
 
@@ -152,7 +169,7 @@ impl Drop for Browser {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         let _ = self.daemon.stop_browse(MDNS_SERVICE_TCP);
-        if let Some(t) = self.thread.take() {
+        for t in [self.thread.take(), self.mesh_thread.take()].into_iter().flatten() {
             let _ = t.join();
         }
     }
@@ -169,7 +186,12 @@ impl Discovery {
             IfKind::Name("lo0".into()),
             IfKind::Name("lo".into()),
         ]);
-        Ok(Discovery { daemon, own_fingerprint: own_fingerprint.to_string() })
+        let presence = Arc::new(Mutex::new(None));
+        // One per computer: a second copy of Annex (or a test) simply doesn't answer.
+        let responder = mesh::Responder::start(presence.clone(), mesh::PRESENCE_PORT)
+            .inspect_err(|e| tracing::info!("presence: not answering ({e})"))
+            .ok();
+        Ok(Discovery { daemon, own_fingerprint: own_fingerprint.to_string(), presence, _responder: responder })
     }
 
     /// Advertises this device as a host that is sharing, on all interfaces.
@@ -206,6 +228,14 @@ impl Discovery {
         let fullname = info.get_fullname().to_string();
         // Registering a name that is already registered updates it in place.
         self.daemon.register(info)?;
+        *self.presence.lock().unwrap() = Some(mesh::Presence {
+            v: annex_proto::PROTOCOL_MAJOR,
+            id: self.own_fingerprint.clone(),
+            name: device_name.chars().take(64).collect(),
+            sharing,
+            extend: sharing && extend,
+            port,
+        });
         Ok(Advertisement { daemon: self.daemon.clone(), fullname, withdraw_on_drop: true })
     }
 
@@ -216,13 +246,18 @@ impl Discovery {
     /// same name straight away. The withdrawal expires the record here a second later, which can
     /// swallow the fresh announcement, so the device would vanish until the next query. The
     /// browse therefore asks again shortly after any removal, and every 30 s as a safety net.
-    pub fn browse(&self, on_event: impl Fn(DiscoveryEvent) + Send + 'static) -> Result<Browser, DiscoveryError> {
+    pub fn browse(&self, on_event: impl Fn(DiscoveryEvent) + Send + Sync + 'static) -> Result<Browser, DiscoveryError> {
+        let on_event: Arc<dyn Fn(DiscoveryEvent) + Send + Sync> = Arc::new(on_event);
         let mut rx = self.daemon.browse(MDNS_SERVICE_TCP)?;
+        // Fingerprints listed from the local network, by instance: those win over the mesh.
+        let lan: Arc<Mutex<HashMap<String, String>>> = Arc::default();
+        let mesh_refresh = Arc::new(AtomicBool::new(true));
         let daemon = self.daemon.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let refresh = Arc::new(AtomicBool::new(false));
         let own = self.own_fingerprint.clone();
         let (stop2, refresh2) = (stop.clone(), refresh.clone());
+        let (lan2, on_event2) = (lan.clone(), on_event.clone());
         let thread = std::thread::Builder::new()
             .name("annex-mdns-browse".into())
             .spawn(move || {
@@ -265,12 +300,16 @@ impl Discovery {
                             if !listed.contains(&peer.instance) {
                                 listed.push(peer.instance.clone());
                             }
-                            on_event(DiscoveryEvent::PeerFound(peer));
+                            if let Some(fp) = &peer.fingerprint {
+                                lan2.lock().unwrap().insert(peer.instance.clone(), fp.clone());
+                            }
+                            on_event2(DiscoveryEvent::PeerFound(peer));
                         }
                         ServiceEvent::ServiceRemoved(_, fullname) => {
                             tracing::info!(instance = %fullname, "nearby: gone");
                             listed.retain(|i| *i != fullname);
-                            on_event(DiscoveryEvent::PeerLost { instance: fullname });
+                            lan2.lock().unwrap().remove(&fullname);
+                            on_event2(DiscoveryEvent::PeerLost { instance: fullname });
                             let now = Instant::now();
                             requery.extend(REQUERY_AFTER_REMOVAL.iter().map(|d| now + *d));
                         }
@@ -279,9 +318,91 @@ impl Discovery {
                 }
             })
             .expect("spawn browse thread");
-        Ok(Browser { daemon: self.daemon.clone(), stop, refresh, thread: Some(thread) })
+        let mesh_thread = {
+            let (stop, refresh, own) = (stop.clone(), mesh_refresh.clone(), self.own_fingerprint.clone());
+            std::thread::Builder::new()
+                .name("annex-mesh-browse".into())
+                .spawn(move || {
+                    browse_mesh(&own, mesh::mesh_peers, mesh::PRESENCE_PORT, &stop, &refresh, &lan, &*on_event)
+                })
+                .expect("spawn mesh browse thread")
+        };
+        Ok(Browser {
+            daemon: self.daemon.clone(),
+            stop,
+            refresh,
+            mesh_refresh,
+            thread: Some(thread),
+            mesh_thread: Some(mesh_thread),
+        })
     }
 }
+
+/// Lists computers on private networks (see [`mesh`]) every [`MESH_EVERY`], or when asked to,
+/// until `stop`. A computer also found on the local network is listed from there instead.
+fn browse_mesh(
+    own: &str,
+    peers: impl Fn() -> Vec<IpAddr>,
+    port: u16,
+    stop: &AtomicBool,
+    refresh: &AtomicBool,
+    lan: &Mutex<HashMap<String, String>>,
+    on_event: &(dyn Fn(DiscoveryEvent) + Send + Sync),
+) {
+    // Listed from the mesh: instance → (what was said, rounds unanswered).
+    let mut listed: HashMap<String, (PeerInfo, u32)> = HashMap::new();
+    let mut next = Instant::now();
+    while !stop.load(Ordering::Acquire) {
+        if !refresh.swap(false, Ordering::AcqRel) && Instant::now() < next {
+            std::thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+        next = Instant::now() + MESH_EVERY;
+        let ips = peers();
+        let found = if ips.is_empty() { Vec::new() } else { mesh::probe(&ips, port, MESH_WAIT) };
+        let on_lan: Vec<String> = lan.lock().unwrap().values().cloned().collect();
+        let mut seen = Vec::new();
+        for (ip, p) in found {
+            if p.id == own || on_lan.contains(&p.id) {
+                continue;
+            }
+            let peer = PeerInfo {
+                instance: format!("mesh:{}", p.id),
+                name: p.name,
+                addresses: vec![ip.to_string()],
+                port: p.port,
+                fingerprint: Some(p.id),
+                proto_major: Some(p.v),
+                sharing: p.sharing,
+                extend: Some(p.extend),
+                mesh: true,
+            };
+            seen.push(peer.instance.clone());
+            if listed.get(&peer.instance).is_none_or(|(old, _)| *old != peer) {
+                tracing::info!(name = %peer.name, sharing = peer.sharing, addr = %ip, "private network: found");
+                on_event(DiscoveryEvent::PeerFound(peer.clone()));
+            }
+            listed.insert(peer.instance.clone(), (peer, 0));
+        }
+        listed.retain(|instance, (peer, missed)| {
+            if !seen.contains(instance) {
+                *missed += 1;
+            }
+            let gone = on_lan.iter().any(|fp| peer.fingerprint.as_deref() == Some(fp)) || *missed >= MESH_MISSES;
+            if gone {
+                tracing::info!(instance = %instance, "private network: gone");
+                on_event(DiscoveryEvent::PeerLost { instance: instance.clone() });
+            }
+            !gone
+        });
+    }
+}
+
+/// How often computers on private networks are re-checked, how long they have to answer, and
+/// after how many unanswered rounds one is reported gone.
+const MESH_EVERY: Duration = Duration::from_secs(15);
+const MESH_WAIT: Duration = Duration::from_millis(1500);
+const MESH_MISSES: u32 = 2;
 
 /// When to ask again after a device's record goes away (it may have just re-announced).
 const REQUERY_AFTER_REMOVAL: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(6)];
@@ -299,6 +420,45 @@ impl Drop for Discovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_private_network_computers_unless_on_the_local_network() {
+        use std::sync::mpsc;
+        let me = mesh::Presence {
+            v: 1,
+            id: "cd".repeat(32),
+            name: "Office PC".into(),
+            sharing: true,
+            extend: true,
+            port: 47801,
+        };
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        drop(socket);
+        let _r = mesh::Responder::start(Arc::new(Mutex::new(Some(me))), port).unwrap();
+        let (stop, refresh) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(true)));
+        let lan: Arc<Mutex<HashMap<String, String>>> = Arc::default();
+        let (tx, rx) = mpsc::channel();
+        let t = {
+            let (stop, refresh, lan) = (stop.clone(), refresh.clone(), lan.clone());
+            std::thread::spawn(move || {
+                let send = move |e| tx.send(e).unwrap();
+                browse_mesh(&"ab".repeat(32), || vec!["127.0.0.1".parse().unwrap()], port, &stop, &refresh, &lan, &send)
+            })
+        };
+        let Ok(DiscoveryEvent::PeerFound(p)) = rx.recv_timeout(Duration::from_secs(5)) else { panic!("not found") };
+        assert_eq!(
+            (p.instance.as_str(), p.name.as_str(), p.port, p.mesh),
+            (&*format!("mesh:{}", "cd".repeat(32)), "Office PC", 47801, true)
+        );
+        assert_eq!(p.addresses, ["127.0.0.1"]);
+        // Now seen on the local network too: that listing wins.
+        lan.lock().unwrap().insert("Office PC._annex._tcp.local.".into(), "cd".repeat(32));
+        refresh.store(true, Ordering::Release);
+        assert!(matches!(rx.recv_timeout(Duration::from_secs(5)), Ok(DiscoveryEvent::PeerLost { .. })));
+        stop.store(true, Ordering::Release);
+        t.join().unwrap();
+    }
 
     #[test]
     fn label_is_sanitized_and_suffixed() {

@@ -106,10 +106,12 @@ struct HomeView: View {
 
 /// How this Mac would reach a computer, from the addresses it announced.
 enum LinkKind {
-    case cable, directWiFi, peerToPeer, network
+    case cable, directWiFi, peerToPeer, privateNetwork, network
 
     init(_ peer: PeerInfo) {
-        if peer.instance.hasPrefix("p2p:") {
+        if peer.mesh == true {
+            self = .privateNetwork
+        } else if peer.instance.hasPrefix("p2p:") {
             self = .peerToPeer
         } else if peer.addresses.contains(where: { $0.hasPrefix("169.254.") || $0.lowercased().hasPrefix("fe80") }) {
             self = .cable
@@ -125,6 +127,7 @@ enum LinkKind {
         case .cable: "Cable"
         case .directWiFi: "Direct Wi-Fi"
         case .peerToPeer: "Peer-to-peer"
+        case .privateNetwork: "Private network"
         case .network: "Wi-Fi"
         }
     }
@@ -134,6 +137,7 @@ enum LinkKind {
         case .cable: "cable.connector"
         case .directWiFi: "wifi.router"
         case .peerToPeer: "dot.radiowaves.left.and.right"
+        case .privateNetwork: "network.badge.shield.half.filled"
         case .network: "wifi"
         }
     }

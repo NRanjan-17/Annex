@@ -128,6 +128,9 @@ final class AnnexBTests: XCTestCase {
         let multi = PeerInfo(instance: "x", name: "x", addresses: ["192.168.1.5", "169.254.3.4"], port: 9, fingerprint: nil,
                              protoMajor: nil, sharing: true, extend: nil)
         XCTAssertEqual(multi.connectAddress, "192.168.1.5:9,169.254.3.4:9")
+        var mesh = multi
+        mesh.mesh = true
+        XCTAssertEqual(LinkKind(mesh).label, "Private network")
         let hint = #"{"type":"bitrate_hint","session_id":2,"scale_percent":80}"#
         XCTAssertEqual(CoreEvent.decode(Data(hint.utf8)), .bitrateHint(sessionId: 2, scalePercent: 80))
         XCTAssertEqual(CoreEvent.decode(Data(#"{"type":"from_future"}"#.utf8)), .unknown(type: "from_future"))

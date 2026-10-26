@@ -381,8 +381,16 @@ final class AppModel: ObservableObject {
     #if DEBUG
     /// Screenshots: `ANNEX_PREVIEW_PANE=share|settings` opens that page; with `ANNEX_PREVIEW_CODE=1`
     /// (and sharing on) it also gets a code. `ANNEX_PREVIEW_CONNECT=address` connects there.
+    /// `ANNEX_PREVIEW_MESH=name` lists a computer as found on a private network.
     func openPreviewPane() {
         let env = ProcessInfo.processInfo.environment
+        if let name = env["ANNEX_PREVIEW_MESH"] {
+            var peer = PeerInfo(instance: "mesh:preview", name: name, addresses: ["100.70.1.2"], port: 47800,
+                                fingerprint: String(repeating: "cd", count: 32), protoMajor: 1, sharing: true, extend: true)
+            peer.mesh = true
+            lanPeers.append(peer)
+            rebuildNearby()
+        }
         if let address = env["ANNEX_PREVIEW_CONNECT"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 self?.manualAddress = address
