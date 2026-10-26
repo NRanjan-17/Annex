@@ -14,9 +14,10 @@ public sealed record DisplayInfo(
 public sealed record LatencyStats(int Frames, double Fps, double P50Ms, double P95Ms, double P99Ms, double MaxMs, double? ClockRttMs = null);
 
 /// <summary><c>Sharing</c>: accepting viewers now (false = Annex is open there but not sharing).
-/// <c>Extend</c>: it can add an extra display (null if it doesn't say).</summary>
+/// <c>Extend</c>: it can add an extra display (null if it doesn't say). <c>Mesh</c>: found on a
+/// private network (a mesh VPN), not the local one.</summary>
 public sealed record PeerInfo(string Instance, string Name, string[] Addresses, int Port, string? Fingerprint = null, int? ProtoMajor = null,
-    bool Sharing = true, bool? Extend = null)
+    bool Sharing = true, bool? Extend = null, bool Mesh = false)
 {
     /// <summary>Every address as <c>host:port</c> (IPv6 bracketed), comma-separated; the core races them and
     /// prefers a direct cable.</summary>

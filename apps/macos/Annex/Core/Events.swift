@@ -87,6 +87,8 @@ struct PeerInfo: Decodable, Identifiable, Hashable {
     let sharing: Bool?
     /// Can add an extra display (Extend); nil if it doesn't say.
     let extend: Bool?
+    /// Found on a private network (a mesh VPN), not the local one. Older cores omit it.
+    var mesh: Bool? = nil
 
     var id: String { instance }
     var isSharing: Bool { sharing ?? true }
