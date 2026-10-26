@@ -3,7 +3,8 @@
 **Status:** the core, the rendezvous server and the relay fallback are built and tested on a
 simulated internet and against a local server (`feat/internet-connect`), and the Mac and Windows
 apps have their screens (This Mac/This PC → Over the internet, Connect by code or address,
-Settings → Internet). Nothing has been tried between two real networks yet. Until it ships, the way
+Settings → Advanced → Internet). Codes need no switch: the apps contact the server only when
+someone presses Get a code or types one. Nothing has been tried between two real networks yet. Until it ships, the way
 to reach a computer elsewhere is a mesh VPN; see [REMOTE.md](REMOTE.md).
 
 ## The problem
@@ -180,7 +181,7 @@ Phase 1 without phase 2 is Option 2. It's a working stopping point if relay cost
 - **What Cloudflare sees:** the same as "the server" above (addresses, timing, relay byte counts).
   SECURITY.md names Cloudflare.
 - **Self-hosting:** the apps use Annex's server, `wss://connect.getannex.dev`, unless another
-  address is set in Settings → Internet. Running your own means deploying the Worker to your own
+  address is set in Settings → Advanced → Internet. Running your own means deploying the Worker to your own
   Cloudflare account with `wrangler`; any TURN server works for the relay.
 
 ### Doc changes before building

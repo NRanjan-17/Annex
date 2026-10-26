@@ -42,8 +42,6 @@ public sealed class AppSettings
     public bool SaveLog { get; set; }
     /// <summary>Viewer: bitrate ceiling asked of hosts (Fast suits Wi-Fi).</summary>
     public Annex.Interop.Quality Quality { get; set; } = Annex.Interop.Quality.Best;
-    /// <summary>Share and connect over the internet with codes. Off by default: it uses a server.</summary>
-    public bool InternetEnabled { get; set; }
     /// <summary>The rendezvous server (wss://…) that swaps the two computers' addresses; empty = Annex's.</summary>
     public string RendezvousServer { get; set; } = "";
     public const string AnnexServer = "wss://connect.getannex.dev";
@@ -54,9 +52,6 @@ public sealed class AppSettings
     /// empty = the server's relay, if it offers one. The password is in <see cref="RelayPassword"/>.</summary>
     public string RelayUrl { get; set; } = "";
     public string RelayUsername { get; set; } = "";
-
-    [JsonIgnore]
-    public bool InternetReady => InternetEnabled;
 
     /// <summary>Kept out of settings.json: encrypted for this Windows user (DPAPI) in relay.dat.</summary>
     [JsonIgnore]
