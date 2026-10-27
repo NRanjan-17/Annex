@@ -82,9 +82,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "annex-media"
+version = "0.1.0"
+
+[[package]]
 name = "annex-media-win"
 version = "0.1.0"
 dependencies = [
+ "annex-media",
  "annex-proto",
  "thiserror",
  "tracing",

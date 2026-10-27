@@ -76,7 +76,7 @@ struct Asset {
 ///
 /// `beta`: include pre-releases. Without it, someone on a pre-release is offered the newest normal
 /// release even if it's older (that's what turning Beta updates off means). `asset_suffix` names
-/// this platform's file, e.g. `-macos-universal.dmg` or `-x64.exe`.
+/// this platform's file, e.g. `-macos-universal.dmg`, `-x64.exe` or `-linux-arm64.deb`.
 ///
 /// The tag isn't signed, so the file must be named for the tag's version (`Annex-<v><suffix>` or
 /// `Annex-Setup-<v><suffix>`, as CI names it). [`verify`] then requires exactly that name in the

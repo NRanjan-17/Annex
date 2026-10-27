@@ -64,6 +64,24 @@ when you turn it on).
 When Windows asks whether to allow Annex on **private networks**, click **Allow**, or other
 computers can't find this PC.
 
+### Linux
+
+Download the package for your system and CPU (`x86_64` for PCs, `arm64` for Raspberry Pi 4/5 on
+64-bit Raspberry Pi OS, NVIDIA Jetson and DGX Spark):
+
+```sh
+sudo apt install ./Annex-<version>-linux-arm64.deb    # Ubuntu, Debian, Raspberry Pi OS, JetPack, DGX OS
+sudo dnf install ./Annex-<version>-linux-x86_64.rpm   # Fedora, RHEL, openSUSE
+```
+
+Other distributions: unpack the `.tar.gz` and run `bin/annex`. Open **Annex** from the app menu; it
+adds a tray icon where the desktop has a tray (KDE, Raspberry Pi OS, Ubuntu's GNOME).
+
+View and Share are tested on GNOME (NVIDIA Jetson) and Raspberry Pi OS's labwc; KDE, Sway and X11
+are built but not yet tested. Extend works on labwc; GNOME, KDE and Sway are built and still being
+checked, and X11 has none yet. Details:
+[docs/LINUX.md](docs/LINUX.md).
+
 ## Quick start
 
 You need two computers on the **same network** (Wi-Fi or Ethernet), or joined by a cable. Open
@@ -180,6 +198,9 @@ Annex checks GitHub at launch and once a day and installs new versions for you (
 Updates**). Turn on **Beta updates** to get pre-releases early; turn it off to go back to the
 latest normal release. Every update is checked against a signature made when the release is built,
 so a modified download is never installed.
+
+On Linux, Annex doesn't update itself yet: download the new package from the releases page and
+install it the same way (`sudo apt install ./Annex-<version>-linux-<arch>.deb`).
 
 ## Uninstall
 

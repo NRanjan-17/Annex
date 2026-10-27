@@ -27,6 +27,19 @@ macOS 27.0.1 (Apple Silicon), Xcode 27.1, Rust 1.99.1:
 | Rust core | macOS 27.0.1 (local); Ubuntu 24.04, macOS 26, Windows Server 2025 (CI) | |
 | macOS app | macOS 27.0.1 build + tests + launch | Live screen capture with a real viewer (needs Screen Recording approval), macOS 14–26 |
 | Windows app | C# compile-checked on macOS; CI builds it; MF software encode→decode round trip runs on the Windows CI runner | **Running it on Windows 10/11** (capture, hardware encode/decode, UI) |
+| Linux app | Ubuntu 22.04 x86_64 and arm64 in CI: build, tests, packages, `.deb` installed and started; Lima VM; Jetson AGX Thor (Ubuntu 26.04, GNOME 50): View, Mirror; Raspberry Pi 5 (Debian 13, labwc): Mirror, Extend | Pi 4, DGX Spark, x86_64 laptop (VA-API, X11), KDE, GNOME Extend on a logged-in desktop |
+
+## Linux without a screen (over SSH)
+
+The Linux app takes options, so it can be tested on a headless computer:
+
+- `annex --share` starts sharing at launch; `annex --connect <address or code> [--extend]` connects.
+- Pair once by hand, or put the other side's fingerprint in `<data>/trusted_peers.json`.
+- View it from the Mac with the CLI: `core/target/release/annex viewer <address> --seconds 20`.
+- GNOME with no monitor: `gnome-shell --headless --virtual-monitor 1920x1080` inside
+  `dbus-run-session`, with `GDK_DEBUG=no-portals`. GNOME Extend doesn't send frames there, so test
+  it on a logged-in desktop.
+- labwc on a Pi with no monitor: run inside the running session (`WAYLAND_DISPLAY=wayland-0`).
 
 ## Manual tests: M1/M2 (Mac host → Windows viewer, LAN, encrypted, PIN pairing)
 
@@ -130,3 +143,5 @@ On any two machines with Rust installed:
 annex host --replay clip.h264 --width 1280 --height 720   # machine A
 annex viewer <A's IP> --dump received.h264                # machine B
 ```
+Add `--extend` to both to test Extend: the host then accepts Extend sessions and sends them the
+same replay at its own size (it has no virtual display), and the viewer asks for Extend.

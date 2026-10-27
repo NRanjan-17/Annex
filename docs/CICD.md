@@ -21,6 +21,11 @@ Superseded runs are cancelled by a concurrency group.
 
 The Windows virtual display driver job (WDK build) is added with the driver in M4.
 
+**linux-app** (ubuntu-22.04 and ubuntu-22.04-arm, the oldest supported system): `cargo fmt
+--check`, clippy, tests, then `scripts/package-linux.sh`; installs the `.deb` and runs
+`annex --version`; uploads the `.deb`, `.rpm` and `.tar.gz`. armhf and riscv64 build from source
+for now; see [LINUX.md](LINUX.md#6-releases).
+
 ## release.yml
 
 Triggers: tag `vX.Y.Z` (or `vX.Y.Z-rc.N`), or **workflow_dispatch** with `dry_run` (default
@@ -34,7 +39,10 @@ true), which builds and uploads every artifact as a workflow artifact without cr
 3. **windows** (environment `release`, x64 + arm64): builds the core and the self-contained
    WinUI app, signs binaries with `signtool` if a certificate is configured, packages
    `Annex-Setup-<version>-<arch>.exe` (Inno Setup, preinstalled on the runners) and signs it.
-4. **publish** (`contents: write`): SHA-256 sums (`SHA256SUMS.txt`), SPDX SBOMs (syft),
+4. **linux** (x86_64 + arm64, Ubuntu 22.04): stamps the version, runs
+   `scripts/package-linux.sh`, installs the `.deb` as a check, and uploads
+   `Annex-<version>-linux-<arch>.{deb,rpm,tar.gz}`. Not signed beyond `SHA256SUMS.txt`.
+5. **publish** (`contents: write`): SHA-256 sums (`SHA256SUMS.txt`), SPDX SBOMs (syft),
    and `gh release create --draft --generate-notes`. **You publish the draft manually.**
 
 ### Required secrets (environment `release`, with required reviewers)

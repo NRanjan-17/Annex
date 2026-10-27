@@ -212,10 +212,11 @@ pub fn parse_netbird(json: &str) -> Vec<IpAddr> {
         .collect()
 }
 
-/// Annex runs on Macs and PCs; phones and servers can't answer.
+/// Annex runs on Macs, PCs and Linux computers; phones can't answer. (A Linux server without
+/// Annex just doesn't reply to the probe.)
 fn maybe_desktop(os: &str) -> bool {
     let os = os.to_ascii_lowercase();
-    os.is_empty() || os == "macos" || os == "windows"
+    os.is_empty() || os == "macos" || os == "windows" || os == "linux"
 }
 
 /// Runs a mesh client's status command, if it's installed, for at most 3 seconds.
@@ -292,10 +293,15 @@ mod tests {
             "a":{"Online":true,"OS":"windows","TailscaleIPs":["100.70.1.2","fd7a:115c:a1e0::2"]},
             "b":{"Online":true,"OS":"android","TailscaleIPs":["100.70.1.3"]},
             "c":{"Online":false,"OS":"macOS","TailscaleIPs":["100.70.1.4"]},
-            "d":{"Online":true,"OS":"macOS","TailscaleIPs":["100.70.1.5"]}}}"#;
+            "d":{"Online":true,"OS":"macOS","TailscaleIPs":["100.70.1.5"]},
+            "e":{"Online":true,"OS":"linux","TailscaleIPs":["100.70.1.6"]},
+            "f":{"Online":true,"OS":"iOS","TailscaleIPs":["100.70.1.7"]}}}"#;
         let mut ips = parse_tailscale(ts);
         ips.sort();
-        assert_eq!(ips, ["100.70.1.2".parse::<IpAddr>().unwrap(), "100.70.1.5".parse().unwrap()]);
+        assert_eq!(
+            ips,
+            ["100.70.1.2".parse::<IpAddr>().unwrap(), "100.70.1.5".parse().unwrap(), "100.70.1.6".parse().unwrap()]
+        );
         assert!(parse_tailscale("{}").is_empty());
         let nb = r#"{"peers":{"total":2,"details":[{"fqdn":"a","netbirdIp":"100.90.0.2","status":"Connected"},
             {"fqdn":"b","netbirdIp":"100.90.0.3/16","status":"Idle"}]}}"#;

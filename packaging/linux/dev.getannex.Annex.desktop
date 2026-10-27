@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Annex
+GenericName=Screen Sharing
+Comment=Show another computer's screen, share this one, or use it as an extra display
+Exec=annex
+Icon=annex
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=screen;share;display;extend;mirror;remote;
+StartupNotify=true
+SingleMainWindow=true

@@ -33,7 +33,7 @@ Key design rule: **only compressed bitstreams and control messages cross the FFI
   annex-transport         TCP+TLS (M1), QUIC (M5), shared Transport trait
   annex-session           state machine: hello → auth → stream config → streaming → teardown
   annex-discovery         mDNS advertise/browse + manual peers; backend trait
-  annex-media             packetizer, frame fragmentation, FEC, jitter buffer, ABR / congestion feedback
+  annex-media             platform-neutral media helpers: Annex B, letterboxing, pointer coordinates, NV12 copies, stream sizes
   annex-media-win         Windows capture/encode/decode via `windows` crate (WGC, D3D11, Media Foundation)
   annex-ffi               C ABI (cbindgen header) used by Swift and C#
   annex-cli               headless host/viewer for testing (synthetic frames, file dump)
@@ -42,6 +42,7 @@ Key design rule: **only compressed bitstreams and control messages cross the FFI
                           AnnexVirtualDisplay (thin ObjC wrapper around private CGVirtualDisplay)
 /apps/windows             Annex.sln: Annex.App (WinUI 3), Annex.Service (Windows service),
                           Annex.Interop (P/Invoke to annex-ffi), tests
+/apps/linux               GTK4 app in Rust: GStreamer media, Mutter/portals, input (docs/LINUX.md)
 /drivers/windows/AnnexIdd IddCx UMDF driver (C++), INF, test-sign scripts
 /installer/windows        Inno Setup script (driver + service + app), optional MSIX for app-only
 /docs                     PROTOCOL.md, CICD.md, SECURITY.md, CABLES.md, TESTING.md, DEPENDENCIES.md

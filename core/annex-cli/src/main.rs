@@ -4,13 +4,15 @@
 //! annex identity                      print this device's name and fingerprint
 //! annex peers [remove <fingerprint>]  list or revoke trusted devices
 //! annex discover [--seconds N]        list hosts on the LAN
-//! annex host [--port P] [--replay file.h264 | --synthetic] [--fps N] [--no-advertise] [--internet]
+//! annex host [--port P] [--replay file.h264 | --synthetic] [--fps N] [--extend] [--no-advertise] [--internet]
 //! annex viewer <address | --code K7P-4QX> [--extend] [--dump file.h264] [--expect <fingerprint>] [--seconds N]
 //! ```
 //! Internet connections (`--internet`, `--code`) need `--rendezvous wss://…` (or `ANNEX_RENDEZVOUS`)
 //! and use `--stun host:port` (default stun.cloudflare.com:3478). If a direct connection isn't
 //! possible, the host gets an address on a relay: its own with `--turn turn:host:port --turn-user U
 //! --turn-pass P`, otherwise ours through the rendezvous server (time- and quality-limited).
+//! `host --extend` also accepts Extend sessions and sends them the same replay at its own size (no
+//! virtual display), to test a viewer's Extend path.
 //! Common options: `--data-dir DIR` (default: a separate "Annex CLI" data folder), `--name NAME`,
 //! `--trust-all` (skip PIN pairing and accept anyone; for automated tests only).
 
@@ -206,6 +208,7 @@ async fn host(o: &mut Opts) {
     let fps: u32 = o.num("--fps", 60);
     let replay = o.value("--replay").map(PathBuf::from);
     let synthetic = o.flag("--synthetic");
+    let extend = o.flag("--extend");
     let advertise = !o.flag("--no-advertise");
     let internet = o.flag("--internet").then(|| internet_opts(o));
     let turn = o.value("--turn").map(|url| {
@@ -230,7 +233,7 @@ async fn host(o: &mut Opts) {
     let events = event_printer(core.clone());
     let handle = start_host(
         core.clone(),
-        HostConfig { port, stream: StreamConfig { codec, width: w, height: h, fps }, extend: false, udp: None },
+        HostConfig { port, stream: StreamConfig { codec, width: w, height: h, fps }, extend, udp: None },
         events,
     )
     .await
@@ -257,6 +260,8 @@ async fn host(o: &mut Opts) {
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / fps as f64));
     let mut i = 0usize;
     let mut synthetic_buf = vec![0u8; 30_000];
+    // Extend sessions start at the viewer's size; the replay has its own.
+    let mut sized = std::collections::HashSet::new();
     loop {
         tokio::select! {
             _ = tick.tick() => {}
@@ -267,13 +272,21 @@ async fn host(o: &mut Opts) {
             continue;
         }
         let ts = clock::now_us();
-        if aus.is_empty() {
-            let key = i.is_multiple_of(120);
+        let (frame, key): (&[u8], bool) = if aus.is_empty() {
             synthetic_buf[..8].copy_from_slice(&(i as u64).to_be_bytes());
-            handle.submit_frame(&synthetic_buf, ts, key);
+            (&synthetic_buf, i.is_multiple_of(120))
         } else {
             let au = &aus[i % aus.len()];
-            handle.submit_frame(au, ts, h264::is_keyframe(au));
+            (au, h264::is_keyframe(au))
+        };
+        handle.submit_frame(frame, ts, key);
+        let sessions = handle.sessions();
+        sized.retain(|id| sessions.iter().any(|(s, _)| s == id));
+        for (id, _) in sessions.into_iter().filter(|(_, mode)| *mode == Mode::Extend) {
+            if sized.insert(id) {
+                handle.set_session_stream(id, StreamConfig { codec, width: w, height: h, fps });
+            }
+            handle.submit_session_frame(id, frame, ts, key);
         }
         i += 1;
     }

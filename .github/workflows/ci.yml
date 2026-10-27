@@ -118,6 +118,58 @@ jobs:
           name: macos-test-results
           path: apps/macos/build/TestResults.xcresult
 
+  linux-app:
+    name: Linux app (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported system (GTK 4.6, GStreamer 1.20, glibc 2.35).
+          - { arch: x86_64, runner: ubuntu-22.04 }
+          - { arch: arm64, runner: ubuntu-22.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install GTK 4, GStreamer and packaging tools
+        run: |
+          sudo apt-get update -qq
+          # The runner image ships libunwind-14-dev, which conflicts with the libunwind-dev that
+          # libgstreamer1.0-dev needs ("held broken packages").
+          sudo apt-get remove -y -qq libunwind-14-dev || true
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libxkbcommon-dev libdbus-1-dev pkg-config rpm
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/linux/target
+          key: cargo-linux-app-${{ matrix.arch }}-${{ hashFiles('rust-toolchain.toml', 'apps/linux/Cargo.lock', 'core/Cargo.lock') }}
+          restore-keys: cargo-linux-app-${{ matrix.arch }}-
+      - name: rustfmt
+        working-directory: apps/linux
+        run: cargo fmt --check
+      - name: clippy
+        working-directory: apps/linux
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        working-directory: apps/linux
+        run: cargo test --locked
+      - name: Package (.deb, .rpm, .tar.gz)
+        run: scripts/package-linux.sh "$(sed -n 's/^version = "\(.*\)"/\1/p' core/Cargo.toml | head -1)"
+      - name: Install the .deb and start it
+        run: |
+          sudo apt-get install -y -qq ./dist/*.deb
+          annex --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-packages-${{ matrix.arch }}
+          path: dist/Annex-*-linux-*
+          if-no-files-found: error
+
   windows-app:
     name: Windows app
     runs-on: windows-latest

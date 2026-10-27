@@ -5,6 +5,7 @@ members = [
     "annex-crypto",
     "annex-session",
     "annex-discovery",
+    "annex-media",
     "annex-media-win",
     "annex-ffi",
     "annex-cli",

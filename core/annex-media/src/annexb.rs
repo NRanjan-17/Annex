@@ -1,4 +1,4 @@
-//! Platform-independent H.264 Annex B helpers used by the Windows encoder.
+//! Platform-independent H.264 Annex B helpers used by the hosts' encoders.
 
 /// NAL unit types present in an Annex B buffer.
 pub fn nal_types(buf: &[u8]) -> Vec<u8> {
