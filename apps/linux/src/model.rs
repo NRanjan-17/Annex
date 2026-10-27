@@ -845,7 +845,7 @@ impl Model {
     }
 
     /// Who dropped files go to: the host this computer controls, else a viewer controlling it.
-    fn update_drop_target(&self) {
+    pub fn update_drop_target(&self) {
         let Some(tray) = &self.drop_tray else { return };
         let peer = if !self.settings.drop_at_top {
             None

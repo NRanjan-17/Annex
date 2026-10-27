@@ -163,7 +163,11 @@ internal sealed partial class DropTray
         if (_phase == Phase.Transfers) return;
         var near = DistanceToIsland(p) < 160 * Scale;
         if (near && _phase != Phase.Open) Show(Phase.Open);
-        else if (!near && _phase == Phase.Open) Show(_fromExplorer ? Phase.Glowing : Phase.Hidden);
+        else if (!near && _phase == Phase.Open)
+        {
+            if (_fromExplorer) Show(Phase.Glowing);
+            else Hide();
+        }
     }
 
     private static bool IsExplorerAt(PointInt32 p)

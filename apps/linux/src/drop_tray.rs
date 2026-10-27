@@ -195,7 +195,7 @@ impl DropTray {
             s.can_send = can;
         }
         if !can && i.phase.get() == Phase::Open {
-            i.phase.set(Phase::Hidden);
+            i.set_phase(Phase::Hidden);
         }
         i.update_visible();
     }
@@ -291,6 +291,8 @@ impl Inner {
         while let Some(c) = self.content.first_child() {
             self.content.remove(&c);
         }
+        // Hidden: only the strip, without the content's padding.
+        self.content.set_visible(self.phase.get() != Phase::Hidden);
         let s = self.state.borrow();
         match self.phase.get() {
             Phase::Hidden => {}
