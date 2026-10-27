@@ -32,6 +32,8 @@ public sealed class AppSettings
     public bool ConnectOverDirectWifi { get; set; }
     /// <summary>Show identity codes, addresses and connection figures (Settings → Developer).</summary>
     public bool ShowTechnicalDetails { get; set; }
+    /// <summary>Settings → Developer: also log each input event and progress step (annex.log grows faster).</summary>
+    public bool VerboseLogging { get; set; }
     /// <summary>Look for updates at launch and once a day.</summary>
     public bool CheckForUpdates { get; set; } = true;
     /// <summary>Include pre-releases; off goes back to the latest normal release. Until the user flips
@@ -72,6 +74,18 @@ public sealed class AppSettings
 
     private static string FilePath => Path.Combine(MainWindow.DataDirectory, "settings.json");
 
+    /// <summary>Why settings.json couldn't be read at launch (logged once the log is open), or null.</summary>
+    [JsonIgnore]
+    public string? LoadProblem { get; private set; }
+
+    /// <summary>The settings for the log: nothing secret (the relay's username and password stay out).</summary>
+    public string Describe() =>
+        $"name {(DeviceName is null ? "(this PC's)" : $"\"{DeviceName}\"")}, hardware encoder {PreferHardwareEncoder}, gpu {GpuLuid:x}, "
+        + $"share at launch {StartSharingAtLaunch}, no one at screen {Headless}, control {UseMouseAndKeyboard}, extend by default {ExtendByDefault}, "
+        + $"clipboard {ShareClipboard}, receive files {ReceiveFiles}, drop at top {DropAtTop}, direct Wi-Fi first {ConnectOverDirectWifi}, "
+        + $"technical details {ShowTechnicalDetails}, verbose log {VerboseLogging}, updates {CheckForUpdates} (beta {BetaUpdates}), quality {Quality}, "
+        + $"server {(RendezvousServer.Trim().Length == 0 ? "Annex's" : RendezvousServer.Trim())}, own relay {(RelayUrl.Trim().Length == 0 ? "no" : "yes")}";
+
     public static AppSettings Load()
     {
         AppSettings settings;
@@ -81,7 +95,10 @@ public sealed class AppSettings
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException)
         {
-            settings = new AppSettings();
+            settings = new AppSettings
+            {
+                LoadProblem = e is FileNotFoundException or DirectoryNotFoundException ? null : $"{e.GetType().Name}: {e.Message}",
+            };
         }
         if (!settings.BetaUpdatesChosen) settings.BetaUpdates = RunningBeta;
         return settings;
@@ -99,6 +116,7 @@ public sealed class AppSettings
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             // Not fatal: settings apply for this session.
+            Annex.Interop.AnnexLog.Warn($"[settings] couldn't save settings.json: {e.Message}");
         }
     }
 
@@ -152,13 +170,19 @@ internal static unsafe partial class Secret
             fixed (byte* p = data)
             {
                 var input = new Blob { Size = (uint)data.Length, Data = p };
-                if (!CryptUnprotectData(&input, 0, null, 0, 0, 0, out var output)) return "";
+                if (!CryptUnprotectData(&input, 0, null, 0, 0, 0, out var output))
+                {
+                    Annex.Interop.AnnexLog.Warn($"[settings] couldn't decrypt {Path.GetFileName(path)} (error {Marshal.GetLastPInvokeError()})");
+                    return "";
+                }
                 try { return Encoding.UTF8.GetString(output.Data, (int)output.Size); }
                 finally { LocalFree((nint)output.Data); }
             }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
+            if (e is not (FileNotFoundException or DirectoryNotFoundException))
+                Annex.Interop.AnnexLog.Warn($"[settings] couldn't read {Path.GetFileName(path)}: {e.Message}");
             return "";
         }
     }
@@ -176,7 +200,11 @@ internal static unsafe partial class Secret
             fixed (byte* p = data)
             {
                 var input = new Blob { Size = (uint)data.Length, Data = p };
-                if (!CryptProtectData(&input, null, null, 0, 0, 0, out var output)) return;
+                if (!CryptProtectData(&input, null, null, 0, 0, 0, out var output))
+                {
+                    Annex.Interop.AnnexLog.Warn($"[settings] couldn't encrypt {Path.GetFileName(path)} (error {Marshal.GetLastPInvokeError()})");
+                    return;
+                }
                 try
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -188,6 +216,7 @@ internal static unsafe partial class Secret
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             // Not fatal: the relay just won't have its password after a restart.
+            Annex.Interop.AnnexLog.Warn($"[settings] couldn't save {Path.GetFileName(path)}: {e.Message}");
         }
     }
 
@@ -198,12 +227,12 @@ internal static unsafe partial class Secret
         public byte* Data;
     }
 
-    [LibraryImport("crypt32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    [LibraryImport("crypt32.dll", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool CryptProtectData(Blob* input, string? description, Blob* entropy, nint reserved, nint prompt,
         uint flags, out Blob output);
 
-    [LibraryImport("crypt32.dll")]
+    [LibraryImport("crypt32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool CryptUnprotectData(Blob* input, nint description, Blob* entropy, nint reserved, nint prompt,
         uint flags, out Blob output);

@@ -112,6 +112,7 @@ public abstract record CoreEvent
         }
         catch (JsonException)
         {
+            AnnexLog.Warn($"[app] couldn't read an event from the core ({json.Length} bytes)");
             return new Unknown("invalid");
         }
         try
@@ -150,8 +151,9 @@ public abstract record CoreEvent
                 _ => new Unknown(type),
             };
         }
-        catch (JsonException)
+        catch (JsonException e)
         {
+            AnnexLog.Warn($"[app] couldn't read a \"{type}\" event from the core: {e.Message}");
             return new Unknown(type);
         }
     }

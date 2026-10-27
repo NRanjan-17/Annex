@@ -101,6 +101,13 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)] public static partial nint annex_win_gpus_json();
 
     [LibraryImport(Lib)] public static partial void annex_set_log_enabled([MarshalAs(UnmanagedType.U1)] bool enabled);
+    [LibraryImport(Lib)] public static partial void annex_set_log_verbose([MarshalAs(UnmanagedType.U1)] bool verbose);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint annex_log_save_recording(string? why);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial void annex_log(int level, string message);
 
     /// <summary>Windows only.</summary>
     [LibraryImport(Lib)] public static partial nint annex_win_extend_status_json();

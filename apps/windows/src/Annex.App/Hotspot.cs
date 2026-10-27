@@ -1,3 +1,4 @@
+using Annex.Interop;
 using Windows.Networking.Connectivity;
 using Windows.Networking.NetworkOperators;
 
@@ -29,7 +30,16 @@ internal sealed class Hotspot
         if (IsOn) return Task.FromResult<string?>(null);
         // A caller while a start is under way shares it.
         if (_starting is { IsCompleted: false } running) return running;
-        return _starting = StartCoreAsync();
+        return _starting = StartLoggedAsync();
+    }
+
+    private async Task<string?> StartLoggedAsync()
+    {
+        AnnexLog.Info("[network] starting the hotspot");
+        var error = await StartCoreAsync().ConfigureAwait(false);
+        if (error is null) AnnexLog.Info($"[network] hotspot on: \"{Ssid}\" ({(_startedByAnnex ? "started by Annex" : "was already on")})");
+        else AnnexLog.Warn($"[network] hotspot didn't start: {error}");
+        return error;
     }
 
     private async Task<string?> StartCoreAsync()
@@ -81,12 +91,18 @@ internal sealed class Hotspot
         {
             try
             {
-                await _manager.StopTetheringAsync().AsTask().ConfigureAwait(false);
+                var result = await _manager.StopTetheringAsync().AsTask().ConfigureAwait(false);
+                AnnexLog.Info($"[network] hotspot off ({result.Status})");
             }
-            catch (Exception)
+            catch (Exception e)
             {
                 // Already off.
+                AnnexLog.Debug($"[network] hotspot stop: {e.GetType().Name}: {e.Message}");
             }
+        }
+        else
+        {
+            AnnexLog.Info("[network] hotspot left on: it was on before Annex needed it");
         }
         _startedByAnnex = false;
         Ssid = Passphrase = null;

@@ -129,7 +129,9 @@ public sealed partial class MainWindow : Window
             if (_quitting) return;
             args.Cancel = true;
             AppWindow.Hide();
+            AnnexLog.Info("[app] window closed: Annex stays in the tray");
         };
+        Activated += (_, e) => AnnexLog.Debug($"[app] window {(e.WindowActivationState == WindowActivationState.Deactivated ? "lost focus" : "focused")}");
         _tray = new TrayIcon("Annex", Ui.AssetPath("TrayOff.ico"));
         _tray.LeftClick += ShowFromTray;
         _tray.RightClick += ShowTrayMenu;
@@ -154,14 +156,23 @@ public sealed partial class MainWindow : Window
         _relayUserBox.Text = _settings.RelayUsername;
         _relayUserBox.LostFocus += (_, _) => SaveInternet();
         _relayPasswordBox.Password = _settings.RelayPassword;
-        _relayPasswordBox.LostFocus += (_, _) => _settings.RelayPassword = _relayPasswordBox.Password;
+        _relayPasswordBox.LostFocus += (_, _) =>
+        {
+            if (_relayPasswordBox.Password == _settings.RelayPassword) return;
+            _settings.RelayPassword = _relayPasswordBox.Password;
+            Setting("relay password", _relayPasswordBox.Password.Length == 0 ? "cleared" : "changed");
+        };
 
         try
         {
+            // Before the core opens, so its "logging started" line says so.
+            if (_settings.VerboseLogging) AnnexLog.SetVerbose(true);
             _core = CoreClient.Open(DataDirectory, _settings.DeviceName ?? Environment.MachineName);
             _discovery = new DiscoveryHandle(_core, e => _ui.TryEnqueue(() => OnDiscovery(e)));
             _trusted = [.. _core.TrustedPeers];
             RefreshMonitors();
+            _extendStatus = TryExtendStatus();
+            LogBoot();
             // Show up under Nearby on other computers as soon as Annex is open.
             _core.SetPresence(true);
             _core.SetHeadless(_settings.Headless);
@@ -170,7 +181,6 @@ public sealed partial class MainWindow : Window
             _drop = new DropTray(_ui);
             _drop.Dropped += SendFiles;
             if (_settings.ShareClipboard) _clipboard.Start();
-            _extendStatus = TryExtendStatus();
             _ = CheckFirewallAsync();
             StartUpdateChecks();
             AppSettings.RefreshStartWithWindows();
@@ -178,11 +188,16 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             _startupError = ex.Message;
+            AnnexLog.Error($"[app] couldn't start: {ex}");
         }
         _nameBox.Text = _settings.DeviceName ?? "";
         _nameBox.PlaceholderText = Environment.MachineName;
         BuildShell();
-        if (_settings.StartSharingAtLaunch) SetHosting(true);
+        if (_settings.StartSharingAtLaunch)
+        {
+            AnnexLog.Info("[host] sharing at launch (setting)");
+            SetHosting(true);
+        }
         if (Environment.GetEnvironmentVariable("ANNEX_SELFTEST") == "1") _ui.TryEnqueue(SelfTest);
     }
 
@@ -267,6 +282,40 @@ public sealed partial class MainWindow : Window
             (uint)bitmap.PixelWidth, (uint)bitmap.PixelHeight, 96, 96, pixels);
         await encoder.FlushAsync();
     }
+
+    /// <summary>The first lines of each run: what this PC is and how Annex is set up, so a log explains
+    /// itself. Nothing secret (no relay credentials).</summary>
+    private void LogBoot()
+    {
+        var app = typeof(MainWindow).Assembly.GetName().Version;
+        var background = Environment.GetCommandLineArgs().Contains(AppSettings.BackgroundArg);
+        AnnexLog.Info($"[app] Annex {AnnexNative.Version} (app {app}) starting{(background ? " in the tray (Start with Windows)" : "")}");
+        AnnexLog.Info($"[app] {System.Runtime.InteropServices.RuntimeInformation.OSDescription} ({Environment.OSVersion.Version}), "
+            + $"{System.Runtime.InteropServices.RuntimeInformation.OSArchitecture}, process {System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}, "
+            + $".NET {Environment.Version}, WinUI {typeof(Window).Assembly.GetName().Version}");
+        AnnexLog.Info($"[app] session {System.Diagnostics.Process.GetCurrentProcess().SessionId}, "
+            + $"{(GetSystemMetrics(SmRemoteSession) != 0 ? "Remote Desktop" : "console")}, admin {Environment.IsPrivilegedProcess}, "
+            + $"user {Environment.UserName}, machine {Environment.MachineName}");
+        AnnexLog.Info($"[display] {_monitors.Count} screen(s): "
+            + string.Join("; ", _monitors.Select(m => $"{m.Name.TrimStart('\\', '.')} {m.Width}x{m.Height} {m.RefreshHz} Hz{(m.Primary ? " main" : "")}"))
+            + $"; window scale {GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(this)) / 96.0:0.##}");
+        var gpus = TryGpus();
+        AnnexLog.Info($"[display] graphics: {(gpus.Count == 0 ? "none listed" : string.Join("; ", gpus.Select(g => $"{g.Name} ({g.Luid:x})")))}");
+        AnnexLog.Info(_extendStatus is { } x
+            ? $"[display] extend driver: {x.State}, problem {x.Problem}, test signing {x.TestSigning}"
+            : "[display] extend driver: unknown");
+        AnnexLog.Info($"[app] data folder {DataDirectory}, device \"{_core?.DeviceName}\" {Fingerprint}, {_trusted.Count} paired device(s)");
+        AnnexLog.Info($"[settings] {_settings.Describe()}, start with Windows {AppSettings.StartWithWindows}");
+        if (_settings.LoadProblem is { } problem) AnnexLog.Warn($"[settings] couldn't read settings.json, using defaults: {problem}");
+    }
+
+    private const int SmRemoteSession = 0x1000;
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    private static partial int GetSystemMetrics(int index);
+
+    /// <summary>A setting the user changed, for the log.</summary>
+    private static void Setting(string name, object value) => AnnexLog.Info($"[settings] {name}: {value}");
 
     /// <summary>Opens at a comfortable size in effective pixels (so display scaling doesn't shrink it),
     /// centred, never larger than the screen, with a minimum size.</summary>
@@ -477,6 +526,7 @@ public sealed partial class MainWindow : Window
     {
         // The old Connect and per-computer pages are now Nearby.
         _pane = pane is "connect" || pane.StartsWith("peer:", StringComparison.Ordinal) ? "home" : pane;
+        AnnexLog.Debug($"[app] page: {_pane}");
         BuildNav();
         Render();
     }
@@ -520,11 +570,15 @@ public sealed partial class MainWindow : Window
         p.Children.Add(Ui.Hero("", "This PC",
             "Let another computer show this screen, or use this PC as its extra display."));
         UpdateBanner(p);
-        p.Children.Add(Ui.Card("", "Share this PC", ShareStatus(), Ui.Switch(_host is not null, on => SetHosting(on))));
+        p.Children.Add(Ui.Card("", "Share this PC", ShareStatus(), Ui.Switch(_host is not null, on => { AnnexLog.Info($"[host] Share this PC switched {(on ? "on" : "off")}"); SetHosting(on); })));
         if (_monitors.Count > 1)
         {
             var box = new ComboBox { ItemsSource = _monitors.Select(m => m.Label).ToList(), SelectedIndex = _monitorIndex, MinWidth = 220, IsEnabled = _host is null };
-            box.SelectionChanged += (_, _) => _monitorIndex = Math.Max(0, box.SelectedIndex);
+            box.SelectionChanged += (_, _) =>
+            {
+                _monitorIndex = Math.Max(0, box.SelectedIndex);
+                Setting("screen to share", _monitors[_monitorIndex].Label);
+            };
             p.Children.Add(Ui.Card("", "Screen to share", _host is null ? null : "Stop sharing to pick another screen.", box));
         }
         SameNameNotice(p);
@@ -571,7 +625,7 @@ public sealed partial class MainWindow : Window
             _hotspot.IsOn
                 ? $"Network “{_hotspot.Ssid}”, password {_hotspot.Passphrase}. Other computers can join it for less lag."
                 : "Runs a hotspot on this PC so another computer connects straight to it. Less lag.",
-            Ui.Switch(_hotspot.IsOn, on => _ = SetHotspotAsync(on))));
+            Ui.Switch(_hotspot.IsOn, on => { Setting("direct Wi-Fi hotspot", on); _ = SetHotspotAsync(on); })));
     }
 
     private static Button CopyButton(string text)
@@ -582,6 +636,7 @@ public sealed partial class MainWindow : Window
             var data = new DataPackage();
             data.SetText(text);
             Clipboard.SetContent(data);
+            AnnexLog.Debug("[app] Copy pressed (an address or code)");
             copy.Content = "Copied";
         };
         return copy;
@@ -684,11 +739,13 @@ public sealed partial class MainWindow : Window
         try
         {
             var relay = _settings.RelayUrl.Trim();
+            AnnexLog.Info($"[host] asking for a code ({(_settings.RendezvousServer.Trim().Length == 0 ? "Annex's server" : _settings.Server)}, own relay {(relay.Length == 0 ? "no" : "yes")})");
             _host.ShareCode(_settings.Server, relay.Length == 0 ? null : relay,
                 relay.Length == 0 ? null : _settings.RelayUsername, relay.Length == 0 ? null : _settings.RelayPassword);
         }
         catch (AnnexException ex)
         {
+            AnnexLog.Warn($"[host] couldn't ask for a code: {ex.Message}");
             _internet = new InternetShare.Ended(FriendlyInternetError(ex.Message));
         }
         RenderIf("share");
@@ -696,6 +753,7 @@ public sealed partial class MainWindow : Window
 
     private void StopCode()
     {
+        AnnexLog.Info("[host] code stopped by the user");
         _host?.StopCode();
         _internet = null;
         RenderIf("share");
@@ -764,9 +822,14 @@ public sealed partial class MainWindow : Window
 
     private void SaveInternet()
     {
-        _settings.RendezvousServer = _serverBox.Text.Trim();
-        _settings.RelayUrl = _relayUrlBox.Text.Trim();
-        _settings.RelayUsername = _relayUserBox.Text.Trim();
+        var (server, relay, user) = (_serverBox.Text.Trim(), _relayUrlBox.Text.Trim(), _relayUserBox.Text.Trim());
+        if (server == _settings.RendezvousServer && relay == _settings.RelayUrl && user == _settings.RelayUsername) return;
+        if (server != _settings.RendezvousServer) Setting("server", server.Length == 0 ? "Annex's" : server);
+        if (relay != _settings.RelayUrl || user != _settings.RelayUsername)
+            Setting("own relay", relay.Length == 0 ? "none" : $"set (username {(user.Length == 0 ? "empty" : "set")})");
+        _settings.RendezvousServer = server;
+        _settings.RelayUrl = relay;
+        _settings.RelayUsername = user;
         _settings.Save();
     }
 
@@ -786,13 +849,21 @@ public sealed partial class MainWindow : Window
     private static List<GpuInfo> TryGpus()
     {
         try { return [.. AnnexNative.Gpus()]; }
-        catch (Exception e) when (e is AnnexException or EntryPointNotFoundException) { return []; }
+        catch (Exception e) when (e is AnnexException or EntryPointNotFoundException)
+        {
+            AnnexLog.Warn($"[display] couldn't list graphics cards: {e.Message}");
+            return [];
+        }
     }
 
     private static ExtendStatus? TryExtendStatus()
     {
         try { return AnnexNative.ExtendStatus(); }
-        catch (Exception e) when (e is AnnexException or EntryPointNotFoundException) { return null; }
+        catch (Exception e) when (e is AnnexException or EntryPointNotFoundException)
+        {
+            AnnexLog.Warn($"[display] couldn't check the extend driver: {e.Message}");
+            return null;
+        }
     }
 
     /// <summary>Whether other computers can be an extra display for this PC, and what to do if not.</summary>
@@ -862,12 +933,18 @@ public sealed partial class MainWindow : Window
                 WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
             };
             using var proc = System.Diagnostics.Process.Start(psi);
-            if (proc is null) return false;
+            if (proc is null)
+            {
+                AnnexLog.Warn($"[permissions] netsh didn't start ({args})");
+                return false;
+            }
             await proc.WaitForExitAsync();
+            AnnexLog.Debug($"[permissions] netsh {args}{(elevated ? " (as admin)" : "")}: exit {proc.ExitCode}");
             return proc.ExitCode == 0;
         }
-        catch (System.ComponentModel.Win32Exception)
+        catch (System.ComponentModel.Win32Exception e)
         {
+            AnnexLog.Warn($"[permissions] netsh {(elevated ? "as admin " : "")}didn't run (UAC prompt declined?): {e.Message}");
             return false; // UAC prompt declined
         }
     }
@@ -875,6 +952,7 @@ public sealed partial class MainWindow : Window
     private async Task CheckFirewallAsync()
     {
         var ok = await RunNetshAsync($"advfirewall firewall show rule name=\"{FirewallRule}\"", elevated: false);
+        AnnexLog.Info($"[permissions] firewall rule \"{FirewallRule}\": {(ok ? "present" : "missing")}");
         _ui.TryEnqueue(() =>
         {
             _firewallAllowed = ok;
@@ -885,6 +963,7 @@ public sealed partial class MainWindow : Window
     private async Task AllowThroughFirewallAsync()
     {
         var exe = Environment.ProcessPath ?? "";
+        AnnexLog.Info("[permissions] Allow through the firewall pressed: asking for admin");
         await RunNetshAsync($"advfirewall firewall add rule name=\"{FirewallRule}\" dir=in action=allow program=\"{exe}\" profile=private,domain enable=yes", elevated: true);
         await CheckFirewallAsync();
     }
@@ -1243,13 +1322,18 @@ public sealed partial class MainWindow : Window
 
         stack.Children.Add(new Border { Height = 1, Background = Ui.White(0.08) });
         stack.Children.Add(SmallSwitch("Direct Wi-Fi first", "This PC runs a hotspot and the other computer joins it. Less lag.",
-            _settings.ConnectOverDirectWifi, on => { _settings.ConnectOverDirectWifi = on; _settings.Save(); }));
+            _settings.ConnectOverDirectWifi, on => { Setting("direct Wi-Fi first", on); _settings.ConnectOverDirectWifi = on; _settings.Save(); }));
         if (peer.Fingerprint is { } fp && _trusted.FirstOrDefault(t => t.Fingerprint == fp) is { } trusted)
         {
             // Headless lets every paired device control this PC.
             var control = SmallSwitch("Can use this PC's mouse and keyboard",
                 _settings.Headless ? "Allowed while No one at this screen is on." : "When it shows this PC's screen.",
-                _settings.Headless || trusted.AllowInput, on => { _core?.SetAllowInput(trusted.Fingerprint, on); RefreshTrusted(); });
+                _settings.Headless || trusted.AllowInput, on =>
+                {
+                    AnnexLog.Info($"[pairing] {trusted.Name} may use the mouse and keyboard: {on}");
+                    _core?.SetAllowInput(trusted.Fingerprint, on);
+                    RefreshTrusted();
+                });
             control.IsHitTestVisible = !_settings.Headless;
             control.Opacity = _settings.Headless ? 0.6 : 1;
             stack.Children.Add(control);
@@ -1426,7 +1510,7 @@ public sealed partial class MainWindow : Window
         box.HorizontalAlignment = HorizontalAlignment.Stretch;
         panel.Children.Add(box);
         panel.Children.Add(SmallSwitch("Direct Wi-Fi first", "This PC runs a hotspot and the other computer joins it. Less lag.",
-            _settings.ConnectOverDirectWifi, on => { _settings.ConnectOverDirectWifi = on; _settings.Save(); }));
+            _settings.ConnectOverDirectWifi, on => { Setting("direct Wi-Fi first", on); _settings.ConnectOverDirectWifi = on; _settings.Save(); }));
         _connectDialog = new ContentDialog
         {
             XamlRoot = Content.XamlRoot,
@@ -1441,6 +1525,7 @@ public sealed partial class MainWindow : Window
         try
         {
             var result = await Ui.PointingHand(_connectDialog).ShowAsync();
+            AnnexLog.Debug($"[viewer] Connect by code or address: {result}");
             if (result == ContentDialogResult.Primary || result == ContentDialogResult.Secondary)
             {
                 _extend = result == ContentDialogResult.Secondary;
@@ -1448,9 +1533,10 @@ public sealed partial class MainWindow : Window
                 else ConnectManual();
             }
         }
-        catch (Exception)
+        catch (Exception e)
         {
             // Another dialog is open (a PIN prompt); the address stays typed for next time.
+            AnnexLog.Warn($"[viewer] couldn't show Connect by code or address: {e.Message}");
         }
         finally
         {
@@ -1465,6 +1551,7 @@ public sealed partial class MainWindow : Window
         // SessionStarted and DirectLinkRequested can both ask for the switch: one offer is enough.
         if (_viewer is null || _viewerFingerprint is null || _directStarting) return;
         _directStarting = true;
+        AnnexLog.Info($"[viewer] switching {_viewingName} to direct Wi-Fi");
         _directStatus = "Starting this PC's hotspot…";
         RenderIf("connect", "peer");
         string? error;
@@ -1478,12 +1565,14 @@ public sealed partial class MainWindow : Window
         }
         if (error is not null || _viewer is null)
         {
+            AnnexLog.Warn($"[viewer] direct Wi-Fi switch stopped: {error ?? "disconnected before the switch"}");
             _directStatus = error ?? "Disconnected before the switch.";
             RenderIf("connect", "peer");
             return;
         }
         _directPending = (_viewerFingerprint, _viewingName, _viewerExtend, DateTimeOffset.UtcNow.AddSeconds(60));
         _viewer.OfferDirectLink(_hotspot.Ssid!, _hotspot.Passphrase!);
+        AnnexLog.Info($"[viewer] asked {_viewingName} to join \"{_hotspot.Ssid}\", waiting up to 60 s for it on the hotspot");
         _directStatus = $"Asking {_viewingName} to join “{_hotspot.Ssid}”. The picture pauses for a moment.";
         RenderIf("connect", "peer");
         var timer = _ui.CreateTimer();
@@ -1494,6 +1583,7 @@ public sealed partial class MainWindow : Window
             if (_directPending is { } d && DateTimeOffset.UtcNow >= d.Until)
             {
                 _directPending = null;
+                AnnexLog.Warn($"[viewer] {d.Name} didn't come back on direct Wi-Fi within 60 s");
                 _directStatus = $"{d.Name} didn't come back on direct Wi-Fi. Reconnect from Nearby.";
                 _ = _hotspot.StopAsync();
                 RenderIf("connect", "peer");
@@ -1509,6 +1599,7 @@ public sealed partial class MainWindow : Window
             "After connecting, this PC starts a hotspot and the other computer joins it. Less lag.",
             Ui.Switch(_settings.ConnectOverDirectWifi, on =>
             {
+                Setting("connect over direct Wi-Fi", on);
                 _settings.ConnectOverDirectWifi = on;
                 _settings.Save();
             })));
@@ -1525,11 +1616,18 @@ public sealed partial class MainWindow : Window
     /// <summary>Host: move one viewer onto this PC's hotspot (it joins, then reconnects there).</summary>
     private async Task OfferDirectWifiToViewerAsync(ulong sessionId, string name)
     {
+        AnnexLog.Info($"[host] Switch to direct Wi-Fi pressed for {name}");
         var error = await _hotspot.StartAsync();
         if (error is null && _host?.OfferDirectLink(sessionId, _hotspot.Ssid!, _hotspot.Passphrase!) == true)
+        {
+            AnnexLog.Info($"[host] offered \"{_hotspot.Ssid}\" to {name}");
             _hostError = null;
+        }
         else
+        {
+            AnnexLog.Warn($"[host] direct Wi-Fi for {name} didn't start: {error ?? "not connected any more"}");
             _hostError = error ?? $"{name} isn't connected any more.";
+        }
         RenderIf("share");
     }
 
@@ -1544,6 +1642,7 @@ public sealed partial class MainWindow : Window
         _directStatus = null;
         _extend = d.Extend;
         _onDirectWifi = true;
+        AnnexLog.Info($"[viewer] {d.Name} is on the hotspot at {direct}, reconnecting there");
         Connect($"{direct}:{peer.Port}", d.Name, d.Fingerprint);
     }
 
@@ -1613,22 +1712,31 @@ public sealed partial class MainWindow : Window
         quality.SelectionChanged += (_, _) =>
         {
             _settings.Quality = (Quality)Math.Max(0, quality.SelectedIndex);
+            Setting("quality", _settings.Quality);
             _settings.Save();
         };
         p.Children.Add(Ui.Card("", "Device name",
             "Shown to other computers. Leave empty to use this PC's name.", Ui.Reuse(_nameBox)));
         p.Children.Add(Ui.Card("", "Start with Windows", "Opens in the tray when you sign in.",
-            Ui.Switch(AppSettings.StartWithWindows, on => AppSettings.StartWithWindows = on)));
+            Ui.Switch(AppSettings.StartWithWindows, on =>
+            {
+                Setting("start with Windows", on);
+                try { AppSettings.StartWithWindows = on; }
+                catch (Exception e) when (e is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+                {
+                    AnnexLog.Warn($"[settings] couldn't change Start with Windows: {e.Message}");
+                }
+            })));
         p.Children.Add(Ui.Card("", "Start sharing when Annex opens", null,
-            Ui.Switch(_settings.StartSharingAtLaunch, on => { _settings.StartSharingAtLaunch = on; _settings.Save(); })));
+            Ui.Switch(_settings.StartSharingAtLaunch, on => { Setting("start sharing at launch", on); _settings.StartSharingAtLaunch = on; _settings.Save(); })));
         p.Children.Add(Ui.Card("", "No one at this screen",
             "For a PC reached remotely: pairing PINs also go to pairing-pin.txt in Annex's data folder, and paired devices can control it without asking.",
-            Ui.Switch(_settings.Headless, on => { _settings.Headless = on; _settings.Save(); _core?.SetHeadless(on); RefreshTrusted(); })));
+            Ui.Switch(_settings.Headless, on => { Setting("no one at this screen", on); _settings.Headless = on; _settings.Save(); _core?.SetHeadless(on); RefreshTrusted(); })));
         p.Children.Add(Ui.Card("", "Quality",
             "Use Fast if the picture stutters on Wi-Fi.", quality));
         p.Children.Add(Ui.Card("", "Control the other computer",
             "When it allows it. Press Ctrl+Alt+Shift+Q to leave.",
-            Ui.Switch(_settings.UseMouseAndKeyboard, on => { _settings.UseMouseAndKeyboard = on; _settings.Save(); })));
+            Ui.Switch(_settings.UseMouseAndKeyboard, on => { Setting("control the other computer", on); _settings.UseMouseAndKeyboard = on; _settings.Save(); })));
     }
 
     private void SharingSection(StackPanel p)
@@ -1643,6 +1751,7 @@ public sealed partial class MainWindow : Window
             gpuBox.SelectionChanged += (_, _) =>
             {
                 _settings.GpuLuid = gpuBox.SelectedIndex <= 0 ? 0 : gpus[gpuBox.SelectedIndex - 1].Luid;
+                Setting("graphics card", gpuBox.SelectedIndex <= 0 ? "automatic" : $"{gpus[gpuBox.SelectedIndex - 1].Name} ({_settings.GpuLuid:x})");
                 _settings.Save();
             };
             p.Children.Add(Ui.Card("", "Graphics card",
@@ -1650,28 +1759,30 @@ public sealed partial class MainWindow : Window
         }
         p.Children.Add(Ui.Card("", "Hardware video encoder",
             _host is null ? "Recommended. Lowest delay." : "Stop sharing to change this.",
-            Ui.Switch(_settings.PreferHardwareEncoder, on => { _settings.PreferHardwareEncoder = on; _settings.Save(); }, enabled: _host is null)));
+            Ui.Switch(_settings.PreferHardwareEncoder, on => { Setting("hardware video encoder", on); _settings.PreferHardwareEncoder = on; _settings.Save(); }, enabled: _host is null)));
     }
 
     private void ViewingSection(StackPanel p)
     {
         p.Children.Add(Ui.Card("", "Extend display by default", null,
-            Ui.Switch(_settings.ExtendByDefault, on => { _settings.ExtendByDefault = on; _extend = on; _settings.Save(); })));
+            Ui.Switch(_settings.ExtendByDefault, on => { Setting("extend display by default", on); _settings.ExtendByDefault = on; _extend = on; _settings.Save(); })));
         DirectWifiOption(p);
         p.Children.Add(Ui.Card("", "Share the clipboard",
             "Copy on one computer, paste on the other, while one controls the other. Passwords copied from a password manager stay here.",
             Ui.Switch(_settings.ShareClipboard, on =>
             {
+                Setting("share the clipboard", on);
                 _settings.ShareClipboard = on;
                 _settings.Save();
                 if (on) _clipboard.Start(); else { _clipboard.Stop(); _copiedWhileAway = false; }
             })));
         p.Children.Add(Ui.Card("", "Drop files at the top of the screen",
             "While connected, drag files to the top of the screen to send them.",
-            Ui.Switch(_settings.DropAtTop, on => { _settings.DropAtTop = on; _settings.Save(); UpdateDropTarget(); })));
+            Ui.Switch(_settings.DropAtTop, on => { Setting("drop files at the top", on); _settings.DropAtTop = on; _settings.Save(); UpdateDropTarget(); })));
         p.Children.Add(Ui.Card("", "Receive files", "Files the other computer sends go to Downloads.",
             Ui.Switch(_settings.ReceiveFiles, on =>
             {
+                Setting("receive files", on);
                 _settings.ReceiveFiles = on;
                 _settings.Save();
                 _core?.SetDownloads(on ? DownloadsFolder : null);
@@ -1698,6 +1809,9 @@ public sealed partial class MainWindow : Window
 
     private void SendFiles(IReadOnlyList<string> files)
     {
+        AnnexLog.Info(_viewer is not null && _controlling
+            ? $"[transfer] sending {files.Count} file(s) to {_viewingName}"
+            : $"[transfer] sending {files.Count} file(s) to {_sessions.Values.Count(s => s.Input)} viewer(s) controlling this PC");
         foreach (var file in files)
         {
             try
@@ -1709,6 +1823,7 @@ public sealed partial class MainWindow : Window
             }
             catch (AnnexException e)
             {
+                AnnexLog.Warn($"[transfer] couldn't send {file}: {e.Message}");
                 _hostError = $"Couldn't send {Path.GetFileName(file)}: {e.Message}";
             }
         }
@@ -1733,17 +1848,36 @@ public sealed partial class MainWindow : Window
     {
         try
         {
+            var viewers = 0;
             foreach (var (id, s) in _sessions)
-                if (s.Input) _host?.SendClipboard(id, mime, data);
+                if (s.Input && _host is not null)
+                {
+                    _host.SendClipboard(id, mime, data);
+                    viewers++;
+                }
+            if (viewers > 0) AnnexLog.Debug($"[clipboard] sent {mime}, {data.Length} bytes to {viewers} viewer(s) controlling this PC");
             if (_viewer is not null && _controlling)
             {
-                if (ViewerInFront()) _viewer.SendClipboard(mime, data);
-                else WaitForViewer();
+                if (ViewerInFront())
+                {
+                    _viewer.SendClipboard(mime, data);
+                    AnnexLog.Debug($"[clipboard] sent {mime}, {data.Length} bytes to {_viewingName}");
+                }
+                else
+                {
+                    AnnexLog.Debug("[clipboard] not sent yet: the viewer isn't in front, sending once it is");
+                    WaitForViewer();
+                }
+            }
+            else if (viewers == 0)
+            {
+                AnnexLog.Debug($"[clipboard] not sent: {(_viewer is not null ? "this PC isn't controlling the other computer" : "nothing connected with control")}");
             }
         }
-        catch (AnnexException)
+        catch (AnnexException e)
         {
             // The session just ended.
+            AnnexLog.Warn($"[clipboard] couldn't send: {e.Message}");
         }
     }
 
@@ -1760,6 +1894,7 @@ public sealed partial class MainWindow : Window
             {
                 if (!_copiedWhileAway || _viewer is null || !_controlling)
                 {
+                    if (_copiedWhileAway) AnnexLog.Debug("[clipboard] stopped waiting for the viewer: the session ended or control went");
                     _copiedWhileAway = false;
                     t.Stop();
                 }
@@ -1767,8 +1902,18 @@ public sealed partial class MainWindow : Window
                 {
                     _copiedWhileAway = false;
                     t.Stop();
-                    if (await _clipboard.ReadNowAsync() is var (mime, data) && _viewer is { } v)
-                        try { v.SendClipboard(mime, data); } catch (AnnexException) { }
+                    if (await _clipboard.ReadNowAsync("re-read as the viewer came to the front") is var (mime, data) && _viewer is { } v)
+                    {
+                        try
+                        {
+                            v.SendClipboard(mime, data);
+                            AnnexLog.Debug($"[clipboard] sent {mime}, {data.Length} bytes to {_viewingName}");
+                        }
+                        catch (AnnexException e)
+                        {
+                            AnnexLog.Warn($"[clipboard] couldn't send: {e.Message}");
+                        }
+                    }
                 }
             };
         }
@@ -1810,6 +1955,7 @@ public sealed partial class MainWindow : Window
             p.Children.Add(Ui.Card("", "Can use this PC's mouse and keyboard",
                 _settings.Headless ? "Allowed while No one at this screen is on." : null, Ui.Switch(_settings.Headless || peer.AllowInput, on =>
             {
+                AnnexLog.Info($"[pairing] {peer.Name} may use the mouse and keyboard: {on}");
                 _core?.SetAllowInput(peer.Fingerprint, on);
                 RefreshTrusted();
             }, enabled: !_settings.Headless)));
@@ -1861,7 +2007,11 @@ public sealed partial class MainWindow : Window
         p.Children.Add(Ui.Group(head));
 
         p.Children.Add(Ui.Section("Updates"));
-        var checkNow = Ui.Button("Check now", () => _ = _updater.CheckAsync(_settings.BetaUpdates));
+        var checkNow = Ui.Button("Check now", () =>
+        {
+            AnnexLog.Info("[update] Check now pressed");
+            _ = _updater.CheckAsync(_settings.BetaUpdates);
+        });
         checkNow.IsEnabled = !_updater.Busy;
         checkNow.HorizontalAlignment = HorizontalAlignment.Left;
         var last = _updater.LastChecked is { } when
@@ -1869,10 +2019,11 @@ public sealed partial class MainWindow : Window
             : "Not checked yet.";
         p.Children.Add(Ui.Group(
             Ui.GroupRow("Check for updates automatically", "Once a day, from GitHub. Nothing about you is sent.",
-                Ui.Switch(_settings.CheckForUpdates, on => { _settings.CheckForUpdates = on; _settings.Save(); })),
+                Ui.Switch(_settings.CheckForUpdates, on => { Setting("check for updates", on); _settings.CheckForUpdates = on; _settings.Save(); })),
             Ui.GroupRow("Receive beta updates", "Beta versions include features in development and may contain bugs.",
                 Ui.Switch(_settings.BetaUpdates, on =>
                 {
+                    Setting("beta updates", on);
                     _settings.BetaUpdates = on;
                     _settings.BetaUpdatesChosen = true;
                     _settings.Save();
@@ -1906,9 +2057,31 @@ public sealed partial class MainWindow : Window
     private void DeveloperSection(StackPanel p)
     {
         p.Children.Add(Ui.Card("\uEC7A", "Show technical details", "Identity codes, addresses and connection details.",
-            Ui.Switch(_settings.ShowTechnicalDetails, on => { _settings.ShowTechnicalDetails = on; _settings.Save(); Render(); })));
+            Ui.Switch(_settings.ShowTechnicalDetails, on => { Setting("show technical details", on); _settings.ShowTechnicalDetails = on; _settings.Save(); Render(); })));
         p.Children.Add(Ui.Card("", "Log file", "Always on. Stays on this PC; Annex never sends it anywhere. Attach it to a bug report if something goes wrong.",
-            Ui.Button("Open folder", () => System.Diagnostics.Process.Start("explorer.exe", DataDirectory))));
+            Ui.Button("Show log files", ShowLogFiles)));
+        p.Children.Add(Ui.Card("\uEBE8", "Verbose logging", "Also logs every input event and transfer step. Turn it on to chase a problem; the log fills faster.",
+            Ui.Switch(_settings.VerboseLogging, on =>
+            {
+                Setting("verbose logging", on);
+                _settings.VerboseLogging = on;
+                _settings.Save();
+                AnnexLog.SetVerbose(on);
+            })));
+    }
+
+    /// <summary>Opens the folder holding annex.log (and the crashes folder: what led up to each error).</summary>
+    private static void ShowLogFiles()
+    {
+        AnnexLog.Info("[app] showing the log files");
+        try
+        {
+            System.Diagnostics.Process.Start("explorer.exe", $"\"{DataDirectory}\"");
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            AnnexLog.Warn($"[app] couldn't open the data folder: {e.Message}");
+        }
     }
 
     // ---- Updates ----------------------------------------------------------------------
@@ -1954,6 +2127,7 @@ public sealed partial class MainWindow : Window
         if (_updater.State != Updater.Stage.Available || _updater.Available is not { } u || u.Version == _settings.DismissedUpdate) return;
         var notNow = Ui.Button("Not now", () =>
         {
+            AnnexLog.Info($"[update] Not now for {u.Version}");
             _settings.DismissedUpdate = u.Version;
             _settings.Save();
             RenderIf("share", "connect");
@@ -1964,6 +2138,7 @@ public sealed partial class MainWindow : Window
 
     private async Task InstallUpdateAsync()
     {
+        AnnexLog.Info($"[update] Install pressed ({_updater.Available?.Version})");
         if (_viewer is not null || _sessions.Count > 0)
         {
             var dialog = new ContentDialog
@@ -1977,10 +2152,15 @@ public sealed partial class MainWindow : Window
             };
             try
             {
-                if (await Ui.PointingHand(dialog).ShowAsync() != ContentDialogResult.Primary) return;
+                if (await Ui.PointingHand(dialog).ShowAsync() != ContentDialogResult.Primary)
+                {
+                    AnnexLog.Info("[update] install cancelled: a session is running");
+                    return;
+                }
             }
-            catch (Exception)
+            catch (Exception e)
             {
+                AnnexLog.Warn($"[update] couldn't ask before installing: {e.Message}");
                 return; // another dialog is open
             }
         }
@@ -2050,6 +2230,7 @@ public sealed partial class MainWindow : Window
         };
         if (await Ui.PointingHand(dialog).ShowAsync() == ContentDialogResult.Primary)
         {
+            AnnexLog.Info($"[pairing] forgot {peer.Name} ({peer.Fingerprint})");
             _core?.Untrust(peer.Fingerprint);
             RefreshTrusted();
         }
@@ -2061,6 +2242,7 @@ public sealed partial class MainWindow : Window
         var trimmed = name.Trim();
         if (trimmed == (_settings.DeviceName ?? "")) return;
         var stored = _core.SetDeviceName(trimmed.Length == 0 ? Environment.MachineName : trimmed);
+        Setting("device name", trimmed.Length == 0 ? $"this PC's ({stored})" : $"\"{stored}\"");
         _settings.DeviceName = trimmed.Length == 0 ? null : stored;
         _settings.Save();
         _core.SetPresence(true);
@@ -2085,13 +2267,13 @@ public sealed partial class MainWindow : Window
             new TrayMenu.Model(_core?.DeviceName ?? "Annex", status, _host is not null,
                 _viewer is not null ? $"Viewing {_viewingName}" : null, _hosts, TrayLive(), Label),
             new TrayMenu.Actions(
-                SetSharing: on => SetHosting(on),
-                Connect: (peer, extend) => { _extend = extend; ConnectToPeer(peer); },
-                Disconnect: Disconnect,
-                ConnectOther: () => { ShowFromTray(); Go("home"); _ = ShowConnectDialogAsync(); },
-                Open: ShowFromTray,
-                OpenSettings: () => { ShowFromTray(); Go("settings"); },
-                Quit: Quit));
+                SetSharing: on => { AnnexLog.Info($"[tray] Share this PC {(on ? "on" : "off")}"); SetHosting(on); },
+                Connect: (peer, extend) => { AnnexLog.Info($"[tray] {(extend ? "Extend" : "View")} {peer.Name}"); _extend = extend; ConnectToPeer(peer); },
+                Disconnect: () => { AnnexLog.Info("[tray] Disconnect"); Disconnect(); },
+                ConnectOther: () => { AnnexLog.Info("[tray] Connect by code or address"); ShowFromTray(); Go("home"); _ = ShowConnectDialogAsync(); },
+                Open: () => { AnnexLog.Info("[tray] Open Annex"); ShowFromTray(); },
+                OpenSettings: () => { AnnexLog.Info("[tray] Settings"); ShowFromTray(); Go("settings"); },
+                Quit: () => { AnnexLog.Info("[tray] Quit"); Quit(); }));
     }
 
     /// <summary>The tray menu's live block: the same title as Nearby's session bar, and its numbers.</summary>
@@ -2110,12 +2292,14 @@ public sealed partial class MainWindow : Window
 
     private void ShowFromTray()
     {
+        if (!AppWindow.IsVisible) AnnexLog.Debug("[app] window shown");
         AppWindow.Show();
         Activate();
     }
 
     private void Quit()
     {
+        AnnexLog.Info("[app] quitting");
         _quitting = true;
         Close();
         Application.Current.Exit();
@@ -2131,6 +2315,7 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            AnnexLog.Error($"[display] can't list displays: {ex.GetType().Name}: {ex.Message}");
             _hostError = $"Can't list displays: {ex.Message}";
             _monitors = [];
         }
@@ -2150,21 +2335,27 @@ public sealed partial class MainWindow : Window
         _teardown.Wait();
         _hostError = null;
         var hardware = _settings.PreferHardwareEncoder;
+        var screen = _monitorIndex < _monitors.Count ? _monitors[_monitorIndex].Label : $"#{_monitorIndex}";
+        AnnexLog.Info($"[host] starting: screen {screen}, {(hardware ? "hardware" : "software")} encoder, gpu {(_settings.GpuLuid == 0 ? "automatic" : _settings.GpuLuid.ToString("x"))}, "
+            + $"port {DefaultPort}, no one at screen {_settings.Headless}, receive files {_settings.ReceiveFiles}");
         try
         {
             try
             {
                 _host = HostHandle.StartScreen(_core, _monitorIndex, DefaultPort, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)), _settings.GpuLuid);
             }
-            catch (AnnexException)
+            catch (AnnexException e)
             {
                 // Default port busy: take any free port (discovery advertises it).
+                AnnexLog.Warn($"[host] port {DefaultPort} didn't work ({e.Message}), taking any free port");
                 _host = HostHandle.StartScreen(_core, _monitorIndex, 0, advertise: true, hardware, ev => _ui.TryEnqueue(() => OnHostEvent(ev)), _settings.GpuLuid);
             }
+            AnnexLog.Info($"[host] sharing on port {_host?.Port}");
             if (_tray is not null) _tray.Tooltip = "Annex — sharing this screen";
         }
         catch (AnnexException ex)
         {
+            AnnexLog.Error($"[host] couldn't start sharing: {ex.Message}");
             _hostError = $"Couldn't start sharing: {ex.Message}";
         }
     }
@@ -2172,6 +2363,7 @@ public sealed partial class MainWindow : Window
     private void StopHosting()
     {
         var h = _host;
+        if (h is not null) AnnexLog.Info($"[host] stopping sharing ({_sessions.Count} session(s) open)");
         _host = null;
         FreeLater(h);
         _sessions.Clear();
@@ -2188,11 +2380,13 @@ public sealed partial class MainWindow : Window
         {
             case CoreEvent.ClipboardReceived c:
                 if (_settings.ShareClipboard) _clipboard.Apply(c.Mime, c.Data);
+                else AnnexLog.Debug($"[clipboard] received {c.Mime}, {c.Data.Length} bytes: not applied, Share the clipboard is off");
                 return;
             case CoreEvent.TransferStarted or CoreEvent.TransferProgress or CoreEvent.TransferEnded:
                 OnTransfer(e);
                 return;
             case CoreEvent.PairingPin pin:
+                AnnexLog.Info($"[pairing] showing a PIN for {pin.PeerName}");
                 await ShowPin(pin);
                 break;
             case CoreEvent.PairingFinished f when f.RequestId == _pinRequest:
@@ -2216,6 +2410,7 @@ public sealed partial class MainWindow : Window
                 break;
             case CoreEvent.InputRequested ask when _core is not null:
             {
+                AnnexLog.Info($"[pairing] asking whether {ask.PeerName} may use the mouse and keyboard");
                 ShowFromTray();
                 var dialog = new ContentDialog
                 {
@@ -2228,24 +2423,29 @@ public sealed partial class MainWindow : Window
                 };
                 try
                 {
-                    if (await Ui.PointingHand(dialog).ShowAsync() == ContentDialogResult.Primary)
+                    var allow = await Ui.PointingHand(dialog).ShowAsync() == ContentDialogResult.Primary;
+                    AnnexLog.Info($"[pairing] {ask.PeerName} may use the mouse and keyboard: {(allow ? "allowed" : "not now")}");
+                    if (allow)
                     {
                         _core.SetAllowInput(ask.Fingerprint, true);
                         RefreshTrusted();
                     }
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
                     // Another dialog is open; the switch in Paired devices still works.
+                    AnnexLog.Warn($"[pairing] couldn't ask about control for {ask.PeerName}: {ex.Message}");
                 }
                 break;
             }
             case CoreEvent.DirectLinkRequested req when _host is not null:
             {
                 // The viewer (a Mac) asks for a direct link: run the hotspot here and hand it over.
+                AnnexLog.Info("[host] the viewer asked for direct Wi-Fi: starting the hotspot");
                 var error = await _hotspot.StartAsync();
                 if (error is null) _host?.OfferDirectLink(req.SessionId, _hotspot.Ssid!, _hotspot.Passphrase!);
                 else _host?.RefuseDirectLink(req.SessionId, error);
+                AnnexLog.Info(error is null ? $"[host] offered \"{_hotspot.Ssid}\" to the viewer" : $"[host] refused direct Wi-Fi: {error}");
                 RenderIf("share");
                 break;
             }
@@ -2254,6 +2454,7 @@ public sealed partial class MainWindow : Window
                 break;
             case CoreEvent.DirectLinkOffer offer when _host is not null:
                 // Another Windows PC offers its hotspot; joining one from here isn't supported yet.
+                AnnexLog.Info("[host] refused a direct Wi-Fi offer: joining one from Windows isn't supported");
                 _host.RefuseDirectLink(offer.SessionId, "Joining a direct Wi-Fi link isn't supported on Windows yet. Run the switch from the other computer.");
                 break;
         }
@@ -2285,10 +2486,14 @@ public sealed partial class MainWindow : Window
             var result = await Ui.PointingHand(_pinDialog).ShowAsync();
             // Closed by the user (not by pairing finishing): refuse the pairing.
             if (result == ContentDialogResult.None && _pinRequest == pin.RequestId && _host is not null)
+            {
+                AnnexLog.Info($"[pairing] Don't allow pressed for {pin.PeerName}");
                 _core.CancelRequest(pin.RequestId);
+            }
         }
         catch (Exception ex)
         {
+            AnnexLog.Warn($"[pairing] couldn't show the PIN for {pin.PeerName} (another dialog is open?): {ex.Message}");
             // Another dialog is already open; the viewer side will time out.
             _hostError = $"PIN {pin.Pin} for {pin.PeerName} ({ex.Message})";
             RenderIf("share");
@@ -2324,7 +2529,11 @@ public sealed partial class MainWindow : Window
 
     private void ConnectToPeer(PeerInfo peer)
     {
-        if (peer.ConnectAddress is not { } address) return;
+        if (peer.ConnectAddress is not { } address)
+        {
+            AnnexLog.Warn($"[viewer] {peer.Name} has no address to connect to");
+            return;
+        }
         // Pin the certificate only for hosts we already trust; unknown hosts get a prompt.
         var pinned = peer.Fingerprint is { } fp && _trusted.Any(t => t.Fingerprint == fp) ? fp : null;
         Connect(address, peer.Name, pinned);
@@ -2344,6 +2553,8 @@ public sealed partial class MainWindow : Window
         var code = _codeBox.Text.Trim();
         if (_core is null || code.Length == 0) return;
         _connectDialog?.Hide();
+        AnnexLog.Info($"[viewer] connecting by code ({(_settings.RendezvousServer.Trim().Length == 0 ? "Annex's server" : _settings.Server)}), "
+            + $"{(_extend ? "extend" : "mirror")}, control {_settings.UseMouseAndKeyboard}, quality {_settings.Quality}");
         Disconnect();
         var token = new object();
         _viewerToken = token;
@@ -2359,6 +2570,7 @@ public sealed partial class MainWindow : Window
         }
         catch (AnnexException ex)
         {
+            AnnexLog.Error($"[viewer] couldn't connect by code: {ex.Message}");
             _viewerStatus = $"Couldn't connect: {ex.Message}";
         }
         RenderIf("connect", "peer");
@@ -2367,6 +2579,8 @@ public sealed partial class MainWindow : Window
     private void Connect(string address, string title, string? pinnedFingerprint)
     {
         if (_core is null) return;
+        AnnexLog.Info($"[viewer] connecting to {title} at {address}: {(_extend ? "extend" : "mirror")}, control {_settings.UseMouseAndKeyboard}, "
+            + $"quality {_settings.Quality}, {(pinnedFingerprint is null ? "new (PIN if asked)" : "paired")}");
         Disconnect();
         var token = new object();
         _viewerToken = token;
@@ -2382,6 +2596,7 @@ public sealed partial class MainWindow : Window
         }
         catch (AnnexException ex)
         {
+            AnnexLog.Error($"[viewer] couldn't connect to {title}: {ex.Message}");
             _viewerStatus = $"Couldn't connect: {ex.Message}";
         }
         RenderIf("connect", "peer");
@@ -2394,6 +2609,7 @@ public sealed partial class MainWindow : Window
         {
             case CoreEvent.ClipboardReceived c:
                 if (_settings.ShareClipboard) _clipboard.Apply(c.Mime, c.Data);
+                else AnnexLog.Debug($"[clipboard] received {c.Mime}, {c.Data.Length} bytes: not applied, Share the clipboard is off");
                 return;
             case CoreEvent.TransferStarted or CoreEvent.TransferProgress or CoreEvent.TransferEnded:
                 OnTransfer(e);
@@ -2415,11 +2631,15 @@ public sealed partial class MainWindow : Window
                 if (_tray is not null) _tray.Tooltip = $"Annex — viewing {s.PeerName}";
                 RefreshTrusted();
                 if (_settings.ConnectOverDirectWifi && !_onDirectWifi && _directPending is null)
+                {
+                    AnnexLog.Info("[viewer] Direct Wi-Fi first is on: switching");
                     _ = SwitchToDirectWifiAsync();
+                }
                 break;
             case CoreEvent.DirectLinkRequested:
                 // The host (e.g. a Mac, which can't run a hotspot) asks this PC to set up the link.
                 if (_directPending is null && !_onDirectWifi) _ = SwitchToDirectWifiAsync();
+                else AnnexLog.Debug("[viewer] direct Wi-Fi asked for: already on it or switching");
                 break;
             case CoreEvent.InputAllowed a:
                 _controlling = a.Allowed;
@@ -2438,8 +2658,10 @@ public sealed partial class MainWindow : Window
             case CoreEvent.SessionEnded(_, var reason):
                 // Switching to direct Wi-Fi drops the old connection on purpose.
                 _viewerStatus = _directPending is not null ? null : reason == "user" ? null : FriendlyReason(reason, _viewingName, _viewingByCode);
+                if (_directPending is not null) AnnexLog.Info("[viewer] session ended for the direct Wi-Fi switch, waiting to reconnect");
                 if (reason == "user" && _onDirectWifi)
                 {
+                    AnnexLog.Info("[viewer] left a direct Wi-Fi session: turning the hotspot off");
                     _onDirectWifi = false;
                     _ = _hotspot.StopAsync();
                 }
@@ -2460,6 +2682,7 @@ public sealed partial class MainWindow : Window
     private async Task PromptForPin(CoreEvent.PairingPinRequired req)
     {
         if (_core is null) return;
+        AnnexLog.Info($"[pairing] asking for the PIN shown on {req.PeerName}");
         ShowFromTray(); // the dialog needs a visible window
         var box = new TextBox
         {
@@ -2488,11 +2711,14 @@ public sealed partial class MainWindow : Window
         {
             result = await Ui.PointingHand(dialog).ShowAsync();
         }
-        catch (Exception)
+        catch (Exception e)
         {
             // Another dialog is already open: refuse the pairing rather than crash (it can be retried).
+            AnnexLog.Warn($"[pairing] couldn't ask for the PIN (another dialog is open?): {e.Message}");
             result = ContentDialogResult.None;
         }
+        // The PIN itself is never logged.
+        AnnexLog.Info(result == ContentDialogResult.Primary ? $"[pairing] PIN entered for {req.PeerName}" : $"[pairing] pairing with {req.PeerName} cancelled");
         if (result == ContentDialogResult.Primary)
             _core.SubmitPin(req.RequestId, box.Text);
         else
@@ -2510,6 +2736,7 @@ public sealed partial class MainWindow : Window
     private void Disconnect()
     {
         var v = _viewer;
+        if (v is not null) AnnexLog.Info($"[viewer] closing the viewer for {_viewingName}");
         _viewer = null;
         _viewerLive = false;
         _viewerToken = null;
@@ -2523,21 +2750,30 @@ public sealed partial class MainWindow : Window
     private void FreeLater(IDisposable? handle)
     {
         if (handle is null) return;
-        _teardown = _teardown.ContinueWith(_ => handle.Dispose(), TaskScheduler.Default);
+        _teardown = _teardown.ContinueWith(_ =>
+        {
+            try { handle.Dispose(); }
+            catch (Exception e)
+            {
+                AnnexLog.Error($"[app] closing a {handle.GetType().Name} failed: {e}");
+            }
+        }, TaskScheduler.Default);
     }
 
     private void Shutdown()
     {
+        AnnexLog.Info("[app] shutting down");
         _tray?.Dispose();
         _tray = null;
         _trayMenu?.Close();
         _trayMenu = null;
         StopHosting();
         Disconnect();
-        _teardown.Wait(TimeSpan.FromSeconds(5));
-        _hotspot.StopAsync().Wait(TimeSpan.FromSeconds(3));
+        if (!_teardown.Wait(TimeSpan.FromSeconds(5))) AnnexLog.Warn("[app] sessions took over 5 s to close; quitting anyway");
+        if (!_hotspot.StopAsync().Wait(TimeSpan.FromSeconds(3))) AnnexLog.Warn("[network] the hotspot took over 3 s to stop; quitting anyway");
         _discovery?.Dispose();
         _discovery = null;
+        AnnexLog.Info("[app] bye");
         _core?.Dispose();
         _core = null;
     }

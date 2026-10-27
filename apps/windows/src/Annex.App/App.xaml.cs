@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Annex.Interop;
 using Microsoft.UI.Xaml;
 
 namespace Annex.App;
@@ -46,6 +47,7 @@ internal static partial class CrashReport
 
     public static void Show(Exception ex)
     {
+        AnnexLog.Error($"[app] crash: {ex}");
         var path = Path.Combine(MainWindow.DataDirectory, "crash.log");
         try
         {
@@ -54,6 +56,7 @@ internal static partial class CrashReport
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
+            AnnexLog.Warn($"[app] couldn't write crash.log: {e.Message}");
         }
         if (s_shown) return;
         s_shown = true;

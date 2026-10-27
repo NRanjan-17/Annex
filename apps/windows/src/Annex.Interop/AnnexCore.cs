@@ -43,7 +43,7 @@ internal sealed unsafe class CallbackTarget : IDisposable
         catch (Exception e)
         {
             // Exceptions must never unwind into Rust.
-            System.Diagnostics.Debug.WriteLine($"Annex event handler failed: {e}");
+            AnnexLog.Error($"[app] event handler failed: {e}");
         }
     }
 
@@ -57,8 +57,54 @@ internal sealed unsafe class CallbackTarget : IDisposable
         }
         catch (Exception e)
         {
-            System.Diagnostics.Debug.WriteLine($"Annex frame handler failed: {e}");
+            AnnexLog.Error($"[app] frame handler failed: {e}");
         }
+    }
+}
+
+/// <summary>
+/// Annex's log: annex.log in the data folder, shared with the core (see annex_log in annex.h). Lines
+/// are dropped until a <see cref="CoreClient"/> is open. Start each line with the feature in brackets,
+/// e.g. "[clipboard] copied text, 12 bytes". Never log what's copied, keys pressed, PINs, codes,
+/// passwords or relay credentials: log shapes (kinds, byte counts) instead.
+/// </summary>
+public static class AnnexLog
+{
+    public enum Level { Info = 0, Warn = 1, Error = 2, Debug = 3, Trace = 4 }
+
+    /// <summary>Verbose logging is on: check it before building a trace line on a busy path.</summary>
+    public static bool Verbose { get; private set; } = Environment.GetEnvironmentVariable("ANNEX_LOG") == "verbose";
+
+    /// <summary>Verbose logging: trace lines too (each input event, each progress step). Off by default.</summary>
+    public static void SetVerbose(bool verbose)
+    {
+        Verbose = verbose;
+        try { NativeMethods.annex_set_log_verbose(verbose); }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException) { }
+    }
+
+    public static void Write(Level level, string message)
+    {
+        if (level == Level.Trace && !Verbose) return;
+        // Also called while reporting that annex_ffi didn't load: never throw from here.
+        try { NativeMethods.annex_log((int)level, message); }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException) { }
+    }
+
+    public static void Info(string message) => Write(Level.Info, message);
+    public static void Warn(string message) => Write(Level.Warn, message);
+    /// <summary>A feature stopped working; also saves the lines that led up to it to the crashes folder.</summary>
+    public static void Error(string message) => Write(Level.Error, message);
+    public static void Debug(string message) => Write(Level.Debug, message);
+    /// <summary>Only written while <see cref="Verbose"/>; check it first so the line isn't built for nothing.</summary>
+    public static void Trace(string message) => Write(Level.Trace, message);
+
+    /// <summary>Saves the last few thousand log lines to the crashes folder in the data folder now. Returns the
+    /// file, or null (no core opened yet, or it couldn't be written).</summary>
+    public static string? SaveRecording(string? why)
+    {
+        var p = NativeMethods.annex_log_save_recording(why);
+        return p == 0 ? null : NativeMethods.TakeString(p);
     }
 }
 

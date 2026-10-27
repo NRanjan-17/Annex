@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Annex.Interop;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Text;
@@ -83,12 +84,13 @@ internal sealed partial class DropTray
         var can = peer is not null;
         if (can == _canSend) return;
         _canSend = can;
+        AnnexLog.Info(can ? $"[drop] watching drags: files can go to {peer}" : "[drop] stopped watching drags: nothing connected with control");
         if (can) _watch.Start();
         else
         {
             _watch.Stop();
             _dragging = _buttonDown = false;
-            if (_phase is Phase.Glowing or Phase.Open) Hide();
+            if (_phase is Phase.Glowing or Phase.Open) Hide("nothing to send to");
         }
     }
 
@@ -98,7 +100,7 @@ internal sealed partial class DropTray
         _items.RemoveAll(i => i.Key == key);
         _items.Add(new Item(key, incoming, name, size));
         while (_items.Count > 4 && _items.FindIndex(i => i.Ok is not null) is var i and >= 0) _items.RemoveAt(i);
-        Show(Phase.Transfers);
+        Show(Phase.Transfers, incoming ? "a file is arriving" : "a file is going");
     }
 
     public void Progress(ulong session, ulong id, bool incoming, ulong done)
@@ -148,7 +150,7 @@ internal sealed partial class DropTray
                 var t = _ui.CreateTimer();
                 t.Interval = TimeSpan.FromMilliseconds(350);
                 t.IsRepeating = false;
-                t.Tick += (_, _) => { if (!_dragging && _phase is Phase.Glowing or Phase.Open) Hide(); };
+                t.Tick += (_, _) => { if (!_dragging && _phase is Phase.Glowing or Phase.Open) Hide("drag ended elsewhere"); };
                 t.Start();
             }
             return;
@@ -160,21 +162,23 @@ internal sealed partial class DropTray
             if (moved < 24 || Environment.TickCount64 - _downTicks < 250) return;
             _dragging = true;
             _fileDrag = false;
+            if (AnnexLog.Verbose) AnnexLog.Trace($"[drop] drag started (from Explorer {_fromExplorer})");
         }
         // Pop out for files and folders from any app: Explorer and the desktop, or anything showing the
         // shell's drag image.
         if (!_fileDrag && (_fromExplorer || DragImageShown()))
         {
             _fileDrag = true;
-            if (_phase == Phase.Hidden) Show(Phase.Glowing);
+            if (_phase == Phase.Hidden) Show(Phase.Glowing, _fromExplorer ? "file drag from Explorer" : "file drag (SysDragImage shown)");
         }
         if (_phase == Phase.Transfers) return;
-        var near = DistanceToIsland(p) < 160 * Scale;
-        if (near && _phase != Phase.Open) Show(Phase.Open);
+        var distance = DistanceToIsland(p);
+        var near = distance < 160 * Scale;
+        if (near && _phase != Phase.Open) Show(Phase.Open, $"drag near the island ({distance:0} px)");
         else if (!near && _phase == Phase.Open)
         {
-            if (_fileDrag) Show(Phase.Glowing);
-            else Hide();
+            if (_fileDrag) Show(Phase.Glowing, $"drag moved away ({distance:0} px)");
+            else Hide($"drag moved away ({distance:0} px), not a file drag");
         }
     }
 
@@ -223,7 +227,7 @@ internal sealed partial class DropTray
             if (!e.DataView.Contains(StandardDataFormats.StorageItems)) return;
             e.AcceptedOperation = DataPackageOperation.Copy;
             e.DragUIOverride.Caption = $"Send to {_peer}";
-            if (_phase is Phase.Hidden or Phase.Glowing) Show(Phase.Open);
+            if (_phase is Phase.Hidden or Phase.Glowing) Show(Phase.Open, "files dragged over the island");
         };
         root.Drop += async (_, e) =>
         {
@@ -234,9 +238,20 @@ internal sealed partial class DropTray
                 var items = await e.DataView.GetStorageItemsAsync();
                 var files = items.SelectMany(i => i is StorageFolder ? FilesIn(i.Path) : [i.Path]).ToList();
                 _dragging = false;
-                if (files.Count == 0) { Hide(); return; }
-                Show(Phase.Transfers);
+                if (files.Count == 0)
+                {
+                    AnnexLog.Info($"[drop] dropped {items.Count} item(s) with no files in them");
+                    Hide("dropped nothing to send");
+                    return;
+                }
+                LogDropped(files);
+                Show(Phase.Transfers, "files dropped");
                 Dropped?.Invoke(files);
+            }
+            catch (Exception ex)
+            {
+                AnnexLog.Error($"[drop] couldn't take the dropped files: {ex.GetType().Name}: {ex.Message}");
+                Hide("drop failed");
             }
             finally
             {
@@ -249,6 +264,7 @@ internal sealed partial class DropTray
             _hovering = false;
             if (_phase == Phase.Transfers && _items.TrueForAll(i => i.Ok is not null)) HideLater(2);
         };
+        window.Closed += (_, _) => AnnexLog.Debug("[drop] island window closed");
 
         // The light: silver flowing round the edge.
         var turn = new RotateTransform { CenterX = 0.5, CenterY = 0.5 };
@@ -310,12 +326,14 @@ internal sealed partial class DropTray
         _ => (PillWidth * 0.8, PillHeight * 0.5),
     };
 
-    private void Show(Phase phase)
+    /// <summary><paramref name="why"/>: what triggered it, for the log.</summary>
+    private void Show(Phase phase, string why)
     {
         _hideTimer?.Stop();
         Ensure();
         var was = _phase;
         _phase = phase;
+        if (was != phase) AnnexLog.Debug($"[drop] {was} -> {phase}: {why}");
         if (was == Phase.Hidden)
         {
             Place(_w, _h);
@@ -329,9 +347,10 @@ internal sealed partial class DropTray
         Fade(_content!, phase is Phase.Open or Phase.Transfers ? 1 : 0, 220);
     }
 
-    private void Hide()
+    private void Hide(string why)
     {
         if (_phase == Phase.Hidden || _window is null) return;
+        AnnexLog.Debug($"[drop] {_phase} -> Hidden: {why}");
         _hideTimer?.Stop();
         _phase = Phase.Hidden;
         Fade(_content!, 0, 120);
@@ -357,7 +376,7 @@ internal sealed partial class DropTray
 
     private void OnHideTimer(DispatcherQueueTimer t, object _)
     {
-        if (_phase == Phase.Transfers && !_hovering && !_dragging) Hide();
+        if (_phase == Phase.Transfers && !_hovering && !_dragging) Hide("transfers finished");
     }
 
     /// <summary>Resizes the window round the top centre, frame by frame (Windows can't animate a window's size itself).</summary>
@@ -482,7 +501,11 @@ internal sealed partial class DropTray
         if (item is { Incoming: true, Ok: true, Path: { } path })
         {
             var show = Ui.Flat(new TextBlock { Text = "Show", FontSize = 11.5, FontWeight = FontWeights.SemiBold },
-                Ui.White(0.15), Ui.White(0.25), Ui.White(1), () => Process.Start("explorer.exe", $"/select,\"{path}\""), radius: 12);
+                Ui.White(0.15), Ui.White(0.25), Ui.White(1), () =>
+                {
+                    AnnexLog.Debug($"[drop] show {path} in Explorer");
+                    Process.Start("explorer.exe", $"/select,\"{path}\"");
+                }, radius: 12);
             show.VerticalAlignment = VerticalAlignment.Center;
             Grid.SetColumn(show, 2);
             row.Children.Add(show);
@@ -520,8 +543,22 @@ internal sealed partial class DropTray
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
+            AnnexLog.Warn($"[drop] couldn't list the files in {folder}: {e.Message}");
             return [];
         }
+    }
+
+    /// <summary>How many files, how big, and their names (sizes only where they can be read).</summary>
+    private static void LogDropped(IReadOnlyList<string> files)
+    {
+        long total = 0;
+        foreach (var f in files)
+        {
+            try { total += new FileInfo(f).Length; }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        }
+        var names = string.Join(", ", files.Take(10).Select(Path.GetFileName));
+        AnnexLog.Info($"[drop] dropped {files.Count} file(s), {total} bytes: {names}{(files.Count > 10 ? ", …" : "")}");
     }
 
     // ---- Win32 ---------------------------------------------------------------------------
