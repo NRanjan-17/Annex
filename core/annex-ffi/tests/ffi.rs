@@ -181,7 +181,7 @@ fn host_and_viewer_through_c_abi() {
 
         // The log is on without anyone turning it on.
         let log = std::fs::read_to_string(dir.path().join("annex.log")).unwrap();
-        assert!(log.contains("annex core started"), "{log}");
+        assert!(log.contains("logging started"), "{log}");
     }
 }
 
