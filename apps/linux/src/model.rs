@@ -158,6 +158,37 @@ pub struct HostSession {
     pub input: bool,
 }
 
+/// Host: a PIN waiting to be typed on the computer that's pairing (for `annex pin`).
+#[derive(Clone, PartialEq, Debug)]
+pub struct PinShown {
+    pub request_id: u64,
+    pub pin: String,
+    pub peer_name: String,
+    /// PINs work for 2 minutes.
+    pub at: std::time::Instant,
+}
+
+/// Viewer: the computer this one connects to asks for the PIN it shows.
+#[derive(Clone, PartialEq, Debug)]
+pub struct PinAsked {
+    pub request_id: u64,
+    pub peer_name: String,
+    pub fingerprint: String,
+}
+
+/// A file being sent or received, numbered for `annex transfers`.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Transfer {
+    pub number: u64,
+    pub key: TransferKey,
+    pub name: String,
+    pub size: u64,
+    pub done: u64,
+    pub paused: bool,
+    /// Finished: `Ok(())`, or why it didn't.
+    pub ended: Option<Result<(), String>>,
+}
+
 /// The viewer's link to the video window, so frames skip the main thread.
 pub type FrameTarget = Arc<Mutex<Option<FrameSink>>>;
 
@@ -212,6 +243,15 @@ pub struct Model {
     pub update_dismissed: Option<String>,
     /// When the last check finished (Unix seconds).
     pub update_checked_at: Option<i64>,
+
+    // Pairing and files, for the command line.
+    pub pin_shown: Option<PinShown>,
+    pub pin_asked: Option<PinAsked>,
+    /// The session being viewed was started by `annex connect`: a PIN is asked for there, not in
+    /// a window.
+    pub cli_viewer: bool,
+    pub transfers: Vec<Transfer>,
+    next_transfer: u64,
 
     clipboard: Option<crate::clipboard::Clipboard>,
     drop_tray: Option<crate::drop_tray::DropTray>,
@@ -283,6 +323,11 @@ impl Model {
             update: UpdateState::Idle,
             update_dismissed: None,
             update_checked_at: None,
+            pin_shown: None,
+            pin_asked: None,
+            cli_viewer: false,
+            transfers: Vec::new(),
+            next_transfer: 1,
             clipboard: None,
             drop_tray: None,
             viewer_focused: false,
@@ -326,6 +371,52 @@ impl Model {
 
     pub fn save_settings(&self) {
         self.settings.save();
+    }
+
+    /// A setting was changed (on the Settings page, or with `annex set`): what else changes with
+    /// it, then it's saved.
+    pub fn after_setting(&mut self, effect: crate::settings_keys::Effect) -> Result<(), String> {
+        use crate::settings_keys::Effect;
+        let s = &self.settings;
+        let mut result = Ok(());
+        match effect {
+            Effect::None => {}
+            Effect::Rename => {
+                let name = s.device_name.clone().unwrap_or_default();
+                // Saves too.
+                self.rename(&name);
+            }
+            Effect::OpenAtLogin => {
+                if let Err(e) = settings::set_open_at_login(s.open_at_login) {
+                    tracing::warn!("open at login: {e}");
+                    result = Err(format!("Couldn't change the autostart entry: {e}"));
+                }
+            }
+            Effect::Headless => {
+                self.core.set_headless(s.headless);
+                self.render();
+            }
+            Effect::Audio => self.core.set_audio(s.audio()),
+            Effect::Clipboard => {
+                let on = s.share_clipboard;
+                self.set_clipboard_sharing(on);
+            }
+            Effect::ReceiveFiles => self.set_receive_files(s.receive_files),
+            Effect::DropIsland => self.update_drop_target(),
+            Effect::Render => self.render(),
+            Effect::VerboseLog => annex_log::set_verbose(s.verbose_logging),
+            Effect::CheckUpdates => {
+                if s.check_for_updates {
+                    self.check_for_updates();
+                }
+            }
+            Effect::BetaUpdates => {
+                self.update_dismissed = None;
+                self.check_for_updates();
+            }
+        }
+        self.save_settings();
+        result
     }
 
     // ---- Nearby -------------------------------------------------------------------------
@@ -638,6 +729,7 @@ impl Model {
         self.viewer_status = Some(format!("Connecting to {title}…"));
         self.viewer_extends = None;
         self.viewer_by_code = false;
+        self.cli_viewer = false;
         self.render();
     }
 
@@ -658,6 +750,7 @@ impl Model {
         self.copied_while_away = false;
         self.latency = None;
         self.stream_size = None;
+        self.pin_asked = None;
         self.emit(Change::ViewerClose);
         self.render();
     }
@@ -705,9 +798,17 @@ impl Model {
                 return;
             }
             Event::PairingPinRequired { request_id, peer_name, fingerprint_display } => {
+                self.pin_asked = Some(PinAsked {
+                    request_id,
+                    peer_name: peer_name.clone(),
+                    fingerprint: fingerprint_display.clone(),
+                });
                 self.emit(Change::PinRequired { request_id, peer_name, fingerprint: fingerprint_display });
             }
             Event::PairingFinished { request_id, success, peer_name } => {
+                if self.pin_asked.as_ref().is_some_and(|p| p.request_id == request_id) {
+                    self.pin_asked = None;
+                }
                 self.emit(Change::PinDone { request_id });
                 if success {
                     self.refresh_trusted();
@@ -838,9 +939,18 @@ impl Model {
                 self.emit(Change::InputRequested { peer_name, fingerprint });
             }
             Event::PairingPin { request_id, pin, peer_name, fingerprint_display } => {
+                self.pin_shown = Some(PinShown {
+                    request_id,
+                    pin: pin.clone(),
+                    peer_name: peer_name.clone(),
+                    at: std::time::Instant::now(),
+                });
                 self.emit(Change::ShowPin { request_id, pin, peer_name, fingerprint: fingerprint_display });
             }
             Event::PairingFinished { request_id, success, .. } => {
+                if self.pin_shown.as_ref().is_some_and(|p| p.request_id == request_id) {
+                    self.pin_shown = None;
+                }
                 self.emit(Change::PinDone { request_id });
                 if success {
                     self.refresh_trusted();
@@ -928,8 +1038,12 @@ impl Model {
             }
             Msg::Copied { mime, data } => self.copied(mime, data),
             Msg::DropFiles(files) => self.send_files(files),
-            Msg::PauseTransfer(key, paused) => self.pause_transfer(key, paused),
-            Msg::CancelTransfer(key) => self.cancel_transfer(key),
+            Msg::PauseTransfer(key, paused) => {
+                self.pause_transfer(key, paused);
+            }
+            Msg::CancelTransfer(key) => {
+                self.cancel_transfer(key);
+            }
             Msg::ClipboardNow { mime, data } => {
                 const T: &str = "annex::clipboard";
                 match &self.viewer {
@@ -1037,7 +1151,7 @@ impl Model {
         tray.set_target(peer);
     }
 
-    fn files_target(&self) -> &'static str {
+    pub fn files_target(&self) -> &'static str {
         if self.viewer.is_some() && self.controlling {
             "the computer this one controls"
         } else if self.host.is_some() {
@@ -1052,19 +1166,28 @@ impl Model {
         let bytes: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
         tracing::info!(target: T, count = files.len(), bytes, to = self.files_target(), "files: dropped, sending");
         for f in files {
-            tracing::debug!(target: T, file = %f.display(), "files: sending");
-            let result = if let Some(v) = self.viewer.as_ref().filter(|_| self.controlling) {
-                v.handle.send_file(&f).map(drop)
-            } else if let Some(h) = &self.host {
-                self.host_sessions.iter().filter(|s| s.input).try_for_each(|s| h.send_file(s.id, &f).map(drop))
-            } else {
-                Err("Nothing is connected.".into())
-            };
-            if let Err(e) = result {
+            if let Err(e) = self.send_file(&f) {
                 tracing::warn!(target: T, file = %f.display(), "files: couldn't send: {e}");
                 let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 self.emit(Change::Notify { title: format!("Couldn't send {name}"), body: e });
             }
+        }
+    }
+
+    /// One file to the host this computer controls, else to every viewer controlling this one.
+    pub fn send_file(&self, f: &std::path::Path) -> Result<(), String> {
+        tracing::debug!(target: "annex::transfer", file = %f.display(), "files: sending");
+        if let Some(v) = self.viewer.as_ref().filter(|_| self.controlling) {
+            v.handle.send_file(f).map(drop)
+        } else if let Some(h) = &self.host {
+            if !self.host_sessions.iter().any(|s| s.input) {
+                return Err("No viewer controls this computer.".into());
+            }
+            self.host_sessions.iter().filter(|s| s.input).try_for_each(|s| h.send_file(s.id, f).map(drop))
+        } else if self.viewer.is_some() {
+            Err("This computer doesn't control the one it views.".into())
+        } else {
+            Err("Nothing is connected.".into())
         }
     }
 
@@ -1073,16 +1196,44 @@ impl Model {
         let key = |session: u64, id: u64, incoming: bool| TransferKey { viewer, session, id, incoming };
         match e {
             Event::TransferStarted { session_id, id, incoming, name, size } => {
+                let k = key(session_id, id, incoming);
+                // The last 50, for `annex transfers`.
+                if self.transfers.len() >= 50
+                    && let Some(i) = self.transfers.iter().position(|t| t.ended.is_some())
+                {
+                    self.transfers.remove(i);
+                }
+                self.transfers.push(Transfer {
+                    number: self.next_transfer,
+                    key: k,
+                    name: name.clone(),
+                    size,
+                    done: 0,
+                    paused: false,
+                    ended: None,
+                });
+                self.next_transfer += 1;
                 if let Some(t) = &self.drop_tray {
-                    t.started(key(session_id, id, incoming), name, size);
+                    t.started(k, name, size);
                 }
             }
             Event::TransferProgress { session_id, id, incoming, done } => {
+                let k = key(session_id, id, incoming);
+                if let Some(t) = self.transfers.iter_mut().find(|t| t.key == k) {
+                    t.done = done;
+                }
                 if let Some(t) = &self.drop_tray {
-                    t.progress(key(session_id, id, incoming), done);
+                    t.progress(k, done);
                 }
             }
             Event::TransferEnded { session_id, id, incoming, ok, path, error } => {
+                let k = key(session_id, id, incoming);
+                if let Some(t) = self.transfers.iter_mut().find(|t| t.key == k && t.ended.is_none()) {
+                    if ok {
+                        t.done = t.size;
+                    }
+                    t.ended = Some(if ok { Ok(()) } else { Err(error.clone().unwrap_or_else(|| "stopped".into())) });
+                }
                 if let Some(t) = &self.drop_tray {
                     t.ended(key(session_id, id, incoming), ok, path, error);
                 } else if incoming && ok {
@@ -1102,7 +1253,7 @@ impl Model {
     }
 
     /// The island's Pause or Resume: only shown paused once the core took it.
-    fn pause_transfer(&mut self, key: TransferKey, paused: bool) {
+    pub fn pause_transfer(&mut self, key: TransferKey, paused: bool) -> bool {
         const T: &str = "annex::transfer";
         let took = if key.incoming {
             false
@@ -1113,15 +1264,19 @@ impl Model {
         };
         if !took {
             tracing::warn!(target: T, ?key, paused, "files: couldn't pause or resume: it isn't being sent");
-            return;
+            return false;
+        }
+        if let Some(t) = self.transfers.iter_mut().find(|t| t.key == key) {
+            t.paused = paused;
         }
         if let Some(t) = &self.drop_tray {
             t.set_paused(key, paused);
         }
+        true
     }
 
     /// The island's Unsend (the other side deletes what arrived) or Stop.
-    fn cancel_transfer(&mut self, key: TransferKey) {
+    pub fn cancel_transfer(&mut self, key: TransferKey) -> bool {
         const T: &str = "annex::transfer";
         let done = if key.viewer {
             match &self.viewer {
@@ -1142,11 +1297,12 @@ impl Model {
         };
         if !done {
             tracing::warn!(target: T, ?key, "files: couldn't stop the transfer: its session is gone");
-            return;
+            return false;
         }
         if let Some(t) = &self.drop_tray {
             t.cancelled(key);
         }
+        true
     }
 
     pub fn set_clipboard_sharing(&mut self, on: bool) {

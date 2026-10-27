@@ -148,19 +148,20 @@ monitor attached.
 
    | | Command |
    |---|---|
-   | Linux | `annex --headless --share` (once; the setting stays on) |
+   | Linux | `annex set headless on`, or `annex start --headless --share` (the setting stays on) |
    | Mac | `defaults write com.nranjan-17.annex headless -bool true` |
    | Windows | `"Headless": true` in `%LOCALAPPDATA%\Annex\settings.json` |
 
-   Change it while Annex is closed (quit it first), or it won't notice. On Linux,
-   `"headless": true` in `~/.config/annex/settings.json` works too.
+   On a Mac or Windows, change it while Annex is closed (quit it first), or it won't notice. On
+   Linux, `annex set` works whether Annex is running or not; `annex help` lists every command
+   ([LINUX.md](LINUX.md#command-line)).
 
 2. Turn on **Open at login** and **Start sharing when Annex opens**, so it starts by itself.
 3. The first time another computer connects, read the PIN over SSH and type it there:
 
    | | PIN file |
    |---|---|
-   | Linux | `cat ~/.local/share/annex/pairing-pin.txt` |
+   | Linux | `annex pin` (or `cat ~/.local/share/annex/pairing-pin.txt`) |
    | Mac | `cat ~/Library/Application\ Support/Annex/pairing-pin.txt` |
    | Windows | `type %LOCALAPPDATA%\Annex\pairing-pin.txt` |
 
