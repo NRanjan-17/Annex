@@ -253,15 +253,16 @@ fn offline(cmd: Command) -> glib::ExitCode {
                 Ok(None) => return fail("No paired devices yet."),
                 Err(e) => return fail(&e),
             };
-            let (fp, name) = match find_device(&core.trusted_peers(), &device) {
-                Ok(d) => d,
+            // Only the fingerprint is taken from the list; answers name the device as it was typed.
+            let fp = match find_device(&core.trusted_peers(), &device) {
+                Ok((fp, _)) => fp,
                 Err(e) => return fail(&e),
             };
             annex_log::init(&settings::data_dir(), false);
             tracing::info!(target: "annex::cli", "cli: devices allow-control {} (Annex isn't running)", on_off(on));
             match core.set_allow_input(&fp, on) {
                 Ok(_) => {
-                    println!("{name} {} use this computer's mouse and keyboard.", if on { "can" } else { "can't" });
+                    println!("{device} {} use this computer's mouse and keyboard.", if on { "can" } else { "can't" });
                     glib::ExitCode::SUCCESS
                 }
                 Err(e) => fail(&format!("Couldn't change it: {e}")),
@@ -273,15 +274,15 @@ fn offline(cmd: Command) -> glib::ExitCode {
                 Ok(None) => return fail("No paired devices yet."),
                 Err(e) => return fail(&e),
             };
-            let (fp, name) = match find_device(&core.trusted_peers(), &device) {
-                Ok(d) => d,
+            let fp = match find_device(&core.trusted_peers(), &device) {
+                Ok((fp, _)) => fp,
                 Err(e) => return fail(&e),
             };
             annex_log::init(&settings::data_dir(), false);
             tracing::info!(target: "annex::cli", "cli: devices forget (Annex isn't running)");
             match core.untrust(&fp) {
                 Ok(_) => {
-                    println!("Forgot {name}. It needs a PIN to connect again.");
+                    println!("Forgot {device}. It needs a PIN to connect again.");
                     glib::ExitCode::SUCCESS
                 }
                 Err(e) => fail(&format!("Couldn't forget it: {e}")),
@@ -1154,7 +1155,7 @@ fn transfers(m: &Model, json: bool) -> String {
     }
     let mut o = String::new();
     for t in &m.transfers {
-        let percent = if t.size == 0 { 100 } else { (t.done.min(t.size) * 100 / t.size) as u32 };
+        let percent = (t.done.min(t.size) * 100).checked_div(t.size).map_or(100, |p| p as u32);
         let state = match &t.ended {
             Some(Ok(())) => format!("done, {}", cli::size(t.size)),
             Some(Err(e)) => format!("stopped: {e}"),

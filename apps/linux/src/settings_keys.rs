@@ -59,6 +59,7 @@ impl Key {
         self.set.is_some()
     }
 
+    #[cfg(test)]
     pub fn secret(&self) -> bool {
         self.kind == Kind::Secret
     }
