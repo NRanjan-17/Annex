@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 annex-discovery = { path = "../../core/annex-discovery" }
+annex-log = { path = "../../core/annex-log" }
 annex-media = { path = "../../core/annex-media" }
 annex-proto = { path = "../../core/annex-proto" }
 annex-session = { path = "../../core/annex-session" }
@@ -37,7 +38,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "time", "sync", "macros"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "registry"] }
 # wlroots desktops (Raspberry Pi OS): virtual pointer and keyboard, screencopy.
 wayland-client = "0.31"
 wayland-protocols-misc = { version = "0.3", features = ["client"] }

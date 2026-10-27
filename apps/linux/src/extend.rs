@@ -42,6 +42,7 @@ fn wait_for_output(before: &[String], name: Option<&str>) -> Result<String, Stri
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    tracing::warn!(?name, "extend: no new display after 5 s");
     Err("the desktop didn't add a display".into())
 }
 
@@ -78,7 +79,8 @@ pub fn add(kind: Wlr, w: u32, h: u32, hz: u32) -> Result<Display, String> {
                 Ok(o) => o,
                 // Bindings added earlier but labwc not reloaded since (it was restarted with
                 // another config, or the reload was missed): reload and try again.
-                Err(_) if !fresh => {
+                Err(e) if !fresh => {
+                    tracing::info!("extend: labwc didn't add the display ({e}); reloading it and trying again");
                     reload_labwc()?;
                     press()?
                 }
@@ -87,6 +89,7 @@ pub fn add(kind: Wlr, w: u32, h: u32, hz: u32) -> Result<Display, String> {
         }
         Wlr::Other => return Err("This desktop can't add a display yet.".into()),
     };
+    tracing::info!(output, ?kind, "extend: the desktop added a display");
     let d = Display { output, kind };
     d.set_mode(w, h, hz);
     Ok(d)
@@ -106,8 +109,9 @@ impl Display {
             ),
             _ => Err("wlr-randr isn't installed".into()),
         };
-        if let Err(e) = r {
-            tracing::warn!("extend: couldn't size or place the display: {e}");
+        match r {
+            Ok(()) => tracing::info!(output = self.output, w, h, hz, x, "extend: display sized and placed"),
+            Err(e) => tracing::warn!("extend: couldn't size or place the display: {e}"),
         }
     }
 
@@ -142,6 +146,7 @@ impl Display {
     }
 
     pub fn remove(&self) {
+        tracing::info!(output = self.output, "extend: removing the display");
         let r = match self.kind {
             Wlr::Sway => run("swaymsg", &["output", &self.output, "unplug"]),
             _ => crate::inject::Wlr::new(None).and_then(|mut i| {
@@ -157,6 +162,7 @@ impl Display {
 }
 
 fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
+    tracing::debug!("extend: running {cmd} {}", args.join(" "));
     let out = Command::new(cmd).args(args).output().map_err(|e| format!("{cmd}: {e}"))?;
     if out.status.success() {
         Ok(())
@@ -199,6 +205,7 @@ fn reload_labwc() -> Result<(), String> {
         .and_then(|p| p.parse::<u32>().ok())
         .or_else(|| crate::desktop::process("labwc"))
         .ok_or("couldn't find labwc to reload it")?;
+    tracing::info!(pid, "extend: reloading labwc");
     run("kill", &["-HUP", &pid.to_string()])?;
     std::thread::sleep(Duration::from_millis(300));
     Ok(())

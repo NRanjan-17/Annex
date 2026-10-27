@@ -109,9 +109,13 @@ impl DropTray {
         let shell = crate::layer::get();
         let x11 = shell.is_none() && crate::desktop::session() == crate::desktop::Session::X11;
         if shell.is_none() && !x11 {
+            tracing::info!("drop: no island on this desktop (no layer shell, not X11); files go on the viewer window");
             return None;
         }
-        let display = gdk::Display::default()?;
+        let Some(display) = gdk::Display::default() else {
+            tracing::warn!("drop: no display for the island");
+            return None;
+        };
         let css = gtk::CssProvider::new();
         css.load_from_data(CSS);
         gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -121,12 +125,23 @@ impl DropTray {
         if !display.is_composited() {
             window.add_css_class("solid");
         }
+        let composited = display.is_composited();
         let placer = match shell {
             Some(shell) => {
+                tracing::info!(composited, "drop: island through the layer shell");
                 shell.top_centre(&window);
                 None
             }
-            None => Some(crate::x11_drag::Placer::new(&window)?),
+            None => match crate::x11_drag::Placer::new(&window) {
+                Some(p) => {
+                    tracing::info!(composited, "drop: island as an X11 window");
+                    Some(p)
+                }
+                None => {
+                    tracing::warn!("drop: couldn't set up the X11 window for the island; no island");
+                    return None;
+                }
+            },
         };
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.set_halign(gtk::Align::Center);
@@ -173,10 +188,10 @@ impl DropTray {
             drop.connect_enter(move |_, _, _| {
                 match i.phase.get() {
                     Phase::Hidden => {
-                        i.set_phase(Phase::Glowing);
+                        i.set_phase(Phase::Glowing, "a drag reached the strip");
                         i.open_later(300);
                     }
-                    Phase::Glowing => i.set_phase(Phase::Open),
+                    Phase::Glowing => i.set_phase(Phase::Open, "a drag came onto the pill"),
                     _ => {}
                 }
                 gdk::DragAction::COPY
@@ -187,6 +202,7 @@ impl DropTray {
             drop.connect_leave(move |_| {
                 // On X11 the drag watcher decides.
                 if i.placer.is_none() && matches!(i.phase.get(), Phase::Glowing | Phase::Open) {
+                    tracing::debug!("drop: the drag left the island");
                     i.hide_later(700);
                 }
             });
@@ -198,10 +214,10 @@ impl DropTray {
                 let files: Vec<PathBuf> =
                     list.files().iter().filter_map(|f| f.path()).flat_map(|p| files_in(&p)).collect();
                 if files.is_empty() {
-                    i.set_phase(Phase::Hidden);
+                    i.set_phase(Phase::Hidden, "dropped, but no files in it");
                     return false;
                 }
-                i.set_phase(Phase::Transfers);
+                i.set_phase(Phase::Transfers, "files dropped on the island");
                 let _ = i.tx.send_blocking(Msg::DropFiles(files));
                 true
             });
@@ -218,6 +234,7 @@ impl DropTray {
             hover.connect_leave(move |_| {
                 i.state.borrow_mut().hovering = false;
                 if i.phase.get() == Phase::Transfers && i.all_done() {
+                    tracing::trace!("drop: the pointer left the finished transfers");
                     i.hide_later(2000);
                 }
             });
@@ -239,9 +256,15 @@ impl DropTray {
                 return;
             }
             s.can_send = can;
+            tracing::info!(
+                can_send = can,
+                peer = s.peer,
+                "drop: files can {}be sent",
+                if can { "" } else { "no longer " }
+            );
         }
         if !can && matches!(i.phase.get(), Phase::Glowing | Phase::Open) {
-            i.set_phase(Phase::Hidden);
+            i.set_phase(Phase::Hidden, "nothing connected with control");
         }
         i.update_visible();
     }
@@ -258,7 +281,7 @@ impl DropTray {
                 s.items.remove(old);
             }
         }
-        i.set_phase(Phase::Transfers);
+        i.set_phase(Phase::Transfers, "a transfer started");
     }
 
     pub fn progress(&self, session: u64, id: u64, incoming: bool, done: u64) {
@@ -295,7 +318,11 @@ impl Inner {
         self.state.borrow().items.iter().all(|x| x.ok.is_some())
     }
 
-    fn set_phase(self: &Rc<Self>, phase: Phase) {
+    /// `why`: what moved it, for the log.
+    fn set_phase(self: &Rc<Self>, phase: Phase, why: &str) {
+        if phase != self.phase.get() {
+            tracing::debug!(from = ?self.phase.get(), to = ?phase, "drop: {why}");
+        }
         self.state.borrow_mut().generation += 1;
         self.phase.set(phase);
         for c in ["glowing", "open", "transfers"] {
@@ -319,6 +346,7 @@ impl Inner {
         let strip = self.placer.is_none() && self.state.borrow().can_send;
         let show = strip || self.phase.get() != Phase::Hidden;
         if show != self.window.is_visible() {
+            tracing::trace!(show, strip, "drop: island window");
             self.window.set_visible(show);
             if show {
                 self.place();
@@ -352,8 +380,11 @@ impl Inner {
         use crate::x11_drag::{Drag, Placer};
         match d {
             Drag::Started => {
-                if self.state.borrow().can_send && self.phase.get() == Phase::Hidden {
-                    self.set_phase(Phase::Glowing);
+                let can = self.state.borrow().can_send;
+                if can && self.phase.get() == Phase::Hidden {
+                    self.set_phase(Phase::Glowing, "files picked up (XdndSelection)");
+                } else {
+                    tracing::trace!(can_send = can, phase = ?self.phase.get(), "drop: files picked up; island stays");
                 }
             }
             Drag::Moved(x, y) => {
@@ -363,16 +394,18 @@ impl Inner {
                 }
                 let Some((cx, cy)) = Placer::top_centre(&self.window) else { return };
                 let scale = f64::from(self.window.scale_factor());
-                let near = f64::from(x - cx).hypot(f64::from(y - cy)) < 160.0 * scale;
+                let distance = f64::from(x - cx).hypot(f64::from(y - cy));
+                let near = distance < 160.0 * scale;
                 if near && phase == Phase::Glowing {
-                    self.set_phase(Phase::Open);
+                    self.set_phase(Phase::Open, &format!("the drag came near the top ({distance:.0} px)"));
                 } else if !near && phase == Phase::Open {
-                    self.set_phase(Phase::Glowing);
+                    self.set_phase(Phase::Glowing, &format!("the drag moved away ({distance:.0} px)"));
                 }
             }
             // A drop on the island arrives just after the button goes up.
             Drag::Ended => {
                 if matches!(self.phase.get(), Phase::Glowing | Phase::Open) {
+                    tracing::debug!("drop: the drag ended");
                     self.hide_later(350);
                 }
             }
@@ -385,7 +418,7 @@ impl Inner {
         let me = self.clone();
         glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
             if me.state.borrow().generation == generation && me.phase.get() == Phase::Glowing {
-                me.set_phase(Phase::Open);
+                me.set_phase(Phase::Open, &format!("the drag stayed on the pill for {ms} ms"));
             }
         });
     }
@@ -399,7 +432,7 @@ impl Inner {
                 return;
             }
             drop(s);
-            me.set_phase(Phase::Hidden);
+            me.set_phase(Phase::Hidden, &format!("nothing happened for {ms} ms"));
         });
     }
 
@@ -478,7 +511,10 @@ fn row(x: &Item, peer: &str) -> gtk::Box {
         let folder = Path::new(path).parent().map(gio::File::for_path);
         show.connect_clicked(move |_| {
             if let Some(f) = &folder {
-                let _ = gio::AppInfo::launch_default_for_uri(&f.uri(), None::<&gio::AppLaunchContext>);
+                tracing::info!(folder = %f.uri(), "drop: Show pressed");
+                if let Err(e) = gio::AppInfo::launch_default_for_uri(&f.uri(), None::<&gio::AppLaunchContext>) {
+                    tracing::warn!("drop: couldn't open the folder: {e}");
+                }
             }
         });
         row.append(&show);
@@ -488,7 +524,13 @@ fn row(x: &Item, peer: &str) -> gtk::Box {
 
 /// A file, or every file inside a folder (hidden ones skipped).
 pub fn files_in(path: &Path) -> Vec<PathBuf> {
-    let Ok(meta) = std::fs::metadata(path) else { return Vec::new() };
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(path = %path.display(), "drop: can't read what was dropped: {e}");
+            return Vec::new();
+        }
+    };
     if meta.is_file() {
         return vec![path.to_path_buf()];
     }

@@ -119,6 +119,9 @@ impl Pipeline {
     /// `setup` sees the pipeline before it plays (to find an appsrc by name).
     pub fn start_with(cfg: Config, output: Output, setup: impl FnOnce(&gst::Pipeline)) -> Result<Pipeline, String> {
         let kind = *pick(cfg.prefer_hardware).ok_or("No H.264 encoder found. Install gstreamer1.0-plugins-ugly.")?;
+        if let Ok(forced) = std::env::var("ANNEX_ENCODER") {
+            tracing::info!(forced, "encoder named by ANNEX_ENCODER");
+        }
         let (w, h, fps) = (cfg.width & !1, cfg.height & !1, cfg.fps.max(1));
         let convert = match kind.input {
             Input::Nvmm => format!("nvvidconv ! video/x-raw(memory:NVMM),format=NV12,width={w},height={h}"),
@@ -186,11 +189,20 @@ impl Pipeline {
             let _ = pipeline.set_state(gst::State::Null);
             return Err(format!("the video pipeline didn't start: {e}"));
         }
-        tracing::info!(encoder = kind.factory, w, h, fps, "sharing: encoding");
+        tracing::info!(
+            encoder = kind.factory,
+            hardware = kind.hardware,
+            w,
+            h,
+            fps,
+            bitrate = cfg.bitrate,
+            "sharing: encoding"
+        );
         Ok(Pipeline { pipeline, encoder, sink, kind, base_bitrate: cfg.bitrate })
     }
 
     pub fn request_keyframe(&self) {
+        tracing::trace!(encoder = self.kind.factory, "keyframe asked for");
         let ev = gst_video::UpstreamForceKeyUnitEvent::builder().all_headers(true).build();
         self.sink.send_event(ev);
     }
@@ -198,12 +210,14 @@ impl Pipeline {
     /// Adaptive bitrate: run the encoder at `percent` % of the configured bitrate.
     pub fn set_bitrate_scale(&self, percent: u32) {
         let b = (self.base_bitrate as u64 * percent as u64 / 100).clamp(500_000, u32::MAX as u64) as u32;
+        tracing::debug!(encoder = self.kind.factory, percent, bitrate = b, "bitrate changed");
         set_bitrate(&self.encoder, &self.kind, b);
     }
 }
 
 impl Drop for Pipeline {
     fn drop(&mut self) {
+        tracing::info!(encoder = self.kind.factory, "sharing: encoding stopped");
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
@@ -211,7 +225,10 @@ impl Drop for Pipeline {
 /// Sets a property when the element has it (versions differ), from its string form.
 fn set(e: &gst::Element, name: &str, value: &str) {
     if e.find_property(name).is_some() {
+        tracing::trace!(name, value, "encoder property");
         e.set_property_from_str(name, value);
+    } else {
+        tracing::debug!(name, "this encoder version has no such property; skipped");
     }
 }
 

@@ -49,6 +49,7 @@ name = "annex-linux"
 version = "0.1.0"
 dependencies = [
  "annex-discovery",
+ "annex-log",
  "annex-media",
  "annex-proto",
  "annex-session",
@@ -67,13 +68,20 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "wayland-client",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "x11rb",
  "xkbcommon",
  "zbus",
+]
+
+[[package]]
+name = "annex-log"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

@@ -47,6 +47,7 @@ fn run(tx: &async_channel::Sender<Drag>) -> Result<(), Box<dyn std::error::Error
     let uri_list = atom(b"text/uri-list")??;
     conn.xfixes_select_selection_input(root, selection, SelectionEventMask::SET_SELECTION_OWNER)?;
     conn.flush()?;
+    tracing::info!("drop: watching for drags (XFixes, XdndSelection)");
     loop {
         let Event::XfixesSelectionNotify(e) = conn.wait_for_event()? else { continue };
         if e.owner == x11rb::NONE {
@@ -54,9 +55,15 @@ fn run(tx: &async_channel::Sender<Drag>) -> Result<(), Box<dyn std::error::Error
         }
         // Give the app a moment to list what it's dragging.
         std::thread::sleep(Duration::from_millis(30));
-        if !offers_files(&conn, e.owner, type_list, uri_list) || !buttons_down(&conn, root)?.0 {
+        if !offers_files(&conn, e.owner, type_list, uri_list) {
+            tracing::trace!(owner = e.owner, "drop: a drag without files");
             continue;
         }
+        if !buttons_down(&conn, root)?.0 {
+            tracing::trace!(owner = e.owner, "drop: XdndSelection taken with no button down; not a drag");
+            continue;
+        }
+        tracing::debug!(owner = e.owner, "drop: files picked up");
         if tx.send_blocking(Drag::Started).is_err() {
             return Ok(());
         }
@@ -72,6 +79,7 @@ fn run(tx: &async_channel::Sender<Drag>) -> Result<(), Box<dyn std::error::Error
                 let _ = tx.send_blocking(Drag::Moved(at.0, at.1));
             }
         }
+        tracing::debug!(at = ?last, "drop: buttons let go");
         let _ = tx.send_blocking(Drag::Ended);
         // Owner changes during the drag were the same drag.
         while conn.poll_for_event()?.is_some() {}
@@ -106,12 +114,27 @@ pub struct Placer {
 impl Placer {
     /// Call on a window that isn't shown yet.
     pub fn new(window: &gtk::Window) -> Option<Placer> {
-        let (conn, _) = x11rb::connect(None).ok()?;
+        let conn = match x11rb::connect(None) {
+            Ok((c, _)) => c,
+            Err(e) => {
+                tracing::warn!("drop: no X display: {e}");
+                return None;
+            }
+        };
         WidgetExt::realize(window);
-        let xid = xid(window)?;
+        let Some(xid) = xid(window) else {
+            tracing::warn!("drop: the island's window isn't an X11 window");
+            return None;
+        };
         let attrs = xproto::ChangeWindowAttributesAux::new().override_redirect(1);
-        conn.change_window_attributes(xid, &attrs).ok()?;
-        conn.flush().ok()?;
+        if let Err(e) = conn
+            .change_window_attributes(xid, &attrs)
+            .map_err(|e| e.to_string())
+            .and_then(|_| conn.flush().map_err(|e| e.to_string()))
+        {
+            tracing::warn!("drop: couldn't take the island's window out of the window manager: {e}");
+            return None;
+        }
         Some(Placer { conn, shaped: Cell::new([0; 4]) })
     }
 
@@ -126,8 +149,12 @@ impl Placer {
         let (Some(xid), Some((r, scale))) = (xid(window), monitor(window)) else { return };
         let x = (r.x() + (r.width() - width) / 2) * scale;
         let at = xproto::ConfigureWindowAux::new().x(x).y(r.y() * scale).stack_mode(xproto::StackMode::ABOVE);
-        if self.conn.configure_window(xid, &at).is_ok() {
-            let _ = self.conn.flush();
+        tracing::debug!(x, y = r.y() * scale, scale, monitor = ?(r.x(), r.y(), r.width(), r.height()), "drop: island placed");
+        match self.conn.configure_window(xid, &at) {
+            Ok(_) => {
+                let _ = self.conn.flush();
+            }
+            Err(e) => tracing::warn!("drop: couldn't place the island: {e}"),
         }
     }
 }

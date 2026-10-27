@@ -55,7 +55,7 @@ pub fn session() -> Session {
 }
 
 /// The first Wayland compositor found among this user's processes.
-fn running_compositor() -> Option<String> {
+pub fn running_compositor() -> Option<String> {
     const KNOWN: [&str; 7] = ["gnome-shell", "kwin_wayland", "labwc", "sway", "wayfire", "Hyprland", "river"];
     KNOWN.iter().find(|k| process(k).is_some()).map(|k| k.to_string())
 }

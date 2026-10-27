@@ -44,6 +44,7 @@ impl Screencopy {
             (),
         );
         pool.destroy();
+        tracing::info!(output, width = info.width, height = info.height, format = ?info.format, "screencopy: ready");
         Ok(Screencopy { wl, output: out, info, file, buffer })
     }
 
@@ -69,14 +70,18 @@ impl Screencopy {
         while !stop.load(Ordering::Acquire) {
             let started = Instant::now();
             let qh = self.wl.qh();
-            let Some(mgr) = self.wl.state.screencopy.clone() else { return };
+            let Some(mgr) = self.wl.state.screencopy.clone() else {
+                tracing::warn!("screencopy: the desktop took it away");
+                return;
+            };
             self.wl.state.frame = FrameInfo::default();
             let frame = mgr.capture_output(1, &self.output, &qh, ());
             // Wait for the description, then copy into our buffer.
             while !(self.wl.state.frame.buffer_done || self.wl.state.frame.failed)
                 && !(self.wl.state.frame.format.is_some() && mgr.version() < 3)
             {
-                if self.wl.dispatch().is_err() {
+                if let Err(e) = self.wl.dispatch() {
+                    tracing::warn!("screencopy: lost the desktop: {e}");
                     return;
                 }
             }
@@ -88,7 +93,8 @@ impl Screencopy {
             }
             frame.copy(&self.buffer);
             while !(self.wl.state.frame.ready || self.wl.state.frame.failed) {
-                if self.wl.dispatch().is_err() {
+                if let Err(e) = self.wl.dispatch() {
+                    tracing::warn!("screencopy: lost the desktop: {e}");
                     return;
                 }
             }
@@ -100,7 +106,8 @@ impl Screencopy {
                     let from = if f.y_invert { h - 1 - row } else { row };
                     packed[row * w * 4..(row + 1) * w * 4].copy_from_slice(&raw[from * stride..from * stride + w * 4]);
                 }
-                if src.push_buffer(gst::Buffer::from_mut_slice(packed)).is_err() {
+                if let Err(e) = src.push_buffer(gst::Buffer::from_mut_slice(packed)) {
+                    tracing::info!("screencopy: the encoder stopped taking frames ({e:?})");
                     return;
                 }
             }
@@ -109,6 +116,7 @@ impl Screencopy {
             }
         }
         self.buffer.destroy();
+        tracing::debug!("screencopy: stopped");
     }
 }
 

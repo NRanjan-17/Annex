@@ -34,6 +34,7 @@ pub fn preload() {
             std::env::remove_var("LD_PRELOAD");
             std::env::remove_var(MARK);
         }
+        tracing::info!("drop: restarted with the layer shell preloaded");
         return;
     }
     if std::env::var_os("WAYLAND_DISPLAY").is_none()
@@ -41,8 +42,12 @@ pub fn preload() {
     {
         return;
     }
-    let Some(lib) = bundled() else { return };
+    let Some(lib) = bundled() else {
+        tracing::info!("drop: no bundled layer shell; running without the drop island");
+        return;
+    };
     let Ok(exe) = std::env::current_exe() else { return };
+    tracing::info!("drop: restarting with the layer shell ({})", lib.display());
     let preload = match std::env::var("LD_PRELOAD") {
         Ok(other) if !other.is_empty() => format!("{}:{other}", lib.display()),
         _ => lib.display().to_string(),
@@ -89,8 +94,12 @@ pub fn get() -> Option<&'static LayerShell> {
         .get_or_init(|| {
             // SAFETY: the signatures in gtk4-layer-shell's header.
             unsafe {
-                let supported = function::<unsafe extern "C" fn() -> c_int>(c"gtk_layer_is_supported")?;
+                let Some(supported) = function::<unsafe extern "C" fn() -> c_int>(c"gtk_layer_is_supported") else {
+                    tracing::debug!("drop: the layer shell isn't loaded");
+                    return None;
+                };
                 if supported() == 0 {
+                    tracing::info!("drop: the layer shell is loaded, but this compositor doesn't support it");
                     return None;
                 }
                 Some(LayerShell {

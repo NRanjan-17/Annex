@@ -50,8 +50,21 @@ impl Injector {
             }
         };
         if let Err(err) = r {
-            tracing::debug!("input not injected: {err}");
+            failed(&err);
         }
+    }
+}
+
+/// An input event that didn't reach the desktop: a warning when the reason is new, then trace
+/// while it repeats (it can fail for every key or move). Never says which key.
+pub fn failed(why: &str) {
+    static LAST: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if *last == why {
+        tracing::trace!("input not injected: {why}");
+    } else {
+        tracing::warn!("input not injected: {why}");
+        *last = why.to_string();
     }
 }
 
@@ -72,6 +85,7 @@ impl X11 {
         let root = s.root;
         let area = area.unwrap_or(Rect { x: 0, y: 0, w: s.width_in_pixels as i32, h: s.height_in_pixels as i32 });
         conn.xtest_get_version(2, 2).map_err(|e| e.to_string())?.reply().map_err(|_| "XTest isn't available")?;
+        tracing::debug!(?area, "input: XTest ready");
         Ok(X11 { conn, root, area, scroll: (0, 0) })
     }
 
@@ -214,6 +228,7 @@ impl Wlr {
             _ => None,
         };
         wl.conn.flush().map_err(|e| e.to_string())?;
+        tracing::debug!(output, keyboard = keyboard.is_some(), "input: virtual pointer ready");
         Ok(Wlr { wl, pointer, keyboard, mods, start: std::time::Instant::now() })
     }
 
