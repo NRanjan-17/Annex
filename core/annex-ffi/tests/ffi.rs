@@ -185,6 +185,12 @@ fn host_and_viewer_through_c_abi() {
         // Pairing is in the log; the PIN isn't.
         assert!(log.contains("showing a pairing PIN") && log.contains("pairing: key exchange"), "{log}");
         assert!(!log.contains(pin.to_str().unwrap()), "the PIN reached the log: {log}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("annex.log")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "only this account reads the log");
+        }
     }
 }
 

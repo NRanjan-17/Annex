@@ -128,7 +128,7 @@ pub fn save_recording(why: &str) -> Option<PathBuf> {
     let why: String = why.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).take(32).collect();
     let path = dir.join(format!("annex-{}-{why}.log", file_time(SystemTime::now())));
     let lines: Vec<String> = lock(&RECORDER).iter().cloned().collect();
-    let mut f = File::create(&path).ok()?;
+    let mut f = open_private(&path, false)?;
     let _ = writeln!(f, "Annex {} on {} ({}): the last {} log lines.\n", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH, lines.len());
     for line in &lines {
         let _ = f.write_all(line.as_bytes());
@@ -203,7 +203,7 @@ fn write_file(buf: &[u8]) {
         if std::fs::metadata(&path).is_ok_and(|m| m.len() > FILE_MAX) {
             let _ = std::fs::rename(&path, path.with_file_name("annex.old.log"));
         }
-        log.file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok().map(|f| {
+        log.file = open_private(&path, true).map(|f| {
             let len = f.metadata().map_or(0, |m| m.len());
             (f, len)
         });
@@ -213,6 +213,26 @@ fn write_file(buf: &[u8]) {
     {
         *len += buf.len() as u64;
     }
+}
+
+/// Opens a log file readable only by this account: it names the devices and addresses Annex talks
+/// to, and other accounts on a shared computer shouldn't see them.
+fn open_private(path: &Path, append: bool) -> Option<File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true);
+    if append {
+        opts.append(true);
+    } else {
+        opts.write(true).truncate(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        opts.mode(0o600);
+        // Logs from before 0.3.1 were created readable by everyone.
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    opts.open(path).ok()
 }
 
 fn take_recording_turn() -> bool {
@@ -286,7 +306,16 @@ mod tests {
 
         let crashes: Vec<_> = std::fs::read_dir(dir.path().join("crashes")).unwrap().collect();
         assert_eq!(crashes.len(), 1);
-        let saved = std::fs::read_to_string(crashes[0].as_ref().unwrap().path()).unwrap();
+        let saved_path = crashes[0].as_ref().unwrap().path();
+        let saved = std::fs::read_to_string(&saved_path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for p in [dir.path().join("annex.log"), saved_path] {
+                let mode = std::fs::metadata(&p).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600, "only this account reads {}", p.display());
+            }
+        }
         assert!(saved.contains("step one") && saved.contains("it broke"));
 
         set_verbose(true);
