@@ -805,3 +805,35 @@ async fn a_viewer_without_control_cant_send_files_or_clipboard() {
     viewer.disconnect().await;
     host.stop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_file_leaves_nothing_behind() {
+    let (host, viewer, mut hrx, mut vrx, host_core, _) = input_session(true).await;
+    let (host_dl, src) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    host_core.set_downloads(Some(host_dl.path().to_path_buf()));
+    let Event::SessionStarted { session_id, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
+    else {
+        unreachable!()
+    };
+    wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+    let file = src.path().join("big.bin");
+    // Big enough to still be arriving when it's cancelled; one noise block repeated, since making
+    // 400 MB of noise byte by byte takes seconds in a debug build.
+    std::fs::write(&file, noise(1 << 20).repeat(400)).unwrap();
+    viewer.send_file(&file).unwrap();
+    let Event::TransferProgress { id, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::TransferProgress { incoming: true, .. })).await
+    else {
+        unreachable!()
+    };
+    host.cancel_transfer(session_id, true, id);
+    let (ok, _, _) = ended(&wait_for(&mut hrx, |e| ended(e).is_some()).await).unwrap();
+    assert!(!ok);
+    let (ok, _, error) = ended(&wait_for(&mut vrx, |e| ended(e).is_some()).await).unwrap();
+    assert!(!ok, "the sender learns it was cancelled");
+    assert!(error.unwrap().contains("Cancelled"));
+    assert!(files_in(host_dl.path()).is_empty(), "no partial file: {:?}", files_in(host_dl.path()));
+    viewer.disconnect().await;
+    host.stop().await;
+}
