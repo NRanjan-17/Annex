@@ -1,6 +1,6 @@
 # Annex for Linux: Plan
 
-Status: **Phase 1 (core) done; no Linux app yet, so releases don't include Linux.** Scope agreed: View, Share (Mirror, with mouse and keyboard) and Extend, on Wayland and X11, everywhere Tailscale runs on Linux, including NVIDIA (desktop GPUs and Jetson) and Raspberry Pi. Items marked **[VERIFY]** get checked before anything depends on them.
+Status: **Phase 1 (core) done; Phase 0 under way (Pi 5 done, section 4a); no Linux app yet, so releases don't include Linux.** Scope agreed: View, Share (Mirror, with mouse and keyboard) and Extend, on Wayland and X11, everywhere Tailscale runs on Linux, including NVIDIA (desktop GPUs and Jetson) and Raspberry Pi. Items marked **[VERIFY]** get checked before anything depends on them.
 
 ---
 
@@ -81,9 +81,9 @@ Annex links none of these; it loads whatever plugin is there at run time, which 
 
 | | Wayland: GNOME, KDE | Wayland: wlroots (labwc, Sway) | X11 |
 |---|---|---|---|
-| Capture | ScreenCast portal → PipeWire (`pipewiresrc`) | ScreenCast portal (`xdg-desktop-portal-wlr`) → PipeWire | XShm (`ximagesrc`) |
-| Input on the shared screen | RemoteDesktop portal, in the **same** session as capture | wlroots virtual pointer and virtual keyboard protocols (the portal has no RemoteDesktop there) **[VERIFY]** on labwc | XTest |
-| Permission | One system dialog the first time; Annex keeps the restore token so it doesn't ask again | Output picker the first time | None |
+| Capture | ScreenCast portal → PipeWire (`pipewiresrc`) | The compositor's screencopy protocol (`ext-image-copy-capture`, `wlr-screencopy`) for a named output: no picker dialog. The portal (`xdg-desktop-portal-wlr`) only as a fallback | XShm (`ximagesrc`) |
+| Input on the shared screen | RemoteDesktop portal, in the **same** session as capture | wlroots virtual pointer and virtual keyboard protocols (the portal has no RemoteDesktop there); both present in labwc 0.9 | XTest |
+| Permission | One system dialog the first time; Annex keeps the restore token so it doesn't ask again | None | None |
 
 Viewer side, both: keys come from GTK as evdev codes and map to USB HID through a new Linux column in `annex-proto/src/keys.rs`. ⌃⌥⇧Q (Ctrl+Alt+Shift+Q) leaves, as on Mac and Windows.
 
@@ -95,11 +95,30 @@ Extend needs a virtual monitor at the viewer's size and refresh rate. Linux has 
 |---|---|---|
 | KDE Plasma 6, Wayland | ScreenCast portal, source type `VIRTUAL` (4) | **[VERIFY]** |
 | GNOME, Wayland | Portal `VIRTUAL` if offered; otherwise Mutter's `org.gnome.Mutter.ScreenCast` `RecordVirtual` (what GNOME Remote Desktop uses; works outside Flatpak only) | **[VERIFY]** |
-| wlroots (labwc, Sway), Wayland | A headless output (Sway: `create_output`; labwc **[VERIFY]**), captured through the portal | **[VERIFY]** |
+| wlroots (labwc, Sway), Wayland | A headless output, sized with `wlr-output-management` and captured with screencopy. Sway: `swaymsg create_output`. labwc has no IPC: its `VirtualOutputAdd`/`VirtualOutputRemove` actions only run from a key binding, so Annex adds two bindings in `~/.config/labwc/rc.xml` (labwc runs with `-m`, which merges it with the system config) and presses them with a virtual keyboard | **Works on labwc 0.9.7** (Pi 5); Sway **[VERIFY]** |
 | X11 | A real extra output from the `evdi` kernel module (DisplayLink's), set up with xrandr; or a driver's own `VIRTUAL` outputs | **[VERIFY]**; needs `evdi` installed |
 | Anything else | Extend off, with a message saying why | n/a |
 
 Phase 0 settles every **[VERIFY]** above before the app is built around it.
+
+## 4a. Phase 0 results so far
+
+**Raspberry Pi 5** (Raspberry Pi OS on Debian 13, labwc 0.9.7 on Wayland, GStreamer 1.26, 16 GB):
+
+- ScreenCast portal (`xdg-desktop-portal-wlr`): `AvailableSourceTypes` = 1 (monitors only, no `VIRTUAL`). No RemoteDesktop portal.
+- labwc offers what Annex needs without the portal: screencopy (`ext-image-copy-capture`, `wlr-screencopy`), virtual pointer and keyboard, output management, and pointer constraints and relative pointer (for the viewer's pointer lock in Extend).
+- **Extend works:** the key-binding route above created `ANNEX-1`, set it to 2704×1756 at 60 Hz (a MacBook Pro viewer's size) beside the main output, and removed it again.
+- No H.264 hardware (the only codec device is `rpi-hevc-dec`). Software, on a moving test pattern (a real screen is somewhat slower):
+
+| Encoder | 720p | 1080p | 1440p |
+|---|---|---|---|
+| `x264enc` (ultrafast, zero latency) | 134 fps | 71 fps | 44 fps |
+| `openh264enc` (low complexity) | 50 fps | 22 fps | n/a |
+
+- Decoding a 1080p60 stream: `avdec_h264` about 275 fps, `openh264dec` about 135 fps. Viewing is no problem.
+- So on a Pi 5: View up to 4K; Share and Extend at 1080p60 with x264 installed, 720p30 with OpenH264 only.
+
+Still to measure: Pi 4 (V4L2 hardware encoder), Jetson AGX Thor, DGX Spark, an x86_64 laptop (VA-API, X11), GNOME and KDE virtual monitors.
 
 ## 5. Phases
 
