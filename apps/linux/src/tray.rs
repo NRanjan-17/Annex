@@ -53,11 +53,16 @@ impl ksni::Tray for Tray {
     }
 
     fn icon_name(&self) -> String {
-        // Installed by the packages (assets/linux); themes without it fall back to the name.
+        // Installed by the packages (hicolor theme).
+        "annex".into()
+    }
+
+    /// A badge from the icon theme for what this computer is doing (KDE and others show it).
+    fn overlay_icon_name(&self) -> String {
         match (&self.s.role, self.s.hosting) {
-            (Some((SessionRole::Viewing { .. }, _)), _) => "annex-viewing",
-            (Some(_), _) | (None, true) => "annex-sharing",
-            _ => "annex",
+            (Some((SessionRole::Viewing { .. }, _)), _) => "media-playback-start",
+            (Some(_), _) | (None, true) => "network-transmit",
+            _ => "",
         }
         .into()
     }

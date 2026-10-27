@@ -175,9 +175,46 @@ jobs:
           path: dist/Annex-Setup-*.exe
           if-no-files-found: error
 
+  linux:
+    name: Linux packages (${{ matrix.arch }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Built on the oldest supported system so the binary runs on everything newer.
+          - { arch: x86_64, runner: ubuntu-22.04 }
+          - { arch: arm64, runner: ubuntu-22.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install GTK 4, GStreamer and packaging tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libxkbcommon-dev libdbus-1-dev pkg-config rpm
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Stamp version into the Rust core
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: scripts/stamp-version.sh "$VERSION"
+      - name: Build and package (.deb, .rpm, .tar.gz)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: scripts/package-linux.sh "$VERSION"
+      - name: Install the .deb and start it
+        run: |
+          sudo apt-get install -y -qq ./dist/*.deb
+          annex --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/Annex-*-linux-*
+          if-no-files-found: error
+
   publish:
     name: Checksums, SBOM, release
-    needs: [version, macos, windows]
+    needs: [version, macos, windows, linux]
     runs-on: ubuntu-latest
     # The update-signing key lives in the protected environment.
     environment: release
@@ -205,6 +242,14 @@ jobs:
           path: .
           format: spdx-json
           output-file: dist/Annex-Setup-${{ needs.version.outputs.version }}-windows.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: "SBOM (Linux: Rust core + app)"
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: apps/linux
+          format: spdx-json
+          output-file: dist/Annex-${{ needs.version.outputs.version }}-linux.spdx.json
           upload-artifact: false
           upload-release-assets: false
       - name: Checksums
@@ -251,6 +296,10 @@ jobs:
 
           **Windows Extend-mode driver:** optional in the installer (off by default). The installer signs it on your PC
           with a one-off certificate whose private key is deleted right away, so it loads without test signing.
+
+          **Linux:** `.deb` (Ubuntu, Debian, Raspberry Pi OS, JetPack, Mint), `.rpm` (Fedora, RHEL, openSUSE) and
+          `.tar.gz`, for x86_64 and arm64. Install with `sudo apt install ./Annex-…-linux-<cpu>.deb` or
+          `sudo dnf install ./Annex-…-linux-<cpu>.rpm`. Video needs the system's H.264 codecs: see docs/LINUX.md.
 
           **Signing:** the Mac app is signed with a Developer ID and notarized by Apple, so it opens without
           warnings. The Windows installer isn't code-signed yet, so SmartScreen may warn the first time:
