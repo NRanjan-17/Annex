@@ -181,6 +181,8 @@ public sealed partial class MainWindow : Window
             _clipboard.Copied += OnCopied;
             _drop = new DropTray(_ui);
             _drop.Dropped += SendFiles;
+            _drop.PauseRequested += PauseTransfer;
+            _drop.CancelRequested += CancelTransfer;
             if (_settings.ShareClipboard) _clipboard.Start();
             _ = CheckFirewallAsync();
             StartUpdateChecks();
@@ -1983,14 +1985,37 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OnTransfer(CoreEvent e)
+    /// <summary><paramref name="viewer"/>: the event came from the viewer (this PC watching another),
+    /// not from a host session, so the island's buttons go back to the right one.</summary>
+    private void OnTransfer(CoreEvent e, bool viewer)
     {
         switch (e)
         {
-            case CoreEvent.TransferStarted t: _drop?.Started(t.SessionId, t.Id, t.Incoming, t.Name, t.Size); break;
-            case CoreEvent.TransferProgress p: _drop?.Progress(p.SessionId, p.Id, p.Incoming, p.Done); break;
-            case CoreEvent.TransferEnded d: _drop?.Ended(d.SessionId, d.Id, d.Incoming, d.Ok, d.Path, d.Problem); break;
+            case CoreEvent.TransferStarted t: _drop?.Started(viewer, t.SessionId, t.Id, t.Incoming, t.Name, t.Size); break;
+            case CoreEvent.TransferProgress p: _drop?.Progress(viewer, p.SessionId, p.Id, p.Incoming, p.Done); break;
+            case CoreEvent.TransferEnded d: _drop?.Ended(viewer, d.SessionId, d.Id, d.Incoming, d.Ok, d.Path, d.Problem); break;
         }
+    }
+
+    /// <summary>Pause/Resume pressed on a file being sent in the island.</summary>
+    private void PauseTransfer(bool viewer, ulong session, ulong id, bool paused)
+    {
+        try
+        {
+            if (viewer) _viewer?.PauseTransfer(id, paused);
+            else _host?.PauseTransfer(session, id, paused);
+        }
+        catch (AnnexException e)
+        {
+            AnnexLog.Warn($"[transfer] couldn't {(paused ? "pause" : "resume")} file {id}: {e.Message}");
+        }
+    }
+
+    /// <summary>Unsend (a file going) or Stop (a file arriving) pressed in the island.</summary>
+    private void CancelTransfer(bool viewer, ulong session, ulong id, bool incoming)
+    {
+        if (viewer) _viewer?.CancelTransfer(incoming, id);
+        else _host?.CancelTransfer(session, incoming, id);
     }
 
     private static string DownloadsFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
@@ -2551,7 +2576,7 @@ public sealed partial class MainWindow : Window
                 else AnnexLog.Debug($"[clipboard] received {c.Mime}, {c.Data.Length} bytes: not applied, Share the clipboard is off");
                 return;
             case CoreEvent.TransferStarted or CoreEvent.TransferProgress or CoreEvent.TransferEnded:
-                OnTransfer(e);
+                OnTransfer(e, viewer: false);
                 return;
             case CoreEvent.PairingPin pin:
                 AnnexLog.Info($"[pairing] showing a PIN for {pin.PeerName}");
@@ -2780,7 +2805,7 @@ public sealed partial class MainWindow : Window
                 else AnnexLog.Debug($"[clipboard] received {c.Mime}, {c.Data.Length} bytes: not applied, Share the clipboard is off");
                 return;
             case CoreEvent.TransferStarted or CoreEvent.TransferProgress or CoreEvent.TransferEnded:
-                OnTransfer(e);
+                OnTransfer(e, viewer: true);
                 return;
             case CoreEvent.PairingPinRequired req:
                 await PromptForPin(req);

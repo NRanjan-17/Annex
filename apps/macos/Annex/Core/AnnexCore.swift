@@ -331,6 +331,12 @@ final class HostHandle {
         if let raw { annex_host_cancel_transfer(raw, session, incoming, id) }
     }
 
+    /// Pauses (or resumes) a file being sent to a viewer. False: it isn't being sent.
+    func pauseTransfer(session: UInt64, id: UInt64, paused: Bool) -> Bool {
+        guard let raw else { return false }
+        return annex_host_pause_transfer(raw, session, id, paused) == 1
+    }
+
     /// Shares over the internet with one code (`internetCode`, …, `internetCodeEnded` events).
     /// `ownRelay`: the user's TURN server, if they set one up.
     func shareCode(server: String, ownRelay: (url: String, username: String, password: String)?) throws {
@@ -451,6 +457,12 @@ final class ViewerHandle {
 
     func cancelTransfer(incoming: Bool, id: UInt64) {
         if let raw { annex_viewer_cancel_transfer(raw, incoming, id) }
+    }
+
+    /// Pauses (or resumes) a file being sent to the host. False: it isn't being sent.
+    func pauseTransfer(id: UInt64, paused: Bool) -> Bool {
+        guard let raw else { return false }
+        return annex_viewer_pause_transfer(raw, id, paused) == 1
     }
 
     /// Asks the host for a direct Wi-Fi link (answered by directLinkOffer / directLinkUnavailable).

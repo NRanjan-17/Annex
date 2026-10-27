@@ -328,6 +328,12 @@ public sealed unsafe class HostHandle : IDisposable
         if (_raw != 0) NativeMethods.annex_host_cancel_transfer(_raw, sessionId, incoming, id);
     }
 
+    /// <summary>Pauses or resumes a file this computer is sending.</summary>
+    public void PauseTransfer(ulong sessionId, ulong id, bool paused)
+    {
+        if (_raw != 0) NativeMethods.Check(NativeMethods.annex_host_pause_transfer(_raw, sessionId, id, paused));
+    }
+
     /// <summary>Stops the code (InternetCodeEnded "stopped"); connected sessions carry on.</summary>
     public void StopCode()
     {
@@ -466,6 +472,12 @@ public sealed unsafe class ViewerHandle : IDisposable
     public void CancelTransfer(bool incoming, ulong id)
     {
         if (_raw != 0) NativeMethods.annex_viewer_cancel_transfer(_raw, incoming, id);
+    }
+
+    /// <summary>Pauses or resumes a file this computer is sending.</summary>
+    public void PauseTransfer(ulong id, bool paused)
+    {
+        if (_raw != 0) NativeMethods.Check(NativeMethods.annex_viewer_pause_transfer(_raw, id, paused));
     }
 
     public void FramePresented(uint frameId)

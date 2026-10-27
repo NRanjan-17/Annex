@@ -144,6 +144,15 @@ final class HostController {
         for id in inputSessions.keys { _ = try host?.sendFile(session: id, url: url) }
     }
 
+    /// Pauses or resumes a file being sent to a viewer. False: it isn't being sent.
+    func pauseTransfer(session: UInt64, id: UInt64, paused: Bool) -> Bool {
+        host?.pauseTransfer(session: session, id: id, paused: paused) == true
+    }
+
+    func cancelTransfer(session: UInt64, incoming: Bool, id: UInt64) {
+        host?.cancelTransfer(session: session, incoming: incoming, id: id)
+    }
+
     /// A viewer controlling this Mac, by name, if any.
     var controllingViewer: String? { inputSessions.values.sorted().first }
 

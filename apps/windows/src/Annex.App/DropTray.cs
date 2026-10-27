@@ -23,9 +23,13 @@ internal sealed partial class DropTray
 {
     private enum Phase { Hidden, Glowing, Open, Transfers }
 
-    private sealed class Item(string key, bool incoming, string name, ulong size)
+    private sealed class Item(string key, bool viewer, ulong session, ulong id, bool incoming, string name, ulong size)
     {
         public string Key { get; } = key;
+        /// <summary>The transfer belongs to the viewer (this PC watching another), not a host session.</summary>
+        public bool Viewer { get; } = viewer;
+        public ulong Session { get; } = session;
+        public ulong Id { get; } = id;
         public bool Incoming { get; } = incoming;
         public string Name { get; } = name;
         public ulong Size { get; } = size;
@@ -33,10 +37,19 @@ internal sealed partial class DropTray
         public bool? Ok;
         public string? Path;
         public string? Error;
+        public bool Paused;
+        /// <summary>Unsend (going) or Stop (arriving) was pressed.</summary>
+        public bool Cancelled;
     }
 
     /// <summary>Dropped files (folders already expanded into their files).</summary>
     public event Action<IReadOnlyList<string>>? Dropped;
+
+    /// <summary>Pause/Resume pressed on a file being sent: (viewer, session, id, paused).</summary>
+    public event Action<bool, ulong, ulong, bool>? PauseRequested;
+
+    /// <summary>Unsend or Stop pressed: (viewer, session, id, incoming).</summary>
+    public event Action<bool, ulong, ulong, bool>? CancelRequested;
 
     private readonly DispatcherQueue _ui;
     private readonly DispatcherQueueTimer _watch;
@@ -94,37 +107,64 @@ internal sealed partial class DropTray
         }
     }
 
-    public void Started(ulong session, ulong id, bool incoming, string name, ulong size)
+    /// <summary><paramref name="viewer"/>: the transfer is the viewer's rather than a host session's.</summary>
+    public void Started(bool viewer, ulong session, ulong id, bool incoming, string name, ulong size)
     {
-        var key = Key(session, id, incoming);
+        var key = Key(viewer, session, id, incoming);
         _items.RemoveAll(i => i.Key == key);
-        _items.Add(new Item(key, incoming, name, size));
+        _items.Add(new Item(key, viewer, session, id, incoming, name, size));
         while (_items.Count > 4 && _items.FindIndex(i => i.Ok is not null) is var i and >= 0) _items.RemoveAt(i);
         Show(Phase.Transfers, incoming ? "a file is arriving" : "a file is going");
     }
 
-    public void Progress(ulong session, ulong id, bool incoming, ulong done)
+    public void Progress(bool viewer, ulong session, ulong id, bool incoming, ulong done)
     {
-        if (Find(session, id, incoming) is { } item)
+        if (Find(viewer, session, id, incoming) is { } item)
         {
             item.Done = done;
             if (_phase == Phase.Transfers) Render();
         }
     }
 
-    public void Ended(ulong session, ulong id, bool incoming, bool ok, string? path, string? error)
+    public void Ended(bool viewer, ulong session, ulong id, bool incoming, bool ok, string? path, string? error)
     {
-        if (Find(session, id, incoming) is not { } item) return;
+        if (Find(viewer, session, id, incoming) is not { } item) return;
         item.Ok = ok;
+        item.Paused = false;
         item.Path = path;
         item.Error = error;
         if (ok) item.Done = item.Size;
         if (_phase == Phase.Transfers) Render();
-        if (_items.TrueForAll(i => i.Ok is not null)) HideLater(5);
+        if (AllDone) HideLater(5);
     }
 
-    private Item? Find(ulong session, ulong id, bool incoming) => _items.Find(i => i.Key == Key(session, id, incoming));
-    private static string Key(ulong session, ulong id, bool incoming) => $"{session}-{id}-{incoming}";
+    private Item? Find(bool viewer, ulong session, ulong id, bool incoming) => _items.Find(i => i.Key == Key(viewer, session, id, incoming));
+    private static string Key(bool viewer, ulong session, ulong id, bool incoming) => $"{(viewer ? "v" : "h")}-{session}-{id}-{incoming}";
+
+    /// <summary>Nothing left moving or paused: the island may tuck itself away.</summary>
+    private bool AllDone => _items.TrueForAll(i => i.Ok is not null);
+
+    private void TogglePause(Item item)
+    {
+        if (item.Ok is not null) return;
+        item.Paused = !item.Paused;
+        AnnexLog.Info($"[drop] {(item.Paused ? "pause" : "resume")} pressed for {item.Name} (file {item.Id}, {(item.Viewer ? "viewer" : $"session {item.Session}")})");
+        if (item.Paused) _hideTimer?.Stop();
+        PauseRequested?.Invoke(item.Viewer, item.Session, item.Id, item.Paused);
+        if (_phase == Phase.Transfers) Render();
+    }
+
+    private void Cancel(Item item)
+    {
+        if (item.Ok is not null) return;
+        AnnexLog.Info($"[drop] {(item.Incoming ? "stop" : "unsend")} pressed for {item.Name} (file {item.Id}, {(item.Viewer ? "viewer" : $"session {item.Session}")})");
+        item.Cancelled = true;
+        item.Paused = false;
+        item.Ok = false;
+        CancelRequested?.Invoke(item.Viewer, item.Session, item.Id, item.Incoming);
+        if (_phase == Phase.Transfers) Render();
+        if (AllDone) HideLater(5);
+    }
 
     // ---- Watching drags ----------------------------------------------------------------
 
@@ -262,7 +302,7 @@ internal sealed partial class DropTray
         root.PointerExited += (_, _) =>
         {
             _hovering = false;
-            if (_phase == Phase.Transfers && _items.TrueForAll(i => i.Ok is not null)) HideLater(2);
+            if (_phase == Phase.Transfers && AllDone) HideLater(2);
         };
         window.Closed += (_, _) => AnnexLog.Debug("[drop] island window closed");
 
@@ -376,7 +416,8 @@ internal sealed partial class DropTray
 
     private void OnHideTimer(DispatcherQueueTimer t, object _)
     {
-        if (_phase == Phase.Transfers && !_hovering && !_dragging) Hide("transfers finished");
+        // A paused file is still unfinished: the island stays so it can be resumed.
+        if (_phase == Phase.Transfers && !_hovering && !_dragging && AllDone) Hide("transfers finished");
     }
 
     /// <summary>Resizes the window round the top centre, frame by frame (Windows can't animate a window's size itself).</summary>
@@ -482,6 +523,7 @@ internal sealed partial class DropTray
             {
                 IsIndeterminate = false, Width = 26, Height = 26, Foreground = Live,
                 Value = item.Size == 0 ? 100 : Math.Min(100.0 * item.Done / item.Size, 100),
+                Opacity = item.Paused ? 0.35 : 1,
             },
         };
         var badgeBox = new Grid { Width = 28, Height = 28 };
@@ -510,7 +552,34 @@ internal sealed partial class DropTray
             Grid.SetColumn(show, 2);
             row.Children.Add(show);
         }
+        else if (item.Ok is null)
+        {
+            // Small round buttons for a file still on its way.
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+            if (!item.Incoming)
+            {
+                buttons.Children.Add(IconButton(item.Paused ? "\uE768" : "\uE769", item.Paused ? "Resume" : "Pause", () => TogglePause(item)));
+                buttons.Children.Add(IconButton("\uE7A7", "Unsend", () => Cancel(item)));
+            }
+            else buttons.Children.Add(IconButton("\uE711", "Stop", () => Cancel(item)));
+            Grid.SetColumn(buttons, 2);
+            row.Children.Add(buttons);
+        }
         return row;
+    }
+
+    /// <summary>A round icon button in the island's style (like Show).</summary>
+    private static Button IconButton(string glyph, string label, Action click)
+    {
+        var b = Ui.Flat(new FontIcon { Glyph = glyph, FontSize = 11 }, Ui.White(0.15), Ui.White(0.25), Ui.White(1), click, radius: 13);
+        b.Width = 26;
+        b.Height = 26;
+        b.Padding = new Thickness(0);
+        b.HorizontalContentAlignment = HorizontalAlignment.Center;
+        b.VerticalContentAlignment = VerticalAlignment.Center;
+        ToolTipService.SetToolTip(b, label);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, label);
+        return b;
     }
 
     private string Status(Item item)
@@ -519,7 +588,9 @@ internal sealed partial class DropTray
         return item.Ok switch
         {
             true => item.Incoming ? $"Received from {_peer} · {total}" : $"Sent to {_peer} · {total}",
+            false when item.Cancelled => item.Incoming ? "Stopped" : "Unsent",
             false => item.Error ?? "Didn't arrive",
+            null when item.Paused => $"Paused · {Size(item.Done)} of {total}",
             null => $"{(item.Incoming ? "Receiving" : "Sending")} {Size(item.Done)} of {total}",
         };
     }
