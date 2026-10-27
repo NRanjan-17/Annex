@@ -645,7 +645,9 @@ async fn connect_best(core: &Arc<Core>, cfg: &ViewerConfig) -> Result<Establishe
                 if quic { connect_quic(&core, addr, expected).await } else { connect_tcp(&core, addr, expected).await }
             });
         }
-        let deadline = tokio::time::sleep(if quic { Duration::from_secs(3) } else { Duration::from_secs(8) });
+        // QUIC gets 6 s: a busy or slow computer (a Pi, an old laptop) can take over 3 s, and the TCP
+        // fallback can't carry files. A network that blocks UDP pays the wait once per connect.
+        let deadline = tokio::time::sleep(if quic { Duration::from_secs(6) } else { Duration::from_secs(8) });
         tokio::pin!(deadline);
         loop {
             tokio::select! {
