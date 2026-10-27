@@ -1,6 +1,6 @@
 # Annex for Linux: Plan
 
-Status: **plan, nothing built.** Scope agreed: View, Share (Mirror, with mouse and keyboard) and Extend, on Wayland and X11, everywhere Tailscale runs on Linux, including NVIDIA (desktop GPUs and Jetson) and Raspberry Pi. Items marked **[VERIFY]** get checked before anything depends on them.
+Status: **Phase 1 (core) done; no Linux app yet, so releases don't include Linux.** Scope agreed: View, Share (Mirror, with mouse and keyboard) and Extend, on Wayland and X11, everywhere Tailscale runs on Linux, including NVIDIA (desktop GPUs and Jetson) and Raspberry Pi. Items marked **[VERIFY]** get checked before anything depends on them.
 
 ---
 
@@ -114,7 +114,22 @@ Phase 0 settles every **[VERIFY]** above before the app is built around it.
 
 About 4–5 weeks in total; the extra week is the wider set of CPUs, packages and desktops.
 
-## 6. Risks
+## 6. Releases
+
+Releases build Linux packages from **Phase 2** on, when there is an app to package. Until then
+`release.yml` builds only the Mac `.dmg` and the Windows installers; CI already builds and tests the
+Rust core on Ubuntu for every push.
+
+From Phase 2, every release adds, for x86_64, arm64, armhf and riscv64:
+
+- `Annex-<version>-linux-<arch>.deb` (Ubuntu, Debian, Raspberry Pi OS, JetPack, DGX OS)
+- `Annex-<version>-linux-<arch>.rpm` (Fedora, RHEL and its relatives, openSUSE, Amazon, Oracle)
+- `Annex-<version>-linux-<arch>.tar.gz` (Arch `PKGBUILD`, NixOS, Photon, anything else)
+
+They're listed in the signed `SHA256SUMS.txt` like the Mac and Windows files, and the app's update
+check (`annex-update`) offers the file for its own package type and CPU.
+
+## 7. Risks
 
 | Risk | Effect | Plan |
 |---|---|---|

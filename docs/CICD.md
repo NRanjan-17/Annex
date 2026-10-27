@@ -21,6 +21,10 @@ Superseded runs are cancelled by a concurrency group.
 
 The Windows virtual display driver job (WDK build) is added with the driver in M4.
 
+Linux: the Rust core is built and tested on Ubuntu above. Linux app packages (`.deb`, `.rpm`,
+`.tar.gz` for x86_64, arm64, armhf, riscv64) join `ci.yml` and `release.yml` with the Linux app;
+see [LINUX.md](LINUX.md#6-releases).
+
 ## release.yml
 
 Triggers: tag `vX.Y.Z` (or `vX.Y.Z-rc.N`), or **workflow_dispatch** with `dry_run` (default

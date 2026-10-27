@@ -130,3 +130,5 @@ On any two machines with Rust installed:
 annex host --replay clip.h264 --width 1280 --height 720   # machine A
 annex viewer <A's IP> --dump received.h264                # machine B
 ```
+Add `--extend` to both to test Extend: the host then accepts Extend sessions and sends them the
+same replay at its own size (it has no virtual display), and the viewer asks for Extend.

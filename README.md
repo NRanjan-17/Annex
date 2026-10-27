@@ -64,6 +64,11 @@ when you turn it on).
 When Windows asks whether to allow Annex on **private networks**, click **Allow**, or other
 computers can't find this PC.
 
+### Linux
+
+Coming: View, Share and Extend on Ubuntu, Debian, Raspberry Pi OS, Fedora and more, on x86_64 and
+ARM (including Raspberry Pi and NVIDIA Jetson). Progress: [docs/LINUX.md](docs/LINUX.md).
+
 ## Quick start
 
 You need two computers on the **same network** (Wi-Fi or Ethernet), or joined by a cable. Open
