@@ -26,6 +26,9 @@ pub struct Settings {
     pub extend_by_default: bool,
     /// Sharing: use the graphics chip's video encoder when there is one.
     pub prefer_hardware_encoder: bool,
+    /// Sharing: the size of text and windows on a screen extending this one. 0 = the other
+    /// screen's own scale (200 % on a Retina Mac); otherwise a percentage, 100–200.
+    pub extend_scale: u32,
     pub show_technical_details: bool,
     pub check_for_updates: bool,
     pub beta_updates: bool,
@@ -50,6 +53,7 @@ impl Default for Settings {
             open_full_screen: false,
             extend_by_default: false,
             prefer_hardware_encoder: true,
+            extend_scale: 0,
             show_technical_details: false,
             check_for_updates: true,
             beta_updates: false,

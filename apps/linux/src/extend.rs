@@ -5,7 +5,7 @@
 //!   bindings, so Annex adds two to `~/.config/labwc/rc.xml` (labwc merges it with the system
 //!   config), reloads labwc, and presses them with a virtual keyboard.
 //!
-//! The size is set with `wlr-randr` (Raspberry Pi OS has it).
+//! The size and scale are set with `wlr-randr` (Raspberry Pi OS has it).
 
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -58,7 +58,7 @@ fn which(cmd: &str) -> bool {
 }
 
 /// Adds a display `w`×`h` at `hz`, to the right of the others.
-pub fn add(kind: Wlr, w: u32, h: u32, hz: u32) -> Result<Display, String> {
+pub fn add(kind: Wlr, w: u32, h: u32, hz: u32, scale: f64) -> Result<Display, String> {
     let before = output_names()?;
     let output = match kind {
         Wlr::Sway => {
@@ -88,26 +88,39 @@ pub fn add(kind: Wlr, w: u32, h: u32, hz: u32) -> Result<Display, String> {
         Wlr::Other => return Err("This desktop can't add a display yet.".into()),
     };
     let d = Display { output, kind };
-    d.set_mode(w, h, hz);
+    d.set_mode(w, h, hz, scale);
     Ok(d)
 }
 
 impl Display {
-    /// Sizes the display and puts it to the right of the others (new outputs start at 0,0,
-    /// on top of the main screen).
-    fn set_mode(&self, w: u32, h: u32, hz: u32) {
+    /// Sizes and scales the display and puts it to the right of the others (new outputs start
+    /// at 0,0, on top of the main screen).
+    fn set_mode(&self, w: u32, h: u32, hz: u32, scale: f64) {
         let x = self.right_edge().unwrap_or(0).to_string();
+        let scale = format!("{scale:.3}");
         let r = match self.kind {
             Wlr::Sway => run("swaymsg", &["output", &self.output, "mode", "--custom", &format!("{w}x{h}@{hz}Hz")])
+                .and_then(|_| run("swaymsg", &["output", &self.output, "scale", &scale]))
                 .and_then(|_| run("swaymsg", &["output", &self.output, "pos", &x, "0"])),
             _ if which("wlr-randr") => run(
                 "wlr-randr",
-                &["--output", &self.output, "--custom-mode", &format!("{w}x{h}@{hz}"), "--pos", &format!("{x},0")],
+                &[
+                    "--output",
+                    &self.output,
+                    "--custom-mode",
+                    &format!("{w}x{h}@{hz}"),
+                    "--scale",
+                    &scale,
+                    "--pos",
+                    &format!("{x},0"),
+                ],
             ),
             _ => Err("wlr-randr isn't installed".into()),
         };
         if let Err(e) = r {
             tracing::warn!("extend: couldn't size or place the display: {e}");
+        } else {
+            tracing::info!(output = %self.output, w, h, hz, scale, "extend: display ready");
         }
     }
 
