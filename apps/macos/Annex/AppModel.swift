@@ -749,6 +749,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Hides a leftover connect error or direct Wi-Fi note (the xmark on Nearby and the menu bar).
+    /// A new connect clears viewerStatus on its own through disconnectViewer().
+    func dismissConnectionStatus() {
+        guard !isLive else { return }
+        viewerStatus = nil
+        directStatus = nil
+    }
+
     func disconnectViewer() {
         // This viewer's own sessionEnded is ignored from here on (see viewerGeneration), so reset
         // what it would have reset.

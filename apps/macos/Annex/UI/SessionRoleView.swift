@@ -78,6 +78,55 @@ struct RoleFlow: View {
 }
 
 /// Both computers have this Mac's name, so nothing on screen can say which is which.
+/// Why the last connection failed or ended, or how a direct Wi-Fi switch is going. Shown only
+/// while nothing is live; during a session the live strip carries the status instead.
+struct ConnectionStatusNotice: View {
+    @ObservedObject var model: AppModel
+    var compact = false
+
+    var body: some View {
+        if !model.isLive, model.viewerStatus != nil || model.directStatus != nil {
+            HStack(alignment: .center, spacing: 10) {
+                Image(systemName: isError ? "exclamationmark.circle.fill" : "info.circle")
+                    .foregroundStyle(isError ? Color.red : Color.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    if let status = model.viewerStatus {
+                        Text(status)
+                            .font(.system(size: compact ? 11.5 : 13, weight: .semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let direct = model.directStatus {
+                        Text(direct)
+                            .font(.system(size: compact ? 11 : 12))
+                            .foregroundStyle(model.viewerStatus == nil ? .primary : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 0)
+                Button { model.dismissConnectionStatus() } label: {
+                    Image(systemName: "xmark").font(.system(size: compact ? 10 : 11, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .pointingHand()
+                .help("Dismiss")
+            }
+            .padding(compact ? 10 : 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: compact ? 12 : 16, style: .continuous).fill(tint.opacity(0.10)))
+            .overlay(RoundedRectangle(cornerRadius: compact ? 12 : 16, style: .continuous).strokeBorder(tint.opacity(0.30)))
+        }
+    }
+
+    /// With nothing live, a viewer status is always a failure or an end reason; a direct Wi-Fi
+    /// note can also be progress ("Joining …"), so only its "Couldn't" lines count as errors.
+    private var isError: Bool {
+        model.viewerStatus != nil || (model.directStatus?.hasPrefix("Couldn't") ?? false)
+    }
+
+    private var tint: Color { isError ? .red : .secondary }
+}
+
 struct SameNameNotice: View {
     @ObservedObject var model: AppModel
     var compact = false
