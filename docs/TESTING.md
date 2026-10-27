@@ -27,7 +27,7 @@ macOS 27.0.1 (Apple Silicon), Xcode 27.1, Rust 1.99.1:
 | Rust core | macOS 27.0.1 (local); Ubuntu 24.04, macOS 26, Windows Server 2025 (CI) | |
 | macOS app | macOS 27.0.1 build + tests + launch | Live screen capture with a real viewer (needs Screen Recording approval), macOS 14–26 |
 | Windows app | C# compile-checked on macOS; CI builds it; MF software encode→decode round trip runs on the Windows CI runner | **Running it on Windows 10/11** (capture, hardware encode/decode, UI) |
-| Linux app | Ubuntu 22.04 build + packages (CI, Lima VM); Jetson AGX Thor (Ubuntu 26.04, GNOME 50): View, Mirror; Raspberry Pi 5 (Debian 13, labwc): Mirror, Extend | Pi 4, DGX Spark, x86_64 laptop (VA-API, X11), KDE, GNOME Extend on a logged-in desktop |
+| Linux app | Ubuntu 22.04 x86_64 and arm64 in CI: build, tests, packages, `.deb` installed and started; Lima VM; Jetson AGX Thor (Ubuntu 26.04, GNOME 50): View, Mirror; Raspberry Pi 5 (Debian 13, labwc): Mirror, Extend | Pi 4, DGX Spark, x86_64 laptop (VA-API, X11), KDE, GNOME Extend on a logged-in desktop |
 
 ## Linux without a screen (over SSH)
 

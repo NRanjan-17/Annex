@@ -199,6 +199,9 @@ Updates**). Turn on **Beta updates** to get pre-releases early; turn it off to g
 latest normal release. Every update is checked against a signature made when the release is built,
 so a modified download is never installed.
 
+On Linux, Annex doesn't update itself yet: download the new package from the releases page and
+install it the same way (`sudo apt install ./Annex-<version>-linux-<arch>.deb`).
+
 ## Uninstall
 
 - **macOS:** **About → Uninstall…**. It removes the app, its identity key (Keychain),
