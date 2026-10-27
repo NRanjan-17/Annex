@@ -170,7 +170,7 @@ sudo dnf install ./Annex-<version>-linux-x86_64.rpm
 tar xf Annex-<version>-linux-x86_64.tar.gz
 ```
 
-Options: `annex --share` starts sharing, `annex --connect <address or code> [--extend]` connects, `annex --background` starts in the tray, `annex --headless` turns on No one at this screen (README, "A computer with no one at its screen").
+Options: `annex --share` starts sharing, `annex --connect <address or code> [--extend]` connects, `annex --background` starts in the tray, `annex --headless` turns on No one at this screen ([GUIDE.md](GUIDE.md#a-computer-with-no-one-at-its-screen)).
 
 ## 6a. Building
 
