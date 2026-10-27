@@ -40,6 +40,12 @@ final class AppSettings: ObservableObject {
     @Published var betaUpdates: Bool { didSet { defaults.set(betaUpdates, forKey: Keys.beta); changed("betaUpdates", betaUpdates) } }
     /// The update the user said "Not now" to (its banner stays hidden; a newer one shows again).
     @Published var dismissedUpdateVersion: String? { didSet { defaults.set(dismissedUpdateVersion, forKey: Keys.dismissedUpdate) } }
+    /// The version that last ran here, for "What's new" after an update. nil before 0.4.0 and on a
+    /// first install (see `usedBefore`).
+    @Published var lastSeenVersion: String? { didSet { defaults.set(lastSeenVersion, forKey: Keys.lastSeen); changed("lastSeenVersion", lastSeenVersion) } }
+    /// Annex ran on this Mac before this launch: its preferences or its data folder were already
+    /// there. Tells an update from a version that never saved `lastSeenVersion` from a first install.
+    let usedBefore: Bool
     /// When the last update check finished (shown on the About page).
     @Published var lastUpdateCheck: Date? { didSet { defaults.set(lastUpdateCheck, forKey: Keys.lastCheck) } }
     /// Host: the size of text and windows on a screen extending this Mac. 0 = sharpest (100 %, or
@@ -85,6 +91,7 @@ final class AppSettings: ObservableObject {
         static let beta = "betaUpdates"
         static let dismissedUpdate = "dismissedUpdateVersion"
         static let lastCheck = "lastUpdateCheck"
+        static let lastSeen = "lastSeenVersion"
         static let peerToPeer = "peerToPeerWiFi"
         static let extendScale = "extendScale"
         static let rendezvous = "rendezvousServer"
@@ -104,6 +111,11 @@ final class AppSettings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        // Before anything is registered or written this launch, and before the core creates the
+        // data folder.
+        let saved = defaults.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "") ?? [:]
+        let data = (try? FileManager.default.contentsOfDirectory(atPath: AppModel.dataDirectory.path)) ?? []
+        usedBefore = !saved.isEmpty || !data.isEmpty
         defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true, Keys.updates: true,
                                        Keys.peerToPeer: true, Keys.clipboard: true, Keys.reverseScroll: true, Keys.receiveFiles: true, Keys.notchDrop: true])
         preferHardwareEncoder = defaults.bool(forKey: Keys.hardware)
@@ -126,6 +138,7 @@ final class AppSettings: ObservableObject {
         betaUpdates = defaults.object(forKey: Keys.beta) as? Bool ?? Self.runningBeta
         dismissedUpdateVersion = defaults.string(forKey: Keys.dismissedUpdate)
         lastUpdateCheck = defaults.object(forKey: Keys.lastCheck) as? Date
+        lastSeenVersion = defaults.string(forKey: Keys.lastSeen)
         peerToPeerWiFi = defaults.bool(forKey: Keys.peerToPeer)
         rendezvousServer = defaults.string(forKey: Keys.rendezvous) ?? ""
         relayURL = defaults.string(forKey: Keys.relayURL) ?? ""

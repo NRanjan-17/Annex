@@ -25,10 +25,14 @@ struct MainView: View {
         .preferredColorScheme(.dark)
         .tint(Color(white: 0.82))
         .frame(minWidth: 940, minHeight: 620)
+        // After an update (once this window is up), or from About → What's New.
+        .sheet(item: $model.whatsNew) { WhatsNewSheet(notes: $0) }
         .onAppear {
             model.refreshTrusted()
             model.refreshPermissions()
             model.refreshDisplays()
+            // On the next turn, once the window can carry a sheet.
+            DispatchQueue.main.async { model.showPendingWhatsNew() }
             #if DEBUG
             model.openPreviewPane()
             #endif
@@ -716,8 +720,11 @@ struct OtherWaysSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 22) {
-                    Hero(title: "Connect by Code or Address",
-                         text: "For a computer that isn't in Nearby: another network, a VPN, or a PC's Direct Wi-Fi.") { EmptyView() }
+                    HStack(alignment: .top) {
+                        Hero(title: "Connect by Code or Address",
+                             text: "For a computer that isn't in Nearby: another network, a VPN, or a PC's Direct Wi-Fi.") { EmptyView() }
+                        SheetCloseButton { dismiss() }
+                    }
                     CodeSection(model: model, dismiss: { dismiss() })
                     GroupSection("Address", footer: "Through a VPN like Tailscale or ZeroTier, type the address it gives.") {
                         GroupRow(title: "IP address or host:port") {
@@ -748,6 +755,29 @@ struct OtherWaysSheet: View {
         .frame(width: 560)
         .preferredColorScheme(.dark)
         .tint(Color(white: 0.82))
+        // Fresh every time: nothing typed last time, whether it connected, failed or was closed.
+        .onAppear {
+            Annex.log(.debug, "[viewer] Connect by Code or Address opened")
+            model.resetConnectSheet()
+        }
+        .onDisappear { model.resetConnectSheet() }
+    }
+}
+
+/// The round ✕ at a sheet's top right, like the one on a computer's card. Esc presses it.
+private struct SheetCloseButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)) }
+            .keyboardShortcut(.cancelAction)
+            .pointingHand()
+            .buttonStyle(.plain)
+            .frame(width: 26, height: 26)
+            .background(Circle().fill(Color.white.opacity(0.08)))
+            .contentShape(Circle())
+            .help("Close (Esc)")
+            .accessibilityLabel("Close")
     }
 }
 
@@ -760,7 +790,7 @@ private struct CodeSection: View {
         GroupSection("Code", footer: "The other computer shows it under Over the internet. It works once.") {
             GroupRow(title: "Code from the other computer") {
                 InputField(text: $model.manualCode, placeholder: "K7P-4QX",
-                           onSubmit: { model.extendMode = false; model.connectByCode(); dismiss() })
+                           onSubmit: { model.extendMode = false; model.connectByCode(); dismiss() }, focusOnAppear: true)
                     .frame(width: 200)
             }
             GroupCell {
@@ -1257,6 +1287,8 @@ private struct AboutPage: View {
                     .multilineTextAlignment(.center)
                     .padding(.top, 14)
                 HStack(spacing: 12) {
+                    Button("What's New") { model.showAllWhatsNew() }
+                        .pointingHand()
                     Button("Release Notes") {
                         NSWorkspace.shared.open(Self.repo.appendingPathComponent("releases/tag/v\(Annex.version)"))
                     }
@@ -1303,6 +1335,74 @@ private struct AboutPage: View {
     private var lastChecked: String {
         guard let date = settings.lastUpdateCheck else { return "Not checked yet." }
         return "Last checked: " + date.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+// MARK: What's New
+
+/// What's new in this version, shown once after an update; About → What's New shows every release.
+private struct WhatsNewSheet: View {
+    let notes: WhatsNew
+    @Environment(\.dismiss) private var dismiss
+
+    private static let groups = [("new", "New"), ("improved", "Improved"), ("fixed", "Fixed")]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    Hero(title: "What's New in Annex \(notes.releases.first?.version ?? Annex.version)",
+                         text: notes.all ? "Every version, newest first." : "What this update adds and fixes, in short.") { EmptyView() }
+                    ForEach(Array(notes.releases.enumerated()), id: \.offset) { _, release in
+                        // One version: the title says which. Several: a heading for each.
+                        if notes.releases.count > 1 {
+                            Text("Annex \(release.version)")
+                                .font(.system(size: 17, weight: .semibold, design: .rounded))
+                                .padding(.top, 4)
+                        }
+                        ForEach(Self.groups, id: \.0) { kind, heading in
+                            let items = release.items.filter { $0.kind == kind }
+                            if !items.isEmpty {
+                                GroupSection(heading) {
+                                    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                                        GroupCell {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(item.title).fontWeight(.semibold).fixedSize(horizontal: false, vertical: true)
+                                                Text(item.detail).font(.callout).foregroundStyle(.secondary)
+                                                    .fixedSize(horizontal: false, vertical: true)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if notes.releases.isEmpty {
+                        Text("No release notes in this version.").foregroundStyle(.secondary)
+                    }
+                }
+                .padding(28)
+            }
+            .scrollContentBackground(.hidden)
+            .frame(height: 480)
+            Divider().opacity(0.4)
+            HStack {
+                // Esc closes it too.
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
+                    .accessibilityHidden(true)
+                Spacer()
+                Button("Got It") { dismiss() }.keyboardShortcut(.defaultAction)
+                    .pointingHand()
+            }
+            .padding(16)
+        }
+        .frame(width: 560)
+        .preferredColorScheme(.dark)
+        .tint(Color(white: 0.82))
+        .onDisappear { Annex.log(.info, "[update] what's new seen") }
     }
 }
 

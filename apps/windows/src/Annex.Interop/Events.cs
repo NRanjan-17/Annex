@@ -37,6 +37,11 @@ public sealed record GpuInfo(string Name, ulong Luid);
 public sealed record UpdateInfo(string Version, bool Prerelease, bool Downgrade, string Notes, string PageUrl,
     string AssetName, string AssetUrl, string SumsUrl, string SigUrl);
 
+/// <summary>One release's notes (see annex_whats_new_json). <c>Kind</c>: "new", "improved" or "fixed".</summary>
+public sealed record WhatsNewRelease(string Version, WhatsNewItem[] Items);
+
+public sealed record WhatsNewItem(string Kind, string Title, string Detail);
+
 /// <summary><c>AllowInput</c>: host side, the device may control this PC's mouse and keyboard.</summary>
 public sealed record TrustedPeer(string Fingerprint, string Name, ulong AddedAt, ulong LastSeen, bool AllowInput = false);
 
@@ -193,6 +198,7 @@ internal sealed record InstanceDto(string Instance);
 [JsonSerializable(typeof(ExtendStatus))]
 [JsonSerializable(typeof(GpuInfo[]))]
 [JsonSerializable(typeof(UpdateInfo))]
+[JsonSerializable(typeof(WhatsNewRelease[]))]
 [JsonSerializable(typeof(LatencyStats))]
 [JsonSerializable(typeof(PeerInfo))]
 [JsonSerializable(typeof(DisplayInfo))]

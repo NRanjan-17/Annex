@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use annex_update::whats_new::{self, Release};
 use gtk::prelude::*;
 use gtk::{gio, glib};
 
@@ -19,6 +20,8 @@ struct Ui {
     same_name: gtk::Box,
     status: gtk::Label,
     nearby: gtk::Box,
+    /// Connect by address or code: stops a connection that hasn't started yet.
+    cancel_connect: gtk::Button,
     // Share
     share_switch: gtk::Switch,
     share_note: gtk::Label,
@@ -36,6 +39,8 @@ struct Ui {
 
 thread_local! {
     static UI: RefCell<Option<Ui>> = const { RefCell::new(None) };
+    /// "What's new" waiting for the window (Annex started in the tray).
+    static WHATS_NEW: RefCell<Vec<Release>> = const { RefCell::new(Vec::new()) };
 }
 
 const CSS: &str = "
@@ -49,6 +54,7 @@ const CSS: &str = "
 .code { font-family: monospace; font-size: 28px; font-weight: 700; letter-spacing: 4px; }
 .pin { font-family: monospace; font-size: 40px; font-weight: 700; letter-spacing: 8px; }
 .banner { padding: 8px 12px; background: alpha(#e5a50a, 0.25); }
+.version { font-size: 17px; font-weight: 700; margin-top: 16px; }
 .video-window, .video { background: black; }
 ";
 
@@ -115,6 +121,44 @@ pub fn present(app: &gtk::Application, model: &Shared) {
         build(app, model);
         with_ui(|ui| ui.window.present());
     }
+    let notes = WHATS_NEW.with(|w| std::mem::take(&mut *w.borrow_mut()));
+    if !notes.is_empty() {
+        let (app, model) = (app.clone(), model.clone());
+        // Once the window is up, so the dialog sits on it.
+        glib::idle_add_local_once(move || {
+            tracing::info!(target: "annex::update", "update: showing what's new for {}", notes[0].version);
+            show_whats_new(&app, &notes);
+            mark_seen(&model);
+        });
+    }
+}
+
+/// After an update, the new releases' notes show once, with the window. A first install shows
+/// nothing and only remembers this version.
+pub fn whats_new_at_launch(model: &Shared, used_before: bool) {
+    let current = whats_new::CURRENT;
+    let saved = model.borrow().settings.last_seen_version.clone();
+    // 0.3.0 didn't save it: Annex already used here means an update from 0.3.0.
+    let last_seen = saved.clone().or_else(|| used_before.then(|| "0.3.0".to_string()));
+    let notes = whats_new::since(last_seen.as_deref(), current);
+    tracing::info!(
+        target: "annex::update",
+        current,
+        last_seen = last_seen.as_deref().unwrap_or("none (first install)"),
+        releases = notes.len(),
+        "update: what's new"
+    );
+    if !notes.is_empty() {
+        WHATS_NEW.with(|w| *w.borrow_mut() = notes);
+    } else if saved.as_deref() != Some(current) {
+        mark_seen(model);
+    }
+}
+
+fn mark_seen(model: &Shared) {
+    let mut m = model.borrow_mut();
+    m.settings.last_seen_version = Some(whats_new::CURRENT.to_string());
+    m.save_settings();
 }
 
 /// Shows the window at a page: "home", "share", "devices", "settings" or "about".
@@ -183,15 +227,40 @@ fn build(app: &gtk::Application, model: &Shared) {
     home.append(&label("Connect by address or code", "section"));
     let entry = gtk::Entry::builder()
         .placeholder_text("Address (192.168.1.20 or name.local) or a code like K7M-4QX")
+        .secondary_icon_name("edit-clear-symbolic")
+        .secondary_icon_tooltip_text("Clear")
         .hexpand(true)
         .build();
     let row = hbox(8);
     row.append(&entry);
     let show_btn = gtk::Button::with_label("Show Its Screen");
     let extend_btn = gtk::Button::with_label("Use as Display");
+    let cancel_connect = gtk::Button::with_label("Cancel");
+    cancel_connect.set_visible(false);
     row.append(&show_btn);
     row.append(&extend_btn);
+    row.append(&cancel_connect);
     home.append(&row);
+    entry.connect_icon_press(|e, _| e.set_text(""));
+    {
+        let (app, model) = (app.clone(), model.clone());
+        // Typing again clears the last attempt's error.
+        entry.connect_changed(move |_| {
+            act(&app, &model, |m| {
+                if m.viewer.is_none() && m.viewer_status.take().is_some() {
+                    m.render();
+                }
+            })
+        });
+    }
+    {
+        let (app, model, entry) = (app.clone(), model.clone(), entry.clone());
+        cancel_connect.connect_clicked(move |_| {
+            tracing::info!(target: "annex::viewer", "ui: Cancel pressed while connecting");
+            act(&app, &model, |m| m.disconnect());
+            entry.set_text("");
+        });
+    }
     home.append(&label(
         "A code connects over the internet; the other computer gets one from Share This Screen → Share with a code.",
         "dim",
@@ -209,6 +278,8 @@ fn build(app: &gtk::Application, model: &Shared) {
                     m.connect_address(&text, extend, display)
                 }
             });
+            // Fresh for next time (a code works only once anyway).
+            entry.set_text("");
         });
     }
 
@@ -258,7 +329,20 @@ fn build(app: &gtk::Application, model: &Shared) {
     // ---- About ----
     let about = vbox(8);
     about.append(&label("Annex", "title"));
-    about.append(&label(&format!("Version {}", env!("CARGO_PKG_VERSION")), ""));
+    let row = hbox(12);
+    // The release's version (the core's; this crate's own isn't stamped).
+    row.append(&label(&format!("Version {}", whats_new::CURRENT), ""));
+    let news = gtk::Button::with_label("What's New");
+    news.set_valign(gtk::Align::Center);
+    {
+        let app = app.clone();
+        news.connect_clicked(move |_| {
+            tracing::info!(target: "annex::update", "update: What's New pressed");
+            show_whats_new(&app, &whats_new::all());
+        });
+    }
+    row.append(&news);
+    about.append(&row);
     about.append(&label("Show another computer's screen, share this one, or use it as an extra display.", "dim"));
     let about_details = label("", "dim");
     about_details.set_selectable(true);
@@ -286,12 +370,13 @@ fn build(app: &gtk::Application, model: &Shared) {
     window.set_child(Some(&main));
 
     {
-        let model = model.clone();
+        let (model, entry) = (model.clone(), entry.clone());
         stack.connect_visible_child_name_notify(move |s| {
-            if s.visible_child_name().as_deref() == Some("home")
-                && let Ok(m) = model.try_borrow()
-            {
-                m.refresh_nearby();
+            if s.visible_child_name().as_deref() == Some("home") {
+                entry.grab_focus();
+                if let Ok(m) = model.try_borrow() {
+                    m.refresh_nearby();
+                }
             }
         });
     }
@@ -305,6 +390,7 @@ fn build(app: &gtk::Application, model: &Shared) {
             same_name,
             status,
             nearby,
+            cancel_connect,
             share_switch,
             share_note,
             sessions,
@@ -664,6 +750,7 @@ fn render_live(ui: &mut Ui, m: &Model, model: &Shared) {
 
     ui.status.set_text(m.viewer_status.as_deref().unwrap_or(""));
     ui.status.set_visible(m.viewer_status.is_some() && role.is_none());
+    ui.cancel_connect.set_visible(m.viewer.is_some() && m.viewer_extends.is_none());
 }
 
 fn render_nearby(ui: &mut Ui, m: &Model, model: &Shared) {
@@ -873,6 +960,68 @@ fn dialog(app: &gtk::Application, title: &str) -> (gtk::Window, gtk::Box) {
     b.set_width_request(380);
     w.set_child(Some(&b));
     (w, b)
+}
+
+/// The release notes: each release newest first, its items under New, Improved and Fixed.
+pub fn show_whats_new(app: &gtk::Application, notes: &[Release]) {
+    let Some(newest) = notes.first() else { return };
+    let (w, b) = dialog(app, "What's New");
+    b.set_width_request(500);
+    b.append(&label(&format!("What's new in Annex {}", newest.version), "title"));
+    let body = vbox(6);
+    let text = |t: &str, class: &str| {
+        let l = label(t, class);
+        l.set_max_width_chars(60);
+        l
+    };
+    for r in notes {
+        if notes.len() > 1 {
+            body.append(&text(&format!("Annex {}", r.version), "version"));
+        }
+        for (kind, heading) in [("new", "New"), ("improved", "Improved"), ("fixed", "Fixed")] {
+            let items: Vec<_> = r.items.iter().filter(|i| i.kind == kind).collect();
+            if items.is_empty() {
+                continue;
+            }
+            body.append(&text(heading, "section"));
+            for i in items {
+                let item = vbox(2);
+                item.append(&text(&i.title, "role"));
+                item.append(&text(&i.detail, ""));
+                body.append(&item);
+            }
+        }
+    }
+    let scroll = gtk::ScrolledWindow::builder()
+        .child(&body)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_height(true)
+        .max_content_height(420)
+        .build();
+    b.append(&scroll);
+    let ok = gtk::Button::with_label("Got it");
+    ok.add_css_class("suggested-action");
+    ok.set_halign(gtk::Align::End);
+    b.append(&ok);
+    let w2 = w.clone();
+    ok.connect_clicked(move |_| w2.close());
+    let keys = gtk::EventControllerKey::new();
+    let w2 = w.clone();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk::gdk::Key::Escape {
+            w2.close();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    w.add_controller(keys);
+    w.connect_close_request(|_| {
+        tracing::info!(target: "annex::update", "update: what's new seen");
+        glib::Propagation::Proceed
+    });
+    w.present();
+    ok.grab_focus();
 }
 
 fn ask_pin(app: &gtk::Application, model: &Shared, request_id: u64, peer: &str, fingerprint: &str) {

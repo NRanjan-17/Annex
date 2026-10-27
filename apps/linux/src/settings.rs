@@ -47,6 +47,8 @@ pub struct Settings {
     pub relay_password: String,
     /// The desktop's screen-sharing permission (portal restore token), so it asks only once.
     pub screen_token: Option<String>,
+    /// The release whose "What's new" was last shown (or skipped on a first install).
+    pub last_seen_version: Option<String>,
 }
 
 impl Default for Settings {
@@ -74,6 +76,7 @@ impl Default for Settings {
             relay_username: String::new(),
             relay_password: String::new(),
             screen_token: None,
+            last_seen_version: None,
         }
     }
 }
@@ -112,7 +115,7 @@ impl Settings {
             "open_at_login={} start_sharing_at_launch={} headless={} quality={} use_mouse_and_keyboard={} \
              open_full_screen={} extend_by_default={} share_clipboard={} receive_files={} drop_at_top={} \
              prefer_hardware_encoder={} show_technical_details={} verbose_logging={} own_server={} own_relay={} \
-             screen_token={}",
+             screen_token={} last_seen_version={}",
             self.open_at_login,
             self.start_sharing_at_launch,
             self.headless,
@@ -129,6 +132,7 @@ impl Settings {
             !self.rendezvous_server.trim().is_empty(),
             !self.relay_url.trim().is_empty(),
             self.screen_token.is_some(),
+            self.last_seen_version.as_deref().unwrap_or("none"),
         )
     }
 
@@ -162,6 +166,14 @@ pub fn data_dir() -> PathBuf {
 
 fn path() -> PathBuf {
     config_dir().join("settings.json")
+}
+
+/// Annex ran here before: its settings, log or identity are already there. Ask before the log
+/// starts and the identity is made. Versions before 0.4.0 didn't save `last_seen_version`, so
+/// this tells an update from a first install.
+pub fn used_before() -> bool {
+    let data = data_dir();
+    path().exists() || ["annex.log", "identity.cert.der", "trusted_peers.json"].iter().any(|f| data.join(f).exists())
 }
 
 /// Open at login: an XDG autostart entry (`~/.config/autostart/annex.desktop`), which every
@@ -201,6 +213,7 @@ mod tests {
         assert!(s.use_mouse_and_keyboard);
         assert_eq!(s.server(), ANNEX_SERVER);
         assert!(!s.verbose_logging);
+        assert!(s.last_seen_version.is_none());
     }
 
     #[test]

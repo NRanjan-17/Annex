@@ -43,6 +43,13 @@ final class AppModel: ObservableObject {
     @Published var showConnectSheet = false
     /// Connect by Address sheet: a code from a computer sharing over the internet.
     @Published var manualCode = ""
+    /// The address field holds the PC hotspot's address, filled in by `joinPCHotspot`: kept when
+    /// the sheet opens again.
+    private var addressFromHotspot = false
+    /// Release notes shown over the main window: after an update, or from About → What's New.
+    @Published var whatsNew: WhatsNew?
+    /// After an update: waits for the main window (Annex may have started quietly at login).
+    private var pendingWhatsNew: WhatsNew?
     /// The current viewer connected by code (its errors read differently).
     private var viewingByCode = false
     /// Sharing over the internet: what the This Mac page shows.
@@ -138,6 +145,7 @@ final class AppModel: ObservableObject {
             .sink { Annex.log(.debug, "[app] page: \($0)") }
             .store(in: &cancellables)
         start()
+        checkWhatsNew()
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in self?.refreshPermissions() }
             .store(in: &cancellables)
@@ -642,6 +650,7 @@ final class AppModel: ObservableObject {
     func connectManual() {
         let address = manualAddress.trimmingCharacters(in: .whitespaces)
         guard !address.isEmpty else { return }
+        addressFromHotspot = false
         connect(address: address, title: address, expectedFingerprint: nil)
     }
 
@@ -897,10 +906,20 @@ final class AppModel: ObservableObject {
                     self.directStatus = "On “\(ssid)”. Connect from the PC: this Mac shows up in its Nearby list."
                 } else {
                     self.manualAddress = "\(DirectWiFi.windowsHotspotAddress):47800"
+                    self.addressFromHotspot = true
                     self.directStatus = "On “\(ssid)”. Show the PC's screen or extend it below."
                 }
             }
         }
+    }
+
+    /// Connect by Code or Address starts empty each time it opens or closes: no code, address or
+    /// hotspot login left from last time (only an address a joined PC hotspot filled in).
+    func resetConnectSheet() {
+        manualCode = ""
+        if !addressFromHotspot { manualAddress = "" }
+        pcHotspotName = ""
+        pcHotspotPassword = ""
     }
 
     private func reconnectDirect() {
@@ -908,6 +927,42 @@ final class AppModel: ObservableObject {
         Annex.log(.info, "[network] reconnecting to \(d.name) at \(DirectWiFi.windowsHotspotAddress) on direct Wi-Fi")
         extendMode = d.extend
         connect(address: "\(DirectWiFi.windowsHotspotAddress):47800", title: d.name, expectedFingerprint: d.fingerprint)
+    }
+
+    // MARK: What's new
+
+    /// After an update, the notes of every version since the last one that ran here (shown once
+    /// the main window is up). Remembers this version either way.
+    private func checkWhatsNew() {
+        let current = Annex.version
+        // Versions before 0.4.0 never saved it: if Annex ran here before, that was 0.3.0.
+        let last = settings.lastSeenVersion ?? (settings.usedBefore ? "0.3.0" : nil)
+        if let last, last != current {
+            let releases = Annex.whatsNew(since: last)
+            if releases.isEmpty {
+                Annex.log(.info, "[update] now \(current) (was \(last)), no release notes to show")
+            } else {
+                let versions = releases.map(\.version).joined(separator: ", ")
+                Annex.log(.info, "[update] showing what's new for \(versions) (was \(last))")
+                pendingWhatsNew = WhatsNew(releases: releases, all: false)
+            }
+        } else if last == nil {
+            Annex.log(.info, "[update] first run of Annex \(current) here: no what's new")
+        }
+        if settings.lastSeenVersion != current { settings.lastSeenVersion = current }
+    }
+
+    /// The main window is up: show what's new after an update, once.
+    func showPendingWhatsNew() {
+        guard let notes = pendingWhatsNew else { return }
+        pendingWhatsNew = nil
+        whatsNew = notes
+    }
+
+    /// About → What's New: every release's notes.
+    func showAllWhatsNew() {
+        Annex.log(.info, "[update] What's New pressed")
+        whatsNew = WhatsNew(releases: Annex.whatsNewAll(), all: true)
     }
 
     // MARK: Pairing
@@ -1216,6 +1271,14 @@ final class AppModel: ObservableObject {
         HostController.teardown.sync {}
         NSApp.terminate(nil)
     }
+}
+
+/// The "What's new" dialog's notes, newest release first.
+struct WhatsNew: Identifiable {
+    let id = UUID()
+    let releases: [ReleaseNotes]
+    /// Every release (About → What's New) rather than the ones since the last update.
+    let all: Bool
 }
 
 /// This Mac's part in a live session. Every status says it from this Mac's side, so it reads

@@ -18,6 +18,7 @@ annex-log = { path = "../../core/annex-log" }
 annex-media = { path = "../../core/annex-media" }
 annex-proto = { path = "../../core/annex-proto" }
 annex-session = { path = "../../core/annex-session" }
+annex-update = { path = "../../core/annex-update" }
 # Screen sharing and remote input on Wayland desktops with portals (GNOME, KDE, wlroots).
 ashpd = { version = "0.12", default-features = false, features = ["tokio"] }
 async-channel = "2.5"
