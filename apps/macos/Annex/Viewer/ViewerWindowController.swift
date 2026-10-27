@@ -23,6 +23,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private static let windowedStyle: NSWindow.StyleMask = [.titled, .closable, .resizable, .miniaturizable]
 
     var onClose: (() -> Void)?
+    /// The window became the one taking this Mac's keyboard.
+    var onFocus: (() -> Void)?
+    var isFocused: Bool { window?.isKeyWindow == true }
 
     /// `title` names the other computer (or the code, until it's known).
     init(title: String) {
@@ -159,6 +162,11 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         videoView.relative = on
     }
 
+    /// Scroll the other way on the host, for Windows and Linux, which don't scroll like a Mac.
+    func setReverseScroll(_ on: Bool) {
+        videoView.reverseScroll = on
+    }
+
     /// The host allowed (or revoked) control by this Mac's mouse and keyboard.
     func setControlling(_ on: Bool, hostName: String) {
         videoView.controlling = on
@@ -205,6 +213,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) {
         videoView.updatePointerLock()
         updatePresentation()
+        onFocus?()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -255,6 +264,8 @@ final class VideoView: NSView {
             updatePointerLock()
         }
     }
+    /// Flip scroll direction (see ViewerWindowController.setReverseScroll).
+    var reverseScroll = false
     /// Send mouse movement instead of positions (see ViewerWindowController.setRelativePointer).
     var relative = false {
         didSet { updatePointerLock() }
@@ -365,7 +376,7 @@ final class VideoView: NSView {
     override func scrollWheel(with event: NSEvent) {
         guard controlling else { return super.scrollWheel(with: event) }
         // Precise (trackpad) deltas are pixels; wheel deltas are lines of roughly 10 pixels.
-        let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
+        let scale: CGFloat = (event.hasPreciseScrollingDeltas ? 1 : 10) * (reverseScroll ? -1 : 1)
         scrollRest.x += event.scrollingDeltaX * scale
         scrollRest.y += event.scrollingDeltaY * scale
         let dx = scrollRest.x.rounded(.towardZero), dy = scrollRest.y.rounded(.towardZero)

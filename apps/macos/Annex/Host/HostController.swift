@@ -118,6 +118,11 @@ final class HostController {
         status = Status()
     }
 
+    /// Puts what was copied here on the clipboard of each viewer controlling this Mac.
+    func sendClipboard(mime: String, data: Data) {
+        for id in inputSessions.keys { _ = host?.sendClipboard(session: id, mime: mime, data: data) }
+    }
+
     private func handle(_ event: CoreEvent) {
         if case .sessionStarted(let s) = event, s.input == true {
             inputSessions[s.sessionId] = s.peerName

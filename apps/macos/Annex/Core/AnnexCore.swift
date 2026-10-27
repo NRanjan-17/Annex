@@ -154,6 +154,11 @@ final class CoreClient {
         _ = annex_core_set_headless(raw, on)
     }
 
+    /// Where files from the other computer are saved; nil refuses them.
+    func setDownloads(_ folder: URL?) {
+        _ = annex_core_set_downloads(raw, folder?.path)
+    }
+
     /// Answers a `pairingPinRequired` event with what the user typed.
     @discardableResult
     func submitPin(requestID: UInt64, pin: String) -> Bool {
@@ -229,6 +234,25 @@ final class HostHandle {
 
     func endSession(_ session: UInt64) {
         if let raw { annex_host_end_session(raw, session) }
+    }
+
+    /// Puts text or a PNG on one viewer's clipboard. False if it can't take it.
+    @discardableResult
+    func sendClipboard(session: UInt64, mime: String, data: Data) -> Bool {
+        guard let raw else { return false }
+        return data.withUnsafeBytes { annex_host_send_clipboard(raw, session, mime, $0.bindMemory(to: UInt8.self).baseAddress, data.count) } == 1
+    }
+
+    /// Sends a file to one viewer; progress comes as transfer events with the returned id.
+    func sendFile(session: UInt64, url: URL) throws -> UInt64 {
+        guard let raw else { throw AnnexError(message: "Not sharing.") }
+        var id: UInt64 = 0
+        try check(annex_host_send_file(raw, session, url.path, &id))
+        return id
+    }
+
+    func cancelTransfer(session: UInt64, incoming: Bool, id: UInt64) {
+        if let raw { annex_host_cancel_transfer(raw, session, incoming, id) }
     }
 
     /// Shares over the internet with one code (`internetCode`, …, `internetCodeEnded` events).
@@ -332,6 +356,25 @@ final class ViewerHandle {
 
     func sendScroll(dx: Int32, dy: Int32) {
         if let raw { annex_viewer_send_scroll(raw, dx, dy) }
+    }
+
+    /// Puts text or a PNG on the host's clipboard. False if it can't take it.
+    @discardableResult
+    func sendClipboard(mime: String, data: Data) -> Bool {
+        guard let raw else { return false }
+        return data.withUnsafeBytes { annex_viewer_send_clipboard(raw, mime, $0.bindMemory(to: UInt8.self).baseAddress, data.count) } == 1
+    }
+
+    /// Sends a file to the host; progress comes as transfer events with the returned id.
+    func sendFile(_ url: URL) throws -> UInt64 {
+        guard let raw else { throw AnnexError(message: "Not connected.") }
+        var id: UInt64 = 0
+        try check(annex_viewer_send_file(raw, url.path, &id))
+        return id
+    }
+
+    func cancelTransfer(incoming: Bool, id: UInt64) {
+        if let raw { annex_viewer_cancel_transfer(raw, incoming, id) }
     }
 
     /// Asks the host for a direct Wi-Fi link (answered by directLinkOffer / directLinkUnavailable).

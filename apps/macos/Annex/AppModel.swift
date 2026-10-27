@@ -105,6 +105,11 @@ final class AppModel: ObservableObject {
         }
     }
     private var viewerWindow: ViewerWindowController?
+    /// Viewer: the host's system ("macos", "windows", "linux"), for scroll direction.
+    private var viewerPeerOS: String?
+    private let clipboard = ClipboardSync()
+    /// Viewer: copied on this Mac while the viewer window wasn't in front; sent once it is.
+    private var clipboardForHost: (mime: String, data: Data)?
 
     /// Started by "Open at login": stay quietly in the menu bar.
     static let launchedAtLogin: Bool = {
@@ -207,6 +212,18 @@ final class AppModel: ObservableObject {
             let core = try CoreClient(dataDirectory: Self.dataDirectory, deviceName: name)
             self.core = core
             settings.$headless.sink { [weak core] on in core?.setHeadless(on) }.store(in: &cancellables)
+            settings.$receiveFiles.sink { [weak core] on in
+                core?.setDownloads(on ? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first : nil)
+            }.store(in: &cancellables)
+            clipboard.onCopy = { [weak self] mime, data in self?.copied(mime: mime, data: data) }
+            settings.$shareClipboard.sink { [weak self] on in
+                guard let self else { return }
+                if on { clipboard.start() } else { clipboard.stop(); clipboardForHost = nil }
+            }.store(in: &cancellables)
+            settings.$reverseScrollOnOthers.sink { [weak self] on in
+                guard let self else { return }
+                viewerWindow?.setReverseScroll(on && viewerPeerOS.map { $0 != "macos" } == true)
+            }.store(in: &cancellables)
             deviceName = core.deviceName
             // Show up under Nearby on other computers as soon as Annex is open.
             core.setPresence(true)
@@ -380,6 +397,7 @@ final class AppModel: ObservableObject {
         let generation = viewerGeneration
         let window = ViewerWindowController(title: "Code \(code.uppercased())")
         window.onClose = { [weak self] in self?.disconnectViewer() }
+        window.onFocus = { [weak self] in self?.viewerFocused() }
         do {
             let v = try ViewerHandle(
                 core: core, code: code, server: settings.server,
@@ -531,6 +549,7 @@ final class AppModel: ObservableObject {
         let generation = viewerGeneration
         let window = ViewerWindowController(title: title)
         window.onClose = { [weak self] in self?.disconnectViewer() }
+        window.onFocus = { [weak self] in self?.viewerFocused() }
         do {
             let v = try ViewerHandle(
                 core: core, address: address, expectedFingerprint: expectedFingerprint, display: Displays.mainDisplayInfo(),
@@ -620,6 +639,8 @@ final class AppModel: ObservableObject {
             }
             if !holdingWindow { viewerWindow?.show(fullScreen: settings.openFullScreen) }
             controllingHost = s.input ?? false
+            viewerPeerOS = s.peerOs
+            viewerWindow?.setReverseScroll(settings.reverseScrollOnOthers && s.peerOs.map { $0 != "macos" } == true)
             viewerWindow?.setRelativePointer(s.mode == "extend" && s.pointerDeltas == true)
             if settings.controlWhenViewing {
                 viewerWindow?.setControlling(controllingHost, hostName: label(s.peerName))
@@ -666,6 +687,8 @@ final class AppModel: ObservableObject {
             peerToPeerTunnel = nil
             latency = nil
             controllingHost = false
+            viewerPeerOS = nil
+            clipboardForHost = nil
             viewerExtends = nil
             holdingWindow = false
         default:
@@ -758,8 +781,36 @@ final class AppModel: ObservableObject {
 
     private var pinPanels: [UInt64: PinPanel] = [:]
 
+    // MARK: Clipboard
+
+    /// Copied on this Mac: to the host this Mac controls (once its window is in front, so what's
+    /// copied in other apps meanwhile stays here unless it's still on the clipboard), and to the
+    /// viewers controlling this Mac.
+    private func copied(mime: String, data: Data) {
+        if viewer != nil, controllingHost {
+            if viewerWindow?.isFocused == true {
+                _ = viewer?.sendClipboard(mime: mime, data: data)
+            } else {
+                clipboardForHost = (mime, data)
+            }
+        }
+        host?.sendClipboard(mime: mime, data: data)
+    }
+
+    private func viewerFocused() {
+        guard let item = clipboardForHost, controllingHost else { return }
+        clipboardForHost = nil
+        _ = viewer?.sendClipboard(mime: item.mime, data: item.data)
+    }
+
     private func handleSessionEvent(_ e: CoreEvent) {
         switch e {
+        case .clipboardReceived(_, let mime, let data):
+            if settings.shareClipboard { clipboard.apply(mime: mime, data: data) }
+        case .transferStarted(let t):
+            Annex.log("transfer: \(t.incoming ? "receiving" : "sending") \(t.size) bytes")
+        case .transferEnded(_, let id, let incoming, let ok, _, let error):
+            Annex.log("transfer \(id): \(incoming ? "received" : "sent") \(ok ? "ok" : error ?? "failed")", error: !ok)
         case .internetCode, .internetJoined, .internetRelay, .internetCodeEnded:
             handleInternetEvent(e)
         case .directLinkRequested(let session):

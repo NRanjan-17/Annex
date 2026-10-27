@@ -977,6 +977,7 @@ private struct SettingsPage: View {
             if showAdvanced {
                 sharing
                 viewing
+                clipboardAndFiles
                 internet
                 developer
             }
@@ -1065,6 +1066,19 @@ private struct SettingsPage: View {
         GroupSection("Viewing") {
             ToggleRow(title: "Open in full screen", isOn: $settings.openFullScreen)
             ToggleRow(title: "Extend display by default", isOn: $settings.extendByDefault)
+            ToggleRow(title: "Reverse scrolling on Windows and Linux",
+                      subtitle: "Scrolling on them feels like it does on this Mac.",
+                      isOn: $settings.reverseScrollOnOthers)
+        }
+    }
+
+    private var clipboardAndFiles: some View {
+        GroupSection("Clipboard and files") {
+            ToggleRow(title: "Share the clipboard",
+                      subtitle: "Copy on one computer, paste on the other, while one controls the other. Passwords copied from a password manager stay here.",
+                      isOn: $settings.shareClipboard)
+            ToggleRow(title: "Receive files", subtitle: "Files the other computer sends go to Downloads.",
+                      isOn: $settings.receiveFiles)
         }
     }
 

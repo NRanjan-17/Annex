@@ -17,6 +17,13 @@ final class AppSettings: ObservableObject {
     /// sharing computer still decides per device, so asking is harmless.
     @Published var controlWhenViewing: Bool { didSet { defaults.set(controlWhenViewing, forKey: Keys.control) } }
     @Published var openFullScreen: Bool { didSet { defaults.set(openFullScreen, forKey: Keys.fullScreen) } }
+    /// Viewer: scroll the other way on Windows and Linux, so this Mac's scrolling feels the same
+    /// on them. On by default.
+    @Published var reverseScrollOnOthers: Bool { didSet { defaults.set(reverseScrollOnOthers, forKey: Keys.reverseScroll) } }
+    /// Copy on one computer, paste on the other, while one controls the other. On by default.
+    @Published var shareClipboard: Bool { didSet { defaults.set(shareClipboard, forKey: Keys.clipboard) } }
+    /// Take files the other computer sends, into Downloads. On by default.
+    @Published var receiveFiles: Bool { didSet { defaults.set(receiveFiles, forKey: Keys.receiveFiles) } }
     /// Viewer: default to using the other computer as an extra display.
     @Published var extendByDefault: Bool { didSet { defaults.set(extendByDefault, forKey: Keys.extend) } }
     /// Viewer: bitrate ceiling asked of hosts. 0 best, 1 balanced, 2 fast (Wi-Fi).
@@ -61,6 +68,9 @@ final class AppSettings: ObservableObject {
         static let headless = "headless"
         static let control = "useMouseAndKeyboard"
         static let fullScreen = "openFullScreen"
+        static let clipboard = "shareClipboard"
+        static let reverseScroll = "reverseScrollOnOthers"
+        static let receiveFiles = "receiveFiles"
         static let extend = "extendByDefault"
         static let name = "deviceName"
         static let quality = "quality"
@@ -89,12 +99,15 @@ final class AppSettings: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true, Keys.updates: true,
-                                       Keys.peerToPeer: true])
+                                       Keys.peerToPeer: true, Keys.clipboard: true, Keys.reverseScroll: true, Keys.receiveFiles: true])
         preferHardwareEncoder = defaults.bool(forKey: Keys.hardware)
         startSharingAtLaunch = defaults.bool(forKey: Keys.autoShare)
         headless = defaults.bool(forKey: Keys.headless)
         controlWhenViewing = defaults.bool(forKey: Keys.control)
         openFullScreen = defaults.bool(forKey: Keys.fullScreen)
+        shareClipboard = defaults.bool(forKey: Keys.clipboard)
+        reverseScrollOnOthers = defaults.bool(forKey: Keys.reverseScroll)
+        receiveFiles = defaults.bool(forKey: Keys.receiveFiles)
         extendByDefault = defaults.bool(forKey: Keys.extend)
         customDeviceName = defaults.string(forKey: Keys.name)
         quality = defaults.integer(forKey: Keys.quality)
