@@ -112,10 +112,22 @@ internal sealed class Updater
 
     /// <summary>Downloads and verifies the update, then starts Setup silently. Setup closes Annex and
     /// starts it again when it's done (see /UPDATE in Annex.iss). Returns true once Setup is running.</summary>
-    public async Task<bool> InstallAsync()
+    public async Task<bool> InstallAsync(bool beta)
     {
-        if (Available is not { } u || Busy) return false;
+        if (Available is null || Busy) return false;
         Set(Stage.Downloading);
+        // The offer can be hours old and releases come quickly: install the newest release now,
+        // not the next one after this version. If GitHub can't be reached, the earlier offer stands.
+        try
+        {
+            var json = await s_http.GetStringAsync(AnnexNative.UpdateReleasesUrl).ConfigureAwait(false);
+            if (AnnexNative.PickUpdate(json, beta, AssetSuffix) is { } newest) Available = newest;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or AnnexException)
+        {
+        }
+        var u = Available!;
+        Set(Stage.Downloading); // shows the version actually being installed
         var dir = Path.Combine(Path.GetTempPath(), "Annex-Update-" + Guid.NewGuid().ToString("N"));
         try
         {

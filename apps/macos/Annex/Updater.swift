@@ -133,7 +133,19 @@ final class Updater: ObservableObject {
 
     /// Asks first, then downloads, verifies and installs.
     func confirmAndInstall() {
-        guard case .available(let info) = state else { return }
+        guard case .available(let offered) = state else { return }
+        Task {
+            // The offer can be hours old and releases come quickly: look again so this installs
+            // the newest release, not the next one after this version. If GitHub can't be
+            // reached, the earlier offer stands.
+            await check()
+            if case .failed = state { state = .available(offered) }
+            guard case .available(let info) = state else { return }
+            confirm(info)
+        }
+    }
+
+    private func confirm(_ info: UpdateInfo) {
         let alert = NSAlert()
         alert.messageText = "Install Annex \(info.version)?"
         alert.informativeText = "Annex quits, updates and opens again. Its permissions stay as they are."

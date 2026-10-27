@@ -1839,7 +1839,7 @@ public sealed partial class MainWindow : Window
                 return; // another dialog is open
             }
         }
-        if (await _updater.InstallAsync())
+        if (await _updater.InstallAsync(_settings.BetaUpdates))
         {
             // Setup is running: get out of its way (it starts Annex again when done).
             Quit();

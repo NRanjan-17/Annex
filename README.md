@@ -195,8 +195,9 @@ onto a Windows PC, don't need the driver.
 ### Updates
 
 Annex checks GitHub at launch and once a day and installs new versions for you (**About →
-Updates**). Turn on **Beta updates** to get pre-releases early; turn it off to go back to the
-latest normal release. Every update is checked against a signature made when the release is built,
+Updates**). It always installs the newest version, skipping any in between, and looks again when
+you click **Install** in case a newer one came out since the check. Turn on **Beta updates** to get
+pre-releases early; turn it off to go back to the latest normal release. Every update is checked against a signature made when the release is built,
 so a modified download is never installed.
 
 On Linux, Annex doesn't update itself yet: download the new package from the releases page and
