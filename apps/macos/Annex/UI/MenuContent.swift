@@ -26,8 +26,14 @@ struct MenuContent: View {
                 SameNameNotice(model: model, compact: true) { open(.settings) }
             }
             .padding(.horizontal, 12)
-            NearbySection(model: model)
-                .padding(.top, 16)
+            .padding(.bottom, model.isLive ? 8 : 0)
+            // Nearby is hidden during a session. Discovery keeps running, so the list is current
+            // again as soon as it ends.
+            if !model.isLive {
+                NearbySection(model: model)
+                    .padding(.top, 16)
+                    .transition(.opacity)
+            }
             Divider().opacity(0.4).padding(.top, 8)
             footer
                 .padding(.horizontal, 16)
@@ -38,6 +44,7 @@ struct MenuContent: View {
         .preferredColorScheme(.dark)
         .tint(Color(white: 0.82))
         .animation(.spring(response: 0.45, dampingFraction: 0.86), value: model.isViewing)
+        .animation(.spring(response: 0.45, dampingFraction: 0.86), value: model.isLive)
         .animation(.spring(response: 0.45, dampingFraction: 0.86), value: model.hostStatus.viewerName)
     }
 
