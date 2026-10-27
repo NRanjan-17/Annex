@@ -133,7 +133,10 @@ jobs:
       - name: Install GTK 4, GStreamer and packaging tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+          # The runner image ships libunwind-14-dev, which conflicts with the libunwind-dev that
+          # libgstreamer1.0-dev needs ("held broken packages").
+          sudo apt-get remove -y -qq libunwind-14-dev || true
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             libxkbcommon-dev libdbus-1-dev pkg-config rpm
       - name: Install pinned toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
