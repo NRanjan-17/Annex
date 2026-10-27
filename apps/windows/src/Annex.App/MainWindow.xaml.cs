@@ -193,6 +193,7 @@ public sealed partial class MainWindow : Window
         _nameBox.Text = _settings.DeviceName ?? "";
         _nameBox.PlaceholderText = Environment.MachineName;
         BuildShell();
+        ScheduleWhatsNew();
         if (_settings.StartSharingAtLaunch)
         {
             AnnexLog.Info("[host] sharing at launch (setting)");
@@ -1496,6 +1497,8 @@ public sealed partial class MainWindow : Window
     private async Task ShowConnectDialogAsync()
     {
         if (_connectDialog is not null) return;
+        // The boxes outlive the dialog: start empty each time.
+        ResetConnectDialog();
         var panel = new StackPanel { Spacing = 10, MinWidth = 420 };
         panel.Children.Add(Ui.Text("For a computer that isn't listed: on another network, or over Tailscale or ZeroTier.",
             "BodyTextBlockStyle", Ui.Secondary));
@@ -1515,13 +1518,14 @@ public sealed partial class MainWindow : Window
         {
             XamlRoot = Content.XamlRoot,
             RequestedTheme = ElementTheme.Dark,
-            Title = "Connect by code or address",
+            Title = DialogTitle("Connect by code or address", () => _connectDialog?.Hide()),
             Content = panel,
             PrimaryButtonText = "Show its screen",
             SecondaryButtonText = "Extend display",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Primary,
         };
+        _connectDialog.Opened += (_, _) => _codeBox.Focus(FocusState.Programmatic);
         try
         {
             var result = await Ui.PointingHand(_connectDialog).ShowAsync();
@@ -1535,12 +1539,137 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception e)
         {
-            // Another dialog is open (a PIN prompt); the address stays typed for next time.
+            // Another dialog is open (a PIN prompt).
             AnnexLog.Warn($"[viewer] couldn't show Connect by code or address: {e.Message}");
         }
         finally
         {
             _connectDialog = null;
+            // Connected, cancelled or failed: what was typed has been used.
+            ResetConnectDialog();
+        }
+    }
+
+    private void ResetConnectDialog()
+    {
+        _codeBox.Text = "";
+        _addressBox.Text = "";
+    }
+
+    /// <summary>A dialog title with a close (X) button at its right end. The title area doesn't stretch,
+    /// so it takes the content's width (<paramref name="width"/>) to put the X at the edge.</summary>
+    private static Grid DialogTitle(string title, Action close, double width = 420)
+    {
+        var grid = new Grid { MinWidth = width };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var text = Ui.Text(title, wrap: false);
+        text.VerticalAlignment = VerticalAlignment.Center;
+        grid.Children.Add(text);
+        var x = Ui.IconButton("\uE711", "Close", close);
+        x.VerticalAlignment = VerticalAlignment.Center;
+        x.Margin = new Thickness(12, 0, -6, 0);
+        Grid.SetColumn(x, 1);
+        grid.Children.Add(x);
+        return grid;
+    }
+
+    // ---- What's new ---------------------------------------------------------------------
+
+    /// <summary>Once the window is first on screen: the notes for what changed since the version that last ran,
+    /// then remember this version. A first install shows nothing. 0.3.0 didn't record a version, so a PC
+    /// that ran Annex before without one is taken to be upgrading from 0.3.0.</summary>
+    private void ScheduleWhatsNew()
+    {
+        string current;
+        try { current = AnnexNative.Version; }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException) { return; }
+        if (current.Length == 0 || _settings.LastSeenVersion == current) return;
+        var lastSeen = _settings.LastSeenVersion ?? (_settings.UsedBefore ? "0.3.0" : null);
+        IReadOnlyList<WhatsNewRelease> notes = [];
+        if (lastSeen is not null)
+        {
+            try { notes = AnnexNative.WhatsNew(lastSeen); }
+            catch (Exception e) when (e is System.Text.Json.JsonException or DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
+            {
+                AnnexLog.Warn($"[update] couldn't read what's new: {e.Message}");
+            }
+        }
+        if (notes.Count == 0 || Environment.GetEnvironmentVariable("ANNEX_SELFTEST") == "1")
+        {
+            AnnexLog.Info(lastSeen is null ? $"[update] first run of {current}: no what's new" : $"[update] nothing new to show since {lastSeen}");
+            MarkWhatsNewSeen(current);
+            return;
+        }
+        // Started in the tray: wait until the window is opened.
+        RoutedEventHandler loaded = null!;
+        loaded = (_, _) =>
+        {
+            RootGrid.Loaded -= loaded;
+            _ui.TryEnqueue(async () =>
+            {
+                AnnexLog.Info($"[update] showing what's new for {current} (since {lastSeen})");
+                if (await ShowWhatsNewAsync(notes)) MarkWhatsNewSeen(current);
+            });
+        };
+        RootGrid.Loaded += loaded;
+    }
+
+    private void MarkWhatsNewSeen(string version)
+    {
+        _settings.LastSeenVersion = version;
+        _settings.Save();
+    }
+
+    /// <summary>The release notes, grouped New / Improved / Fixed under each version, newest first.
+    /// False if it couldn't be shown (another dialog is open).</summary>
+    private async Task<bool> ShowWhatsNewAsync(IReadOnlyList<WhatsNewRelease> releases)
+    {
+        if (releases.Count == 0) return false;
+        var panel = new StackPanel { Spacing = 4, MinWidth = 420, MaxWidth = 520 };
+        foreach (var release in releases)
+        {
+            if (releases.Count > 1)
+            {
+                var heading = Ui.Text($"Annex {release.Version}", "SubtitleTextBlockStyle", wrap: false);
+                heading.Margin = new Thickness(0, panel.Children.Count == 0 ? 0 : 18, 0, 0);
+                panel.Children.Add(heading);
+            }
+            foreach (var (kind, label) in new[] { ("new", "New"), ("improved", "Improved"), ("fixed", "Fixed") })
+            {
+                var items = release.Items.Where(i => i.Kind == kind).ToList();
+                if (items.Count == 0) continue;
+                var eyebrow = Ui.Eyebrow(label);
+                eyebrow.Margin = new Thickness(0, 14, 0, 4);
+                panel.Children.Add(eyebrow);
+                foreach (var item in items)
+                {
+                    var entry = new StackPanel { Spacing = 2, Margin = new Thickness(0, 0, 0, 10) };
+                    entry.Children.Add(Ui.Bold(item.Title));
+                    entry.Children.Add(Ui.Text(item.Detail, "BodyTextBlockStyle", Ui.Secondary));
+                    panel.Children.Add(entry);
+                }
+            }
+        }
+        var dialog = new ContentDialog
+        {
+            XamlRoot = Content.XamlRoot,
+            RequestedTheme = ElementTheme.Dark,
+            Title = releases.Count == 1 ? $"What's new in Annex {releases[0].Version}" : "What's new in Annex",
+            Content = panel,
+            CloseButtonText = "Got it",
+            DefaultButton = ContentDialogButton.Close,
+        };
+        try
+        {
+            await Ui.PointingHand(dialog).ShowAsync();
+            AnnexLog.Info("[update] what's new seen");
+            return true;
+        }
+        catch (Exception e)
+        {
+            AnnexLog.Warn($"[update] couldn't show what's new: {e.Message}");
+            return false;
         }
     }
 
@@ -1991,7 +2120,8 @@ public sealed partial class MainWindow : Window
         description.HorizontalAlignment = HorizontalAlignment.Center;
         description.Margin = new Thickness(0, 12, 0, 0);
         head.Children.Add(description);
-        var buttons = Ui.Row(LinkButton("Release notes", $"{RepoUrl}/releases/tag/v{AnnexNative.Version}"),
+        var buttons = Ui.Row(Ui.Button("What's new", () => _ = ShowAllWhatsNewAsync()),
+            LinkButton("Release notes", $"{RepoUrl}/releases/tag/v{AnnexNative.Version}"),
             LinkButton("Report an issue", $"{RepoUrl}/issues"),
             new HyperlinkButton { Content = "View on GitHub", NavigateUri = new Uri(RepoUrl) });
         buttons.HorizontalAlignment = HorizontalAlignment.Center;
@@ -2134,6 +2264,19 @@ public sealed partial class MainWindow : Window
         });
         p.Children.Add(Ui.Card("\uE777", UpdateText(), "Annex closes and opens again when it's done.",
             Ui.Row(notNow, Ui.Button("Install", () => _ = InstallUpdateAsync(), accent: true))));
+    }
+
+    private async Task ShowAllWhatsNewAsync()
+    {
+        AnnexLog.Info("[update] What's new pressed");
+        IReadOnlyList<WhatsNewRelease> notes;
+        try { notes = AnnexNative.WhatsNewAll(); }
+        catch (Exception e) when (e is System.Text.Json.JsonException or DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
+        {
+            AnnexLog.Warn($"[update] couldn't read what's new: {e.Message}");
+            return;
+        }
+        await ShowWhatsNewAsync(notes);
     }
 
     private async Task InstallUpdateAsync()

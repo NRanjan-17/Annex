@@ -71,6 +71,8 @@ fn main() -> glib::ExitCode {
         }
     }
 
+    // Before the log and the identity exist: an update, or a first install?
+    let used_before = settings::used_before();
     // The log first, so everything below is in it (stderr too, for a terminal).
     annex_log::init(&settings::data_dir(), true);
     tracing::info!(
@@ -106,7 +108,7 @@ fn main() -> glib::ExitCode {
             }
             return;
         }
-        start(app, opts.clone());
+        start(app, opts.clone(), used_before);
     });
     // GTK would reject our own flags.
     app.run_with_args(&args[..1])
@@ -116,7 +118,7 @@ thread_local! {
     static MODEL: std::cell::RefCell<Option<model::Shared>> = const { std::cell::RefCell::new(None) };
 }
 
-fn start(app: &gtk::Application, opts: Opts) {
+fn start(app: &gtk::Application, opts: Opts, used_before: bool) {
     ui::load_css();
     // Keep running with no window open: Annex lives in the tray.
     std::mem::forget(app.hold());
@@ -183,6 +185,8 @@ fn start(app: &gtk::Application, opts: Opts) {
         tracing::info!(target: "annex::host", from_option = opts.share, "sharing: on at launch");
         ui::act(app, &model, |m| m.set_hosting(true));
     }
+    // Shown with the window: now, or when it first opens from the tray.
+    ui::whats_new_at_launch(&model, used_before);
     // Without a tray there is no other way back to Annex, so the window always opens then.
     if !opts.background || !has_tray {
         ui::present(app, &model);

@@ -109,6 +109,11 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial void annex_log(int level, string message);
 
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial nint annex_whats_new_json(string? lastSeen);
+
+    [LibraryImport(Lib)] public static partial nint annex_whats_new_all_json();
+
     /// <summary>Windows only.</summary>
     [LibraryImport(Lib)] public static partial nint annex_win_extend_status_json();
 

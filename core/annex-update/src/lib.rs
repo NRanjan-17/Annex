@@ -6,6 +6,8 @@
 //! accepted only if the signature verifies against [`UPDATE_PUBLIC_KEY`] and the file's SHA-256 is
 //! listed for its name. Releases without a signature are never offered.
 
+pub mod whats_new;
+
 use std::io::Read;
 use std::path::Path;
 

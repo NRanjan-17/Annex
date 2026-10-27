@@ -56,6 +56,40 @@ enum Annex {
         let c = annex_key_native_from_hid(hid)
         return c < 0 ? nil : CGKeyCode(c)
     }
+
+    /// The notes of every release after `lastSeen` up to this one, newest first; empty when
+    /// there's nothing new (or `lastSeen` is nil, a first install).
+    static func whatsNew(since lastSeen: String?) -> [ReleaseNotes] {
+        let p: UnsafeMutablePointer<CChar>? = if let lastSeen { annex_whats_new_json(lastSeen) } else { annex_whats_new_json(nil) }
+        return ReleaseNotes.decode(takeString(p))
+    }
+
+    /// Every release's notes, newest first (About → What's New).
+    static func whatsNewAll() -> [ReleaseNotes] {
+        ReleaseNotes.decode(takeString(annex_whats_new_all_json()))
+    }
+}
+
+/// One release's notes for the "What's new" dialog.
+struct ReleaseNotes: Decodable, Equatable {
+    struct Item: Decodable, Equatable {
+        /// "new", "improved" or "fixed".
+        let kind: String
+        let title: String
+        let detail: String
+    }
+
+    let version: String
+    let items: [Item]
+
+    fileprivate static func decode(_ json: String) -> [ReleaseNotes] {
+        do {
+            return try JSONDecoder().decode([ReleaseNotes].self, from: Data(json.utf8))
+        } catch {
+            Annex.log(.warn, "[update] couldn't read the release notes: \(error)")
+            return []
+        }
+    }
 }
 
 /// A release worth offering (from the core's update picker).

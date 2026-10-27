@@ -9,9 +9,12 @@ struct InputField: NSViewRepresentable {
     var onCommit: () -> Void = {}
     /// Return pressed.
     var onSubmit: () -> Void = {}
+    /// Put the cursor here when the field first shows (a sheet's first field).
+    var focusOnAppear = false
 
     func makeNSView(context: Context) -> NSTextField {
-        let f = NSTextField()
+        let f = Field()
+        f.focusOnAppear = focusOnAppear
         f.bezelStyle = .roundedBezel
         f.isBezeled = true
         f.alignment = .left
@@ -30,6 +33,22 @@ struct InputField: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    /// Takes the keyboard once it's in a window, if asked to.
+    final class Field: NSTextField {
+        var focusOnAppear = false
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard focusOnAppear, let window else { return }
+            focusOnAppear = false
+            // On the next turn, once the sheet is up and can become key.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window === window else { return }
+                window.makeFirstResponder(self)
+            }
+        }
+    }
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: InputField

@@ -69,6 +69,12 @@ void annex_set_log_verbose(bool verbose);
 /* Saves the last few thousand log lines to <data_dir>/crashes/ now (as happens on each error).
  * `why` (may be NULL) goes in the file name. Returns the file (annex_string_free), or NULL. */
 char *annex_log_save_recording(const char *why);
+/* What's new since last_seen (the version this app last ran; NULL on a first install): JSON array
+ * of {version, items: [{kind ("new"|"improved"|"fixed"), title, detail}]}, newest first, "[]" when
+ * there's nothing to show. Show it once, then remember annex_version(). annex_string_free. */
+char *annex_whats_new_json(const char *last_seen);
+/* Every release's notes, newest first, same shape (for a "What's new" button). annex_string_free. */
+char *annex_whats_new_all_json(void);
 /* Writes one line from the app to the log: level 0 = info, 1 = warning, 2 = error (also saves what
  * led up to it), 3 = debug, 4 = trace (verbose only). Start with the feature in brackets, e.g.
  * "[clipboard] copied text, 12 bytes". Never log what's copied or a secret. */

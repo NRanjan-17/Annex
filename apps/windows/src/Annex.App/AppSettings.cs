@@ -47,6 +47,9 @@ public sealed class AppSettings
     public static bool RunningBeta => Annex.Interop.AnnexNative.Version.Contains('-');
     /// <summary>The update the user chose "Not now" for (the banner returns for a newer one).</summary>
     public string? DismissedUpdate { get; set; }
+    /// <summary>The version whose "What's new" was last shown (or that was installed fresh); null in
+    /// settings files from before 0.4.0.</summary>
+    public string? LastSeenVersion { get; set; }
     /// <summary>When Annex last finished checking for updates (shown on the About page).</summary>
     public DateTimeOffset? LastUpdateCheck { get; set; }
     /// <summary>Viewer: bitrate ceiling asked of hosts (Fast suits Wi-Fi).</summary>
@@ -78,6 +81,11 @@ public sealed class AppSettings
     [JsonIgnore]
     public string? LoadProblem { get; private set; }
 
+    /// <summary>Annex ran on this PC before this launch: settings.json, the identity or the log was
+    /// already in the data folder. Tells an upgrade from 0.3.0 (no <see cref="LastSeenVersion"/>) from a first install.</summary>
+    [JsonIgnore]
+    public bool UsedBefore { get; private set; }
+
     /// <summary>The settings for the log: nothing secret (the relay's username and password stay out).</summary>
     public string Describe() =>
         $"name {(DeviceName is null ? "(this PC's)" : $"\"{DeviceName}\"")}, hardware encoder {PreferHardwareEncoder}, gpu {GpuLuid:x}, "
@@ -101,6 +109,10 @@ public sealed class AppSettings
             };
         }
         if (!settings.BetaUpdatesChosen) settings.BetaUpdates = RunningBeta;
+        // Checked before the core opens, which creates the identity and the log.
+        settings.UsedBefore = File.Exists(FilePath)
+            || File.Exists(Path.Combine(MainWindow.DataDirectory, "identity.cert.der"))
+            || File.Exists(Path.Combine(MainWindow.DataDirectory, "annex.log"));
         return settings;
     }
 

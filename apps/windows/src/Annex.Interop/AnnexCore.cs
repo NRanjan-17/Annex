@@ -134,6 +134,18 @@ public static class AnnexNative
     public static void VerifyUpdate(string sumsPath, string sigPath, string filePath, string assetName) =>
         NativeMethods.Check(NativeMethods.annex_update_verify(sumsPath, sigPath, filePath, assetName));
 
+    /// <summary>Release notes for what changed since <paramref name="lastSeen"/> (the version this app last ran;
+    /// null on a first install), newest first; empty when there's nothing to show.</summary>
+    public static IReadOnlyList<WhatsNewRelease> WhatsNew(string? lastSeen) =>
+        ReleaseNotes(NativeMethods.TakeString(NativeMethods.annex_whats_new_json(lastSeen)));
+
+    /// <summary>Every release's notes, newest first (Settings → About → What's new).</summary>
+    public static IReadOnlyList<WhatsNewRelease> WhatsNewAll() =>
+        ReleaseNotes(NativeMethods.TakeString(NativeMethods.annex_whats_new_all_json()));
+
+    private static WhatsNewRelease[] ReleaseNotes(string json) =>
+        json.Length == 0 ? [] : AnnexJson.Deserialize<WhatsNewRelease[]>(json);
+
     /// <summary>Writes the core's log to annex.log in the data folder while on. On by default.</summary>
     public static void SetLogEnabled(bool enabled) => NativeMethods.annex_set_log_enabled(enabled);
 

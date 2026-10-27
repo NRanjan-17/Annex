@@ -392,6 +392,27 @@ pub unsafe extern "C" fn annex_update_pick(
     })
 }
 
+/// What's new since `last_seen` (the version this app last ran, or null on a first install): a
+/// JSON array of {version, items: [{kind, title, detail}]}, newest first, empty when there's
+/// nothing to show. Show it once, then remember this version (`annex_version`). Free with
+/// `annex_string_free`.
+///
+/// # Safety
+/// `last_seen` must be a valid NUL-terminated string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_whats_new_json(last_seen: *const c_char) -> *mut c_char {
+    let last = unsafe { opt_str_arg(last_seen, "last_seen") }.ok().flatten();
+    let notes = annex_update::whats_new::since(last, env!("CARGO_PKG_VERSION"));
+    out_string(&serde_json::to_string(&notes).unwrap_or_else(|_| "[]".into()))
+}
+
+/// Every release's notes, newest first, in the same shape (for a "What's new" button). Free with
+/// `annex_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn annex_whats_new_all_json() -> *mut c_char {
+    out_string(&serde_json::to_string(&annex_update::whats_new::all()).unwrap_or_else(|_| "[]".into()))
+}
+
 /// Checks a downloaded update against its release's signed checksums (all three files already
 /// downloaded). ANNEX_OK only if the signature is genuine and the file's SHA-256 is listed.
 #[unsafe(no_mangle)]

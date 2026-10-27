@@ -1,0 +1,47 @@
+[
+  {
+    "version": "0.4.0",
+    "items": [
+      {
+        "kind": "new",
+        "title": "Copy here, paste there",
+        "detail": "While you control another computer, what you copy on one can be pasted on the other: text and pictures. Passwords from password managers stay on the computer they were copied on. Turn it off in Settings → Clipboard and files."
+      },
+      {
+        "kind": "new",
+        "title": "Send files by dragging them",
+        "detail": "Drag files or folders onto the window showing the other computer. They arrive in its Downloads folder, exactly as sent."
+      },
+      {
+        "kind": "new",
+        "title": "Drop files at the top of the screen",
+        "detail": "Start dragging a file and a silver island pops out at the top of the screen (from the notch on a Mac). Bring the file close and drop it there to send it. Files coming in show there too."
+      },
+      {
+        "kind": "new",
+        "title": "Scrolling feels the same everywhere",
+        "detail": "A Mac controlling Windows or Linux now scrolls the same way it does on the Mac. Change it in Settings → Viewing."
+      },
+      {
+        "kind": "improved",
+        "title": "A log that explains what went wrong",
+        "detail": "Settings → Developer → Show log files. When something fails, the moments before it are saved in the crashes folder. Turn on Verbose logging while chasing a problem. Only your account can read the log, and it never holds what you type, copy or send."
+      },
+      {
+        "kind": "improved",
+        "title": "Smoother scrolling on a Mac you control",
+        "detail": "Small scrolls no longer judder."
+      },
+      {
+        "kind": "improved",
+        "title": "Linux Extend matches the viewer's screen",
+        "detail": "The extra display uses the viewer's scale, so text is the right size. Change it in Settings."
+      },
+      {
+        "kind": "fixed",
+        "title": "Annex on a Mac no longer opens Tailscale",
+        "detail": "Looking for nearby computers no longer starts the Tailscale app."
+      }
+    ]
+  }
+]
