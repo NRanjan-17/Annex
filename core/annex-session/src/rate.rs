@@ -1,12 +1,16 @@
 //! Adaptive bitrate: turns viewer receiver reports into an encoder bitrate scale and an FEC level.
 //!
 //! Loss-based with a delay guard, in the spirit of GCC/TFRC but deliberately simple:
+//! - a queue of a few hundred milliseconds (RTT ≥ 3 × the best + 100 ms) → halve at once: the
+//!   link is far slower than the stream, and every second at this rate adds more delay;
 //! - a lost frame, heavy datagram loss (> 5 %), or RTT rising well above the best seen →
 //!   multiplicative decrease (× 0.8) and more parity;
 //! - RTT creeping up (≥ 1.5 × the best + 8 ms, the first sign of a Wi-Fi queue building) →
 //!   gentle decrease (× 0.9) before anything is lost;
 //! - moderate datagram loss (2–5 %) → hold the rate, add parity;
-//! - clean intervals → additive increase (+5 % of the nominal rate) and slowly less parity.
+//! - clean intervals → 5 % more each time (at least two points) and slowly less parity. Growing
+//!   by a share of the current rate, not of the nominal one, keeps a slow link from being
+//!   overshot again within a second of recovering.
 //!
 //! The scale is a percentage of the app's normal bitrate for the stream, so the core needs no
 //! codec knowledge.
@@ -15,7 +19,9 @@ use std::collections::VecDeque;
 
 use annex_proto::{Mode, Quality, ReceiverReport, StreamConfig};
 
-pub const MIN_SCALE: u32 = 20;
+/// The floor, as a percentage of the nominal bitrate: about 1 Mbit/s for 1440p at 60 fps. A
+/// link slower than the floor builds a queue that delays the picture by seconds, so it's low.
+pub const MIN_SCALE: u32 = 4;
 pub const MAX_SCALE: u32 = 150;
 pub const MIN_FEC: u32 = 10;
 pub const MAX_FEC: u32 = 40;
@@ -68,6 +74,46 @@ pub fn relay_ceiling(mode: Mode, s: &StreamConfig) -> u32 {
     (percent as u32).clamp(1, quality_ceiling(Quality::Fast))
 }
 
+/// Below this many bits a second a full-size mirror picture smears text, so the host sends a
+/// smaller one ([`mirror_picture`]).
+pub const SMALLER_PICTURE_BELOW_BPS: u64 = 2_500_000;
+/// The full picture comes back above this. The gap keeps a link near one line from switching
+/// back and forth (each switch costs a keyframe).
+pub const FULL_PICTURE_ABOVE_BPS: u64 = 4_500_000;
+/// The smaller picture is never under 960×540's worth of pixels. A stream that small already
+/// has a low nominal bitrate (Quality Fast keeps 720p30 at 2.2 Mbit/s on a perfect link), so
+/// halving it would only blur it.
+const MIN_SMALLER_PIXELS: u64 = 960 * 540;
+/// The smaller picture's frame rate cap.
+const SMALLER_PICTURE_FPS: u32 = 30;
+
+/// Whether the host should send the smaller picture at `effective_bps` (the encoder's current
+/// target: its normal bitrate × the scale), with hysteresis around [`SMALLER_PICTURE_BELOW_BPS`]
+/// and [`FULL_PICTURE_ABOVE_BPS`]. `currently_reduced` is what it sends now.
+pub fn reduced_picture(effective_bps: u64, currently_reduced: bool) -> bool {
+    if currently_reduced { effective_bps <= FULL_PICTURE_ABOVE_BPS } else { effective_bps < SMALLER_PICTURE_BELOW_BPS }
+}
+
+/// The smaller picture for a stream: each side halved (rounded down to even) and at most 30
+/// fps. None if the stream is already too small to halve.
+pub fn reduced_stream(full: &StreamConfig) -> Option<StreamConfig> {
+    let (w, h) = ((full.width / 2) & !1, (full.height / 2) & !1);
+    if u64::from(w) * u64::from(h) < MIN_SMALLER_PIXELS {
+        return None;
+    }
+    Some(StreamConfig { codec: full.codec, width: w, height: h, fps: full.fps.min(SMALLER_PICTURE_FPS) })
+}
+
+/// What a mirror host should encode: (smaller, picture). `full` is the session's stream,
+/// `effective_bps` the encoder's current target and `currently_reduced` whether it sends the
+/// smaller picture now. The hosts keep the bitrate as it is; only the picture changes.
+pub fn mirror_picture(full: &StreamConfig, effective_bps: u64, currently_reduced: bool) -> (bool, StreamConfig) {
+    match reduced_stream(full) {
+        Some(small) if reduced_picture(effective_bps, currently_reduced) => (true, small),
+        _ => (false, full.clone()),
+    }
+}
+
 /// What changed after a report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateDecision {
@@ -102,9 +148,10 @@ impl RateController {
         let total = r.shards as u64 + r.recovered as u64;
         let shard_loss = if total == 0 { 0.0 } else { r.recovered as f64 / total as f64 };
         let best_rtt_us = self.recent_rtt_us.iter().copied().min();
-        let (rtt_congested, rtt_rising) = match (best_rtt_us, r.rtt_us) {
-            (_, 0) | (None, _) => (false, false),
+        let (rtt_queued, rtt_congested, rtt_rising) = match (best_rtt_us, r.rtt_us) {
+            (_, 0) | (None, _) => (false, false, false),
             (Some(best), rtt) => (
+                rtt > best.saturating_mul(3).saturating_add(100_000),
                 rtt > best.saturating_mul(2).saturating_add(15_000),
                 rtt > best.saturating_add(best / 2).saturating_add(8_000),
             ),
@@ -116,7 +163,10 @@ impl RateController {
             self.recent_rtt_us.push_back(r.rtt_us);
         }
 
-        if r.lost > 0 || shard_loss > 0.05 || rtt_congested {
+        if rtt_queued {
+            self.scale = (self.scale / 2).max(MIN_SCALE.min(self.ceiling));
+            self.fec = (self.fec + 5).min(MAX_FEC);
+        } else if r.lost > 0 || shard_loss > 0.05 || rtt_congested {
             self.scale = (self.scale * 4 / 5).max(MIN_SCALE.min(self.ceiling));
             self.fec = (self.fec + 5).min(MAX_FEC);
         } else if rtt_rising {
@@ -124,7 +174,7 @@ impl RateController {
         } else if shard_loss > 0.02 {
             self.fec = (self.fec + 2).min(MAX_FEC);
         } else if r.frames > 0 {
-            self.scale = (self.scale + 5).min(self.ceiling);
+            self.scale = (self.scale + (self.scale / 20).max(2)).min(self.ceiling);
             self.fec = self.fec.saturating_sub(1).max(MIN_FEC);
         }
         RateDecision { scale_percent: self.scale, fec_percent: self.fec, scale_changed: self.scale != before }
@@ -226,10 +276,26 @@ mod tests {
         }
         // The path settles at a steady 30 ms: congested at first compared to 3 ms, but once the
         // low samples age out the rate climbs again instead of staying pinned at the floor.
-        for _ in 0..RTT_WINDOW + 30 {
+        for _ in 0..RTT_WINDOW + 80 {
             c.on_report(&report(60, 0, 1500, 0, 30_000));
         }
         assert_eq!(c.scale_percent(), MAX_SCALE);
+    }
+
+    #[test]
+    fn a_link_slower_than_the_stream_drains_its_queue() {
+        // The Mint laptop over Tailscale: 140 ms of path, then seconds of queue at 20 % of a
+        // 1440p stream. Halving on a deep queue reaches a rate the link carries within a few
+        // reports, far below the old 20 % floor.
+        let mut c = RateController::default();
+        for _ in 0..3 {
+            c.on_report(&report(25, 0, 200, 0, 140_000));
+        }
+        for _ in 0..5 {
+            c.on_report(&report(25, 0, 300, 0, 1_200_000));
+        }
+        assert!(c.scale_percent() <= 8, "{}", c.scale_percent());
+        assert!(c.scale_percent() >= MIN_SCALE);
     }
 
     #[test]
@@ -237,6 +303,55 @@ mod tests {
         let mut c = RateController::default();
         let d = c.on_report(&report(u32::MAX, 0, u32::MAX, u32::MAX, u32::MAX));
         assert!(d.scale_changed, "half the datagrams rebuilt is heavy loss");
+    }
+
+    fn stream(width: u32, height: u32, fps: u32) -> StreamConfig {
+        StreamConfig { codec: annex_proto::Codec::H264, width, height, fps }
+    }
+
+    #[test]
+    fn smaller_picture_has_hysteresis() {
+        assert!(!reduced_picture(SMALLER_PICTURE_BELOW_BPS, false));
+        assert!(reduced_picture(SMALLER_PICTURE_BELOW_BPS - 1, false));
+        // Between the lines nothing changes, either way.
+        assert!(!reduced_picture(3_500_000, false));
+        assert!(reduced_picture(3_500_000, true));
+        assert!(reduced_picture(FULL_PICTURE_ABOVE_BPS, true));
+        assert!(!reduced_picture(FULL_PICTURE_ABOVE_BPS + 1, true));
+    }
+
+    #[test]
+    fn smaller_picture_halves_each_side_and_caps_fps() {
+        assert_eq!(reduced_stream(&stream(2560, 1440, 60)), Some(stream(1280, 720, 30)));
+        assert_eq!(reduced_stream(&stream(1920, 1080, 30)), Some(stream(960, 540, 30)));
+        // Odd halves round down to even.
+        assert_eq!(reduced_stream(&stream(2940, 1910, 60)), Some(stream(1470, 954, 30)));
+        // Portrait screens too.
+        assert_eq!(reduced_stream(&stream(1080, 1920, 60)), Some(stream(540, 960, 30)));
+    }
+
+    #[test]
+    fn small_streams_stay_whole() {
+        // 720p30 at Quality Fast sits at 2.2 Mbit/s (the 4 Mbit/s floor × 55 %) on a perfect
+        // link: never halve that.
+        let s = stream(1280, 720, 30);
+        let fast = nominal_bps(Mode::Mirror, &s) * u64::from(quality_ceiling(Quality::Fast)) / 100;
+        assert!(fast < SMALLER_PICTURE_BELOW_BPS);
+        assert_eq!(reduced_stream(&s), None);
+        assert_eq!(mirror_picture(&s, fast, false), (false, s.clone()));
+        assert_eq!(mirror_picture(&s, 0, true), (false, s));
+    }
+
+    #[test]
+    fn mirror_picture_follows_the_bitrate() {
+        let full = stream(2560, 1440, 60);
+        let small = stream(1280, 720, 30);
+        // 4 % of 1440p60 (the floor) is about 0.9 Mbit/s: smaller.
+        let floor = nominal_bps(Mode::Mirror, &full) * u64::from(MIN_SCALE) / 100;
+        assert_eq!(mirror_picture(&full, floor, false), (true, small.clone()));
+        assert_eq!(mirror_picture(&full, 4_000_000, true), (true, small));
+        assert_eq!(mirror_picture(&full, 5_000_000, true), (false, full.clone()));
+        assert_eq!(mirror_picture(&full, 3_000_000, false), (false, full));
     }
 
     #[test]

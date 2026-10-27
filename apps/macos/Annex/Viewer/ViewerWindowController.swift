@@ -195,6 +195,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             framesReceived += 1
             Annex.log(.trace, "[viewer] frame \(frameID), \(data.count) bytes\(keyframe ? ", keyframe" : "")")
             if waitingForKeyframe && !keyframe { return Annex.log(.trace, "[viewer] frame \(frameID) skipped: waiting for a keyframe") }
+            let before = builder.dimensions
             guard let sample = builder.sampleBuffer(from: data) else {
                 if !loggedBadFrame {
                     loggedBadFrame = true
@@ -216,6 +217,12 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
                 waitingForKeyframe = true
                 viewer?.requestKeyframe()
                 return
+            }
+            // The host changed the picture's size (a smaller one on a slow link, or back): start
+            // the decoder over at this keyframe. The layer scales whatever size to the window.
+            if let before, let after = builder.dimensions, before.width != after.width || before.height != after.height {
+                Annex.log(.info, "[viewer] picture \(before.width)×\(before.height) → \(after.width)×\(after.height)")
+                renderer.flush()
             }
             renderer.enqueue(sample)
             // Approximation: the layer displays immediately-flagged samples on the next refresh.

@@ -67,6 +67,15 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)]
     public static partial int annex_core_set_headless(nint core, [MarshalAs(UnmanagedType.U1)] bool on);
 
+    [LibraryImport(Lib)]
+    public static partial int annex_core_set_audio(nint core, [MarshalAs(UnmanagedType.U1)] bool shareSound,
+        [MarshalAs(UnmanagedType.U1)] bool hearSound, [MarshalAs(UnmanagedType.U1)] bool sendMic,
+        [MarshalAs(UnmanagedType.U1)] bool virtualMic);
+
+    [LibraryImport(Lib)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static partial bool annex_virtual_microphone_supported();
+
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_core_submit_pin(nint core, ulong requestId, string pin);
 
@@ -196,6 +205,9 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)]
     public static partial void annex_host_cancel_transfer(nint host, ulong sessionId, [MarshalAs(UnmanagedType.U1)] bool incoming, ulong id);
 
+    [LibraryImport(Lib)]
+    public static partial int annex_host_pause_transfer(nint host, ulong sessionId, ulong id, [MarshalAs(UnmanagedType.U1)] bool paused);
+
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_viewer_send_clipboard(nint viewer, string mime, byte* data, nuint len);
 
@@ -204,6 +216,9 @@ internal static unsafe partial class NativeMethods
 
     [LibraryImport(Lib)]
     public static partial void annex_viewer_cancel_transfer(nint viewer, [MarshalAs(UnmanagedType.U1)] bool incoming, ulong id);
+
+    [LibraryImport(Lib)]
+    public static partial int annex_viewer_pause_transfer(nint viewer, ulong id, [MarshalAs(UnmanagedType.U1)] bool paused);
 
     public static string TakeString(nint p)
     {

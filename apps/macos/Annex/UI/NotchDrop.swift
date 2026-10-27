@@ -19,6 +19,11 @@ final class NotchDrop: ObservableObject {
 
     struct Item: Identifiable, Equatable {
         let id: String
+        /// The session it belongs to (as the transfer events report it) and the core's id for it.
+        let session: UInt64
+        let transferId: UInt64
+        /// It goes over the viewer connection (this Mac viewing another), not this Mac's sharing.
+        let viewer: Bool
         let incoming: Bool
         let name: String
         let size: UInt64
@@ -27,6 +32,10 @@ final class NotchDrop: ObservableObject {
         var ok: Bool?
         var path: String?
         var error: String?
+        /// Sending is paused (outgoing only).
+        var paused = false
+        /// Unsent (outgoing) or stopped (incoming) from the tray.
+        var cancelled = false
     }
 
     @Published private(set) var phase: Phase = .hidden
@@ -34,15 +43,24 @@ final class NotchDrop: ObservableObject {
     /// Who files go to: "MacBook Air".
     @Published private(set) var peerName = ""
     @Published private(set) var notchSize = CGSize(width: 200, height: 32)
+    /// How close dragged files are to the notch: 1 at it, 0 at 400 pt or more.
+    @Published private(set) var nearness: Double = 0
 
     /// Dropped files (folders already expanded into their files).
     var onDrop: (([URL]) -> Void)?
+    /// Pause (true) or resume (false) a file being sent; returns whether the core took it.
+    var onPause: ((Item, Bool) -> Bool)?
+    /// Unsend a file being sent, or stop one arriving.
+    var onCancel: ((Item) -> Void)?
 
     private var panel: NSPanel?
     private var monitors: [Any] = []
     private let dragBoard = NSPasteboard(name: .drag)
     private var dragCountAtMouseDown = 0
     private var dragging = false
+    /// Polls the pointer while the mouse button is held: during a drag-and-drop session macOS
+    /// stops sending leftMouseDragged to global monitors.
+    private var pollTimer: Timer?
     private var hideWork: DispatchWorkItem?
     private var canSend = false
 
@@ -62,10 +80,10 @@ final class NotchDrop: ObservableObject {
         if can { startWatching() } else { stopWatching(); if phase != .transfers { hide(why: "no one to send to") } }
     }
 
-    func transferStarted(session: UInt64, id: UInt64, incoming: Bool, name: String, size: UInt64) {
+    func transferStarted(session: UInt64, id: UInt64, incoming: Bool, name: String, size: UInt64, viewer: Bool) {
         let key = Self.key(session, id, incoming)
         items.removeAll { $0.id == key }
-        items.append(Item(id: key, incoming: incoming, name: name, size: size))
+        items.append(Item(id: key, session: session, transferId: id, viewer: viewer, incoming: incoming, name: name, size: size))
         // Only the latest few; finished ones go first.
         while items.count > 4, let i = items.firstIndex(where: { $0.ok != nil }) { items.remove(at: i) }
         show(.transfers, why: "\(incoming ? "receiving" : "sending") \(name)")
@@ -83,8 +101,33 @@ final class NotchDrop: ObservableObject {
         items[i].ok = ok
         items[i].path = path
         items[i].error = error
+        items[i].paused = false
         if ok { items[i].done = items[i].size }
         if items.allSatisfy({ $0.ok != nil }) { hideLater(after: 5) }
+    }
+
+    /// Pause or resume a file being sent.
+    func togglePause(_ item: Item) {
+        guard let i = items.firstIndex(where: { $0.id == item.id }), items[i].ok == nil, !items[i].incoming else { return }
+        let pause = !items[i].paused
+        Annex.log(.info, "[drop] \(pause ? "pause" : "resume") \(item.id)")
+        guard onPause?(items[i], pause) == true else {
+            return Annex.log(.warn, "[drop] couldn't \(pause ? "pause" : "resume") \(item.id): it isn't being sent")
+        }
+        items[i].paused = pause
+        if pause { hideWork?.cancel() }
+    }
+
+    /// Unsend a file being sent (the other side deletes what arrived), or stop one arriving.
+    func unsend(_ item: Item) {
+        guard let i = items.firstIndex(where: { $0.id == item.id }), items[i].ok == nil else { return }
+        Annex.log(.info, "[drop] \(item.incoming ? "stop" : "unsend") \(item.id)")
+        onCancel?(items[i])
+        // The core reports the end too; mark it now so the row doesn't wait on it.
+        items[i].cancelled = true
+        items[i].paused = false
+        items[i].ok = false
+        if items.allSatisfy({ $0.ok != nil }) { hideLater(after: 3) }
     }
 
     func reveal(_ item: Item) {
@@ -106,23 +149,49 @@ final class NotchDrop: ObservableObject {
         guard monitors.isEmpty else { return }
         // Mouse monitors need no permission; they see drags that start in other apps.
         let down = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] _ in
-            MainActor.assumeIsolated { self?.dragCountAtMouseDown = self?.dragBoard.changeCount ?? 0 }
+            MainActor.assumeIsolated { self?.mouseWentDown() }
         }
-        let drag = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDragged) { [weak self] _ in
-            MainActor.assumeIsolated { self?.dragged() }
-        }
+        // Backup: a drag-and-drop session usually swallows this, so the poll notices the release.
         let up = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
-            MainActor.assumeIsolated { self?.dragEnded() }
+            MainActor.assumeIsolated { self?.mouseReleased() }
         }
-        monitors = [down, drag, up].compactMap { $0 }
-        Annex.log(monitors.count == 3 ? .debug : .warn, "[drop] watching drags (\(monitors.count) of 3 mouse monitors)")
+        monitors = [down, up].compactMap { $0 }
+        Annex.log(monitors.count == 2 ? .debug : .warn, "[drop] watching drags (\(monitors.count) of 2 mouse monitors)")
     }
 
     private func stopWatching() {
         if !monitors.isEmpty { Annex.log(.debug, "[drop] stopped watching drags") }
         monitors.forEach(NSEvent.removeMonitor)
         monitors.removeAll()
+        stopPolling()
         dragging = false
+        nearness = 0
+    }
+
+    private func mouseWentDown() {
+        dragCountAtMouseDown = dragBoard.changeCount
+        guard canSend, pollTimer == nil else { return }
+        // ~30 a second, only while the button is held; .common so it keeps firing during the drag.
+        let t = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.poll() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        pollTimer = t
+    }
+
+    private func poll() {
+        guard NSEvent.pressedMouseButtons & 1 != 0 else { return mouseReleased() }
+        dragged()
+    }
+
+    private func mouseReleased() {
+        stopPolling()
+        dragEnded()
+    }
+
+    private func stopPolling() {
+        pollTimer?.invalidate()
+        pollTimer = nil
     }
 
     private func dragged() {
@@ -136,6 +205,8 @@ final class NotchDrop: ObservableObject {
         }
         guard phase == .glowing || phase == .open else { return }
         let distance = distanceToNotch(NSEvent.mouseLocation)
+        let close = Double(max(0, 1 - distance / 400))
+        if abs(close - nearness) > 0.01 || (close == 0) != (nearness == 0) { nearness = close }
         let near = distance < 140
         if near && phase == .glowing {
             show(.open, why: "drag \(Int(distance)) pt from the notch")
@@ -147,6 +218,7 @@ final class NotchDrop: ObservableObject {
     private func dragEnded() {
         guard dragging else { return }
         dragging = false
+        nearness = 0
         // A drop on the tray arrives just after the mouse goes up.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self, !self.dragging, self.phase == .glowing || self.phase == .open else { return }
@@ -227,7 +299,7 @@ final class NotchDrop: ObservableObject {
         if phase != .hidden { Annex.log(.debug, "[drop] \(phase) → hidden: \(why)") }
         hideWork?.cancel()
         // Pops back in, quicker and without the bounce.
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { phase = .hidden }
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { phase = .hidden; nearness = 0 }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             guard let self, self.phase == .hidden else { return }
             self.panel?.ignoresMouseEvents = true
@@ -240,7 +312,8 @@ final class NotchDrop: ObservableObject {
         hideWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.phase == .transfers, !self.dragging, !self.hovering else { return }
+                guard let self, self.phase == .transfers, !self.dragging, !self.hovering,
+                      !self.items.contains(where: { $0.paused }) else { return }
                 self.hide(why: "transfers done")
             }
         }
@@ -266,6 +339,9 @@ final class NotchDrop: ObservableObject {
         p.becomesKeyOnlyIfNeeded = true
         let drop = TrayDropView(owner: self)
         let host = NSHostingView(rootView: NotchDropView(model: self))
+        // The panel sits over the notch, whose safe area would push the island down and leave a
+        // gap under the camera. The island belongs right up against it.
+        host.safeAreaRegions = []
         host.translatesAutoresizingMaskIntoConstraints = false
         drop.addSubview(host)
         NSLayoutConstraint.activate([
@@ -315,6 +391,9 @@ private final class TrayDropView: NSView {
 /// the menu bar like the hardware notch.
 private struct NotchShape: Shape {
     var bottomRadius: CGFloat
+    /// Leaves out the flat top edge, for outlines: a line there would split the island from the
+    /// camera housing it hangs from.
+    var openTop = false
     var animatableData: CGFloat {
         get { bottomRadius }
         set { bottomRadius = newValue }
@@ -324,8 +403,12 @@ private struct NotchShape: Shape {
         let flare: CGFloat = 6
         let br = min(bottomRadius, r.height / 2, r.width / 2)
         var p = Path()
-        p.move(to: CGPoint(x: r.minX - flare, y: r.minY))
-        p.addLine(to: CGPoint(x: r.maxX + flare, y: r.minY))
+        if openTop {
+            p.move(to: CGPoint(x: r.maxX + flare, y: r.minY))
+        } else {
+            p.move(to: CGPoint(x: r.minX - flare, y: r.minY))
+            p.addLine(to: CGPoint(x: r.maxX + flare, y: r.minY))
+        }
         p.addQuadCurve(to: CGPoint(x: r.maxX, y: r.minY + flare), control: CGPoint(x: r.maxX, y: r.minY))
         p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - br))
         p.addQuadCurve(to: CGPoint(x: r.maxX - br, y: r.maxY), control: CGPoint(x: r.maxX, y: r.maxY))
@@ -333,7 +416,7 @@ private struct NotchShape: Shape {
         p.addQuadCurve(to: CGPoint(x: r.minX, y: r.maxY - br), control: CGPoint(x: r.minX, y: r.maxY))
         p.addLine(to: CGPoint(x: r.minX, y: r.minY + flare))
         p.addQuadCurve(to: CGPoint(x: r.minX - flare, y: r.minY), control: CGPoint(x: r.minX, y: r.minY))
-        p.closeSubpath()
+        if !openTop { p.closeSubpath() }
         return p
     }
 }
@@ -346,7 +429,8 @@ private struct NotchDropView: View {
         let n = model.notchSize
         switch model.phase {
         case .hidden: return n
-        case .glowing: return CGSize(width: n.width + 56, height: n.height + 14)
+        // Grows a little as the files come closer.
+        case .glowing: return CGSize(width: n.width + 56 + 36 * near, height: n.height + 14 + 8 * near)
         case .open: return CGSize(width: 380, height: n.height + 118)
         case .transfers: return CGSize(width: 380, height: n.height + 20 + CGFloat(max(model.items.count, 1)) * 44)
         }
@@ -359,11 +443,14 @@ private struct NotchDropView: View {
     }
 
     private var shown: Bool { model.phase != .hidden }
+    private var near: CGFloat { CGFloat(model.nearness) }
     private var isGlowing: Bool { model.phase == .glowing || model.phase == .open }
     private var hasContent: Bool { model.phase == .open || model.phase == .transfers }
 
     var body: some View {
-        let shape = NotchShape(bottomRadius: model.phase == .glowing || model.phase == .hidden ? 10 : 22)
+        let radius: CGFloat = model.phase == .glowing || model.phase == .hidden ? 10 : 22
+        let shape = NotchShape(bottomRadius: radius)
+        let edge = NotchShape(bottomRadius: radius, openTop: true)
         ZStack(alignment: .top) {
             shape.fill(.black)
             content
@@ -377,15 +464,18 @@ private struct NotchDropView: View {
         // The light: silver flowing round the edge while files are dragged. Behind the black, so
         // only the outer half and the halo show and the inside stays black.
         .background {
-            shape.stroke(glow(spin), lineWidth: 5)
-                .shadow(color: .white.opacity(0.9), radius: 6)
-                .shadow(color: .white.opacity(0.5), radius: 18)
-                .opacity(isGlowing ? 1 : 0)
+            // Brighter and wider as the files come closer.
+            edge.stroke(glow(spin), lineWidth: 4 + 2 * near)
+                .shadow(color: .white.opacity(0.6 + 0.35 * near), radius: 4 + 6 * near)
+                .shadow(color: .white.opacity(0.3 + 0.4 * near), radius: 12 + 16 * near)
+                .opacity(isGlowing ? 0.75 + 0.25 * near : 0)
         }
-        .overlay { shape.stroke(.white.opacity(isGlowing ? 0.85 : 0), lineWidth: 1) }
+        .animation(.easeOut(duration: 0.15), value: model.nearness)
+        .overlay { edge.stroke(.white.opacity(isGlowing ? 0.85 : 0), lineWidth: 1) }
         .scaleEffect(x: shown ? 1 : 0.8, y: shown ? 1 : 0.5, anchor: .top)
         .opacity(shown ? 1 : 0)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .ignoresSafeArea()
         .onHover { model.setHovering($0) }
         .onAppear {
             withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) { spin = true }
@@ -410,7 +500,10 @@ private struct NotchDropView: View {
             .frame(maxWidth: .infinity)
         case .transfers:
             VStack(spacing: 6) {
-                ForEach(model.items) { ItemRow(item: $0, peer: model.peerName, reveal: { model.reveal($0) }) }
+                ForEach(model.items) {
+                    ItemRow(item: $0, peer: model.peerName, reveal: { model.reveal($0) },
+                            pause: { model.togglePause($0) }, unsend: { model.unsend($0) })
+                }
             }
         default:
             EmptyView()
@@ -422,6 +515,8 @@ private struct ItemRow: View {
     let item: NotchDrop.Item
     let peer: String
     let reveal: (NotchDrop.Item) -> Void
+    let pause: (NotchDrop.Item) -> Void
+    let unsend: (NotchDrop.Item) -> Void
 
     private var fraction: Double { item.size == 0 ? 1 : min(Double(item.done) / Double(item.size), 1) }
 
@@ -432,7 +527,9 @@ private struct ItemRow: View {
                 Circle().trim(from: 0, to: item.ok == true ? 1 : fraction)
                     .stroke(item.ok == false ? Color.white.opacity(0.5) : Color.annexLive, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                Image(systemName: item.ok == true ? "checkmark" : item.ok == false ? "xmark" : item.incoming ? "arrow.down" : "arrow.up")
+                    .opacity(item.paused ? 0.35 : 1)
+                Image(systemName: item.ok == true ? "checkmark" : item.ok == false ? "xmark"
+                      : item.paused ? "pause" : item.incoming ? "arrow.down" : "arrow.up")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(.white)
                     .contentTransition(.symbolEffect(.replace))
@@ -451,18 +548,41 @@ private struct ItemRow: View {
                     .background(.white.opacity(0.15), in: Capsule())
                     .foregroundStyle(.white)
             }
+            if item.ok == nil {
+                if !item.incoming {
+                    roundButton(item.paused ? "play.fill" : "pause.fill", help: item.paused ? "Resume" : "Pause") { pause(item) }
+                }
+                roundButton("xmark", help: item.incoming ? "Stop" : "Unsend") { unsend(item) }
+            }
         }
         .frame(height: 38)
         .animation(.easeOut(duration: 0.2), value: item)
+    }
+
+    /// A small round icon button, styled like "Show".
+    private func roundButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(.white.opacity(0.15), in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private var status: String {
         let total = ByteCountFormatter.string(fromByteCount: Int64(item.size), countStyle: .file)
         switch item.ok {
         case true?: return item.incoming ? "Received from \(peer) · \(total)" : "Sent to \(peer) · \(total)"
-        case false?: return item.error ?? "Didn't arrive"
+        case false?:
+            if item.cancelled { return item.incoming ? "Stopped" : "Unsent" }
+            return item.error ?? "Didn't arrive"
         case nil:
             let done = ByteCountFormatter.string(fromByteCount: Int64(item.done), countStyle: .file)
+            if item.paused { return "Paused · \(done) of \(total)" }
             return "\(item.incoming ? "Receiving" : "Sending") \(done) of \(total)"
         }
     }

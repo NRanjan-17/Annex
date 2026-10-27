@@ -73,7 +73,7 @@ Version: $PKG_VERSION
 Architecture: $DEB_ARCH
 Maintainer: Annex contributors <https://github.com/NRanjan-17/Annex/issues>
 Installed-Size: $SIZE_KB
-Depends: libc6 (>= 2.35), libgtk-4-1 (>= 4.6), libgstreamer1.0-0 (>= 1.20), libgstreamer-plugins-base1.0-0 (>= 1.20), gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, gstreamer1.0-pipewire, libxkbcommon0, wl-clipboard
+Depends: libc6 (>= 2.35), libgtk-4-1 (>= 4.6), libgstreamer1.0-0 (>= 1.20), libgstreamer-plugins-base1.0-0 (>= 1.20), gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, gstreamer1.0-pipewire, libxkbcommon0, wl-clipboard, libasound2t64 | libasound2, pulseaudio-utils, curl
 Recommends: gstreamer1.0-plugins-ugly, wlr-randr
 Suggests: gstreamer1.0-vaapi
 Section: net
@@ -97,7 +97,7 @@ Release: 1
 Summary: Show another computer's screen, share this one, or extend it
 License: MIT
 URL: https://github.com/NRanjan-17/Annex
-Requires: gtk4 >= 4.6, gstreamer1 >= 1.20, gstreamer1-plugins-base >= 1.20, gstreamer1-plugins-good, pipewire-gstreamer, libxkbcommon, wl-clipboard
+Requires: gtk4 >= 4.6, gstreamer1 >= 1.20, gstreamer1-plugins-base >= 1.20, gstreamer1-plugins-good, pipewire-gstreamer, libxkbcommon, wl-clipboard, alsa-lib, pulseaudio-utils, curl
 Recommends: gstreamer1-plugins-bad-free, gstreamer1-plugin-openh264, wlr-randr
 Suggests: gstreamer1-plugin-libav
 AutoReqProv: no

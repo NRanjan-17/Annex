@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Combine
 import Foundation
 
@@ -64,6 +65,8 @@ final class AppModel: ObservableObject {
     private var askedForScreenRecording = false
     /// Accessibility permission (needed to let viewers control this Mac).
     @Published private(set) var accessibilityTrusted = InputInjector.isTrusted
+    /// Settings → Sound: macOS refused Annex the microphone, so Send my microphone can't work.
+    @Published private(set) var microphoneDenied = false
     /// Viewer: the host currently accepts this Mac's mouse and keyboard.
     @Published private(set) var controllingHost = false
     /// Viewer: the computer this Mac shows, by the name it gave.
@@ -93,7 +96,11 @@ final class AppModel: ObservableObject {
     private var core: CoreClient?
     private var discovery: DiscoveryHandle?
     private var host: HostController?
-    private var viewer: ViewerHandle? { didSet { updateKeepAwake(); updateInSession() } }
+    // Published by hand: the menu bar icon follows `isViewing`, and a plain property never redraws it.
+    private var viewer: ViewerHandle? {
+        willSet { objectWillChange.send() }
+        didSet { updateKeepAwake(); updateInSession() }
+    }
     /// Viewing, or showing this Mac to someone. Peer-to-peer browsing pauses meanwhile: it shares
     /// the Wi-Fi radio with the session and would add lag.
     @Published private(set) var inSession = false
@@ -139,6 +146,10 @@ final class AppModel: ObservableObject {
         // A new scaling choice applies straight away to screens extending this Mac.
         settings.$extendScale.dropFirst().removeDuplicates()
             .sink { [weak self] scale in self?.host?.extendScale = scale }
+            .store(in: &cancellables)
+        // So does sharing this Mac's sound, on a running mirror capture.
+        settings.$shareSound.dropFirst().removeDuplicates()
+            .sink { [weak self] on in self?.host?.shareSound = on }
             .store(in: &cancellables)
         guard !Self.isRunningTests else { return }
         $pane.dropFirst().removeDuplicates()
@@ -207,6 +218,43 @@ final class AppModel: ObservableObject {
             accessibilityTrusted = trusted
         }
         settings.refreshLaunchAtLogin()
+        // Allowed again (or taken away) in System Settings while Annex was in the background.
+        let micDenied = settings.sendMicrophone && Self.microphoneRefused
+        if micDenied != microphoneDenied { microphoneDenied = micDenied }
+    }
+
+    private static var microphoneRefused: Bool {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        return status == .denied || status == .restricted
+    }
+
+    /// Settings → Sound → Send my microphone. Turning it on asks macOS for the microphone first, so
+    /// the prompt shows now rather than when a session opens it; refused, the switch stays off.
+    func setSendMicrophone(_ on: Bool) {
+        guard on else {
+            microphoneDenied = false
+            settings.sendMicrophone = false
+            return
+        }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            microphoneDenied = false
+            settings.sendMicrophone = true
+        case .notDetermined:
+            Annex.log(.info, "[permissions] asking macOS for the microphone")
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                DispatchQueue.main.async {
+                    Annex.log(.info, "[permissions] microphone prompt: \(granted ? "allowed" : "not allowed")")
+                    guard let self else { return }
+                    self.microphoneDenied = !granted
+                    self.settings.sendMicrophone = granted
+                }
+            }
+        default:
+            Annex.log(.warn, "[permissions] the microphone isn't allowed; Send my microphone stays off")
+            microphoneDenied = true
+            settings.sendMicrophone = false
+        }
     }
 
     static var dataDirectory: URL {
@@ -235,6 +283,11 @@ final class AppModel: ObservableObject {
             self.core = core
             logStartup(core)
             settings.$headless.sink { [weak core] on in core?.setHeadless(on) }.store(in: &cancellables)
+            Publishers.CombineLatest4(settings.$shareSound, settings.$hearSound, settings.$sendMicrophone, settings.$virtualMicrophone)
+                .sink { [weak core] share, hear, mic, virtualMic in
+                    core?.setAudio(shareSound: share, hearSound: hear, sendMicrophone: mic, virtualMicrophone: virtualMic)
+                }
+                .store(in: &cancellables)
             settings.$receiveFiles.sink { [weak core] on in
                 let folder = on ? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first : nil
                 Annex.log(.debug, "[transfer] incoming files " + (folder.map { "go to \($0.path)" } ?? "are refused"))
@@ -242,6 +295,8 @@ final class AppModel: ObservableObject {
             }.store(in: &cancellables)
             clipboard.onCopy = { [weak self] mime, data in self?.copied(mime: mime, data: data) }
             notch.onDrop = { [weak self] urls in self?.send(files: urls) }
+            notch.onPause = { [weak self] item, paused in self?.pauseTransfer(item, paused: paused) ?? false }
+            notch.onCancel = { [weak self] item in self?.cancelTransfer(item) }
             settings.$notchDrop.sink { [weak self] _ in DispatchQueue.main.async { self?.updateNotch() } }.store(in: &cancellables)
             settings.$shareClipboard.sink { [weak self] on in
                 guard let self else { return }
@@ -375,6 +430,7 @@ final class AppModel: ObservableObject {
                   + "hardware encoder \(settings.preferHardwareEncoder ? "preferred" : "off"), extend scale \(settings.extendScale)")
         let h = HostController(core: core, display: display, preferHardware: settings.preferHardwareEncoder)
         h.extendScale = settings.extendScale
+        h.shareSound = settings.shareSound
         h.onStatus = { [weak self] s in self?.hostStatus = s }
         h.onEvent = { [weak self] e in self?.handleSessionEvent(e) }
         do {
@@ -693,6 +749,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Hides a leftover connect error or direct Wi-Fi note (the xmark on Nearby and the menu bar).
+    /// A new connect clears viewerStatus on its own through disconnectViewer().
+    func dismissConnectionStatus() {
+        guard !isLive else { return }
+        viewerStatus = nil
+        directStatus = nil
+    }
+
     func disconnectViewer() {
         // This viewer's own sessionEnded is ignored from here on (see viewerGeneration), so reset
         // what it would have reset.
@@ -823,7 +887,7 @@ final class AppModel: ObservableObject {
             viewerExtends = nil
             holdingWindow = false
         default:
-            handleSessionEvent(e)
+            handleSessionEvent(e, viewer: true)
         }
     }
 
@@ -1033,7 +1097,25 @@ final class AppModel: ObservableObject {
         Annex.log(sent ? .debug : .warn, "[clipboard] re-read on focus: \(sent ? "sent" : "couldn't send") \(item.mime), \(item.data.count) bytes")
     }
 
-    private func handleSessionEvent(_ e: CoreEvent) {
+    /// Pauses or resumes a file being sent from the notch. False: it isn't being sent any more.
+    private func pauseTransfer(_ item: NotchDrop.Item, paused: Bool) -> Bool {
+        if item.viewer {
+            return viewer?.pauseTransfer(id: item.transferId, paused: paused) == true
+        }
+        return host?.pauseTransfer(session: item.session, id: item.transferId, paused: paused) == true
+    }
+
+    /// Unsend (outgoing) or Stop (incoming) from the notch; the transfer then ends as cancelled.
+    private func cancelTransfer(_ item: NotchDrop.Item) {
+        if item.viewer {
+            viewer?.cancelTransfer(incoming: item.incoming, id: item.transferId)
+        } else {
+            host?.cancelTransfer(session: item.session, incoming: item.incoming, id: item.transferId)
+        }
+    }
+
+    /// `viewer`: the event came from the viewer connection, not from sharing this Mac.
+    private func handleSessionEvent(_ e: CoreEvent, viewer fromViewer: Bool = false) {
         defer { updateNotch() }
         switch e {
         case .clipboardReceived(_, let mime, let data):
@@ -1043,7 +1125,7 @@ final class AppModel: ObservableObject {
                 Annex.log(.debug, "[clipboard] ignored \(mime), \(data.count) bytes: sharing the clipboard is off")
             }
         case .transferStarted(let t):
-            notch.transferStarted(session: t.sessionId, id: t.id, incoming: t.incoming, name: t.name, size: t.size)
+            notch.transferStarted(session: t.sessionId, id: t.id, incoming: t.incoming, name: t.name, size: t.size, viewer: fromViewer)
         case .transferProgress(let session, let id, let incoming, let done):
             notch.transferProgress(session: session, id: id, incoming: incoming, done: done)
         case .transferEnded(let session, let id, let incoming, let ok, let path, let error):

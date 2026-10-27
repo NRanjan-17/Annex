@@ -308,6 +308,16 @@ fn add_input(
                 }
             }
             if !ctl() {
+                // View only: Esc leaves, like the Mac.
+                if keyval == gdk::Key::Escape {
+                    tracing::info!("viewer: Esc while view only, ending the session");
+                    let (m, a) = (m.clone(), a.clone());
+                    glib::idle_add_local_once(move || {
+                        m.borrow_mut().disconnect();
+                        crate::ui::apply(&a, &m);
+                    });
+                    return glib::Propagation::Stop;
+                }
                 return glib::Propagation::Proceed;
             }
             // X keycodes are evdev codes + 8.

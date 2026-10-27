@@ -12,6 +12,7 @@ members = [
     "annex-bench", "annex-driver",
     "annex-update",
     "annex-log",
+    "annex-audio",
 ]
 
 [workspace.package]

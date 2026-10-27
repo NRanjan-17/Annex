@@ -15,6 +15,7 @@ use annex_session::{
     Quality, TrustPolicy, ViewerConfig, ViewerHandle,
 };
 
+use crate::drop_tray::TransferKey;
 use crate::host::Host;
 use crate::settings::{self, Settings};
 
@@ -41,11 +42,17 @@ pub enum Msg {
     },
     /// Files dropped on the island or the viewer window, to send.
     DropFiles(Vec<std::path::PathBuf>),
+    /// The island's Pause (true) or Resume (false) on a file being sent.
+    PauseTransfer(TransferKey, bool),
+    /// The island's Unsend on a file being sent, or Stop on one arriving.
+    CancelTransfer(TransferKey),
     /// wl-paste stopped (no clipboard access for other programs here): use GTK's clipboard.
     ClipboardWatchEnded,
     /// The sharing pipeline stopped by itself (the screen-sharing permission was refused, the
     /// encoder failed, …).
     HostFailed(String),
+    /// GitHub's releases list (its JSON), or why it couldn't be fetched.
+    UpdateChecked(Result<String, String>),
 }
 
 /// What the UI should do, besides redrawing.
@@ -117,6 +124,30 @@ pub enum InternetShare {
     Ended(Option<String>),
 }
 
+/// Checking GitHub for a newer release. Linux only says so and opens the release page: the
+/// package manager installs it (.deb or .rpm).
+#[derive(Clone, PartialEq, Debug)]
+pub enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(annex_update::Update),
+    Failed(String),
+}
+
+impl UpdateState {
+    /// "Annex 1.2.3 is available".
+    pub fn headline(u: &annex_update::Update) -> String {
+        if u.downgrade {
+            format!("Annex {} is available (leaves the beta)", u.version)
+        } else if u.prerelease {
+            format!("Annex {} (beta) is available", u.version)
+        } else {
+            format!("Annex {} is available", u.version)
+        }
+    }
+}
+
 /// A session this computer shows (host side).
 #[derive(Clone, PartialEq, Debug)]
 pub struct HostSession {
@@ -172,6 +203,15 @@ pub struct Model {
     pub host_error: Option<String>,
     pub host_sessions: Vec<HostSession>,
     pub internet: Option<InternetShare>,
+    /// The port sharing listens on (for the addresses on the Share page).
+    pub host_port: Option<u16>,
+
+    // Updates.
+    pub update: UpdateState,
+    /// The version whose banner was closed with Not Now.
+    pub update_dismissed: Option<String>,
+    /// When the last check finished (Unix seconds).
+    pub update_checked_at: Option<i64>,
 
     clipboard: Option<crate::clipboard::Clipboard>,
     drop_tray: Option<crate::drop_tray::DropTray>,
@@ -213,6 +253,7 @@ impl Model {
         tracing::info!(target: "annex::pairing", name, fingerprint = core.fingerprint(), "identity ready");
         core.set_headless(settings.headless);
         core.set_downloads(settings.receive_files.then(downloads_dir));
+        core.set_audio(settings.audio());
         let model = Rc::new(RefCell::new(Model {
             rt,
             core,
@@ -238,6 +279,10 @@ impl Model {
             host_error: None,
             host_sessions: Vec::new(),
             internet: None,
+            host_port: None,
+            update: UpdateState::Idle,
+            update_dismissed: None,
+            update_checked_at: None,
             clipboard: None,
             drop_tray: None,
             viewer_focused: false,
@@ -363,6 +408,7 @@ impl Model {
 
     /// A host starts advertising this computer as sharing; its record replaces the presence one.
     pub fn advertise_host(&mut self, port: u16, extend: bool) -> Option<Advertisement> {
+        self.host_port = Some(port);
         let presence = self.presence.advert.take();
         self.presence.hosting = true;
         let name = self.core.device_name();
@@ -384,6 +430,7 @@ impl Model {
     }
 
     pub fn end_hosting(&mut self, host_advert: Option<Advertisement>) {
+        self.host_port = None;
         self.presence.hosting = false;
         self.replace_presence(host_advert);
     }
@@ -683,7 +730,7 @@ impl Model {
                 return;
             }
             e @ (Event::TransferStarted { .. } | Event::TransferProgress { .. } | Event::TransferEnded { .. }) => {
-                self.transfer(e);
+                self.transfer(e, true);
                 return;
             }
             _ => {}
@@ -827,7 +874,7 @@ impl Model {
                 return;
             }
             e @ (Event::TransferStarted { .. } | Event::TransferProgress { .. } | Event::TransferEnded { .. }) => {
-                self.transfer(e);
+                self.transfer(e, false);
                 return;
             }
             Event::Error { message } => {
@@ -881,6 +928,8 @@ impl Model {
             }
             Msg::Copied { mime, data } => self.copied(mime, data),
             Msg::DropFiles(files) => self.send_files(files),
+            Msg::PauseTransfer(key, paused) => self.pause_transfer(key, paused),
+            Msg::CancelTransfer(key) => self.cancel_transfer(key),
             Msg::ClipboardNow { mime, data } => {
                 const T: &str = "annex::clipboard";
                 match &self.viewer {
@@ -907,6 +956,62 @@ impl Model {
                 self.host_error = Some(why);
                 self.render();
             }
+            Msg::UpdateChecked(result) => self.update_checked(result),
+        }
+    }
+
+    // ---- Updates ------------------------------------------------------------------------
+
+    /// Asks GitHub for the releases list, in the background. No HTTP client is built in: `curl`
+    /// fetches it (see [`fetch_releases`]).
+    pub fn check_for_updates(&mut self) {
+        if self.update == UpdateState::Checking {
+            return;
+        }
+        tracing::info!(
+            target: "annex::update",
+            current = annex_update::whats_new::CURRENT,
+            beta = self.settings.beta_updates,
+            "update: checking"
+        );
+        self.update = UpdateState::Checking;
+        let tx = self.tx.clone();
+        let spawned = std::thread::Builder::new().name("annex-update".into()).spawn(move || {
+            let _ = tx.send_blocking(Msg::UpdateChecked(fetch_releases()));
+        });
+        if let Err(e) = spawned {
+            tracing::warn!(target: "annex::update", "update: couldn't start the check: {e}");
+            self.update = UpdateState::Failed(e.to_string());
+        }
+        self.render();
+    }
+
+    fn update_checked(&mut self, result: Result<String, String>) {
+        const T: &str = "annex::update";
+        self.update_checked_at =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64);
+        self.update = match result.and_then(|json| pick_update(&json, self.settings.beta_updates)) {
+            Ok(Some(u)) => {
+                tracing::info!(target: T, version = u.version, asset = u.asset_name, "update: available");
+                UpdateState::Available(u)
+            }
+            Ok(None) => {
+                tracing::info!(target: T, "update: this is the latest version");
+                UpdateState::UpToDate
+            }
+            Err(e) => {
+                tracing::warn!(target: T, "update: check failed: {e}");
+                UpdateState::Failed(e)
+            }
+        };
+        self.render();
+    }
+
+    /// The banner on Nearby and Share: an update, unless its banner was closed.
+    pub fn update_banner(&self) -> Option<&annex_update::Update> {
+        match &self.update {
+            UpdateState::Available(u) if self.update_dismissed.as_deref() != Some(u.version.as_str()) => Some(u),
+            _ => None,
         }
     }
 
@@ -963,21 +1068,23 @@ impl Model {
         }
     }
 
-    fn transfer(&mut self, e: Event) {
+    /// `viewer`: from the session this computer views (else one it shares).
+    fn transfer(&mut self, e: Event, viewer: bool) {
+        let key = |session: u64, id: u64, incoming: bool| TransferKey { viewer, session, id, incoming };
         match e {
             Event::TransferStarted { session_id, id, incoming, name, size } => {
                 if let Some(t) = &self.drop_tray {
-                    t.started(session_id, id, incoming, name, size);
+                    t.started(key(session_id, id, incoming), name, size);
                 }
             }
             Event::TransferProgress { session_id, id, incoming, done } => {
                 if let Some(t) = &self.drop_tray {
-                    t.progress(session_id, id, incoming, done);
+                    t.progress(key(session_id, id, incoming), done);
                 }
             }
             Event::TransferEnded { session_id, id, incoming, ok, path, error } => {
                 if let Some(t) = &self.drop_tray {
-                    t.ended(session_id, id, incoming, ok, path, error);
+                    t.ended(key(session_id, id, incoming), ok, path, error);
                 } else if incoming && ok {
                     // No island here (GNOME, X11): say so where it lands.
                     let name = path
@@ -991,6 +1098,54 @@ impl Model {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The island's Pause or Resume: only shown paused once the core took it.
+    fn pause_transfer(&mut self, key: TransferKey, paused: bool) {
+        const T: &str = "annex::transfer";
+        let took = if key.incoming {
+            false
+        } else if key.viewer {
+            self.viewer.as_ref().is_some_and(|v| v.handle.pause_transfer(key.id, paused))
+        } else {
+            self.host.as_ref().is_some_and(|h| h.pause_transfer(key.session, key.id, paused))
+        };
+        if !took {
+            tracing::warn!(target: T, ?key, paused, "files: couldn't pause or resume: it isn't being sent");
+            return;
+        }
+        if let Some(t) = &self.drop_tray {
+            t.set_paused(key, paused);
+        }
+    }
+
+    /// The island's Unsend (the other side deletes what arrived) or Stop.
+    fn cancel_transfer(&mut self, key: TransferKey) {
+        const T: &str = "annex::transfer";
+        let done = if key.viewer {
+            match &self.viewer {
+                Some(v) => {
+                    v.handle.cancel_transfer(key.incoming, key.id);
+                    true
+                }
+                None => false,
+            }
+        } else {
+            match &self.host {
+                Some(h) => {
+                    h.cancel_transfer(key.session, key.incoming, key.id);
+                    true
+                }
+                None => false,
+            }
+        };
+        if !done {
+            tracing::warn!(target: T, ?key, "files: couldn't stop the transfer: its session is gone");
+            return;
+        }
+        if let Some(t) = &self.drop_tray {
+            t.cancelled(key);
         }
     }
 
@@ -1112,6 +1267,89 @@ pub fn system_name() -> String {
         .unwrap_or_else(|| "Linux computer".into())
 }
 
+/// How another computer reaches this one at a local address.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub enum LocalLink {
+    Network,
+    /// A mesh VPN (Tailscale, ZeroTier).
+    Private,
+    /// 169.254.x.x: a cable straight between the two computers.
+    Cable,
+}
+
+impl LocalLink {
+    pub fn label(self) -> &'static str {
+        match self {
+            LocalLink::Network => "Network",
+            LocalLink::Private => "Private network",
+            LocalLink::Cable => "Cable",
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub struct LocalAddress {
+    pub link: LocalLink,
+    pub interface: String,
+    pub ip: std::net::Ipv4Addr,
+}
+
+/// This computer's IPv4 addresses (easier to type) on interfaces that are up, for telling the
+/// user what to type on the other computer: the local network first, then private networks, then
+/// cables. Loopback and container or VM bridges nobody would type are left out.
+pub fn local_addresses() -> Vec<LocalAddress> {
+    const SKIP: [&str; 10] = ["docker", "br-", "veth", "virbr", "vnet", "lxc", "lxd", "podman", "cni", "flannel"];
+    let mut out = Vec::new();
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `list` with a list freed below with freeifaddrs.
+    if unsafe { libc::getifaddrs(&mut list) } != 0 {
+        return out;
+    }
+    let mut p = list;
+    while !p.is_null() {
+        // SAFETY: a node of the list getifaddrs returned, alive until freeifaddrs.
+        let ifa = unsafe { &*p };
+        p = ifa.ifa_next;
+        let flags = ifa.ifa_flags;
+        if ifa.ifa_addr.is_null()
+            || ifa.ifa_name.is_null()
+            || flags & libc::IFF_UP as libc::c_uint == 0
+            || flags & libc::IFF_LOOPBACK as libc::c_uint != 0
+        {
+            continue;
+        }
+        // SAFETY: checked non-null above.
+        if i32::from(unsafe { (*ifa.ifa_addr).sa_family }) != libc::AF_INET {
+            continue;
+        }
+        // SAFETY: a NUL-terminated name, checked non-null above.
+        let interface = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }.to_string_lossy().into_owned();
+        if SKIP.iter().any(|s| interface.starts_with(s)) {
+            continue;
+        }
+        // SAFETY: an AF_INET address is a sockaddr_in.
+        let sin = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in) };
+        let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+        let [a, b, ..] = ip.octets();
+        let link = if ip.is_link_local() {
+            LocalLink::Cable
+        } else if interface.starts_with("tailscale")
+            || interface.starts_with("zt")
+            || (a == 100 && (64..128).contains(&b))
+        {
+            LocalLink::Private
+        } else {
+            LocalLink::Network
+        };
+        out.push(LocalAddress { link, interface, ip });
+    }
+    // SAFETY: the list from getifaddrs, not used after this.
+    unsafe { libc::freeifaddrs(list) };
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// "34CB B46A 8CDC 86A2 4102": the first 20 hex digits, in groups of four.
 pub fn display_fingerprint(fp: &str) -> String {
     fp.chars()
@@ -1147,6 +1385,48 @@ fn friendly_internet_error(r: &str) -> String {
     } else {
         format!("Sharing with a code stopped: {r}")
     }
+}
+
+/// GitHub's releases list, with `curl` (installed nearly everywhere; the app has no HTTP client).
+fn fetch_releases() -> Result<String, String> {
+    let url = annex_update::RELEASES_URL.to_str().unwrap_or_default();
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "30", "-H", "Accept: application/vnd.github+json", "-A"])
+        .arg(format!("Annex/{}", annex_update::whats_new::CURRENT))
+        .arg(url)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "curl isn't installed".to_string()
+            } else {
+                format!("couldn't run curl: {e}")
+            }
+        })?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() { format!("curl failed ({})", out.status) } else { err });
+    }
+    String::from_utf8(out.stdout).map_err(|e| e.to_string())
+}
+
+/// The release to offer: its .deb, or .rpm on RPM systems (each release has both, per CPU, named
+/// as scripts/package-linux.sh names them: `Annex-<v>-linux-<x86_64|arm64>.<deb|rpm>`).
+fn pick_update(json: &str, beta: bool) -> Result<Option<annex_update::Update>, String> {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        a => a,
+    };
+    let rpm = !std::path::Path::new("/usr/bin/dpkg").exists() && std::path::Path::new("/usr/bin/rpm").exists();
+    let kinds = if rpm { ["rpm", "deb"] } else { ["deb", "rpm"] };
+    for kind in kinds {
+        let suffix = format!("-linux-{arch}.{kind}");
+        if let Some(u) =
+            annex_update::pick(json, annex_update::whats_new::CURRENT, beta, &suffix).map_err(|e| e.to_string())?
+        {
+            return Ok(Some(u));
+        }
+    }
+    Ok(None)
 }
 
 /// Where files from the other computer go.

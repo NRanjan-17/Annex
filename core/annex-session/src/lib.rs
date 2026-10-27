@@ -4,6 +4,7 @@
 //! Everything is async (tokio). The FFI crate owns the runtime and turns [`Event`]s into
 //! JSON for the native apps.
 
+pub mod audio;
 pub mod clock;
 mod conn;
 mod core;

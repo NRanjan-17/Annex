@@ -4,6 +4,8 @@
 <dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Annex finds and connects to your other computers on the local network to share or show a display. Nothing leaves your network.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Annex sends your voice to the computer you're viewing, when you turn on Send my microphone.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_annex._tcp</string>

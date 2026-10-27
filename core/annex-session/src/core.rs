@@ -42,6 +42,10 @@ pub struct Core {
     headless: AtomicBool,
     /// Where files from the other computer go (see [`Core::set_downloads`]).
     downloads: Mutex<Option<PathBuf>>,
+    /// The sound switches (see [`Core::set_audio`]).
+    audio: Mutex<crate::audio::AudioSettings>,
+    /// This computer's own sound, shared with every session viewing it.
+    pub(crate) sound: crate::audio::SoundHub,
 }
 
 impl Core {
@@ -85,6 +89,8 @@ impl Core {
             data_dir,
             headless: AtomicBool::new(false),
             downloads: Mutex::new(None),
+            audio: Mutex::new(crate::audio::AudioSettings::default()),
+            sound: crate::audio::SoundHub::new(),
         })
     }
 
@@ -131,6 +137,30 @@ impl Core {
 
     pub fn downloads(&self) -> Option<PathBuf> {
         self.downloads.lock().unwrap().clone()
+    }
+
+    /// The sound switches; they apply at once, to running sessions too.
+    pub fn set_audio(&self, settings: crate::audio::AudioSettings) {
+        tracing::info!(?settings, "sound");
+        *self.audio.lock().unwrap() = settings;
+    }
+
+    pub fn audio(&self) -> crate::audio::AudioSettings {
+        *self.audio.lock().unwrap()
+    }
+
+    /// This computer's own sound, from apps that capture it themselves (the Mac, through
+    /// ScreenCaptureKit): interleaved samples at any rate and channel count. Ignored while no one
+    /// is listening; see [`Core::sound_wanted`].
+    pub fn push_system_sound(&self, samples: &[f32], channels: u16, rate: u32) {
+        if self.audio().share_sound {
+            self.sound.push(samples, channels, rate);
+        }
+    }
+
+    /// Whether a viewer is listening to this computer's sound right now.
+    pub fn sound_wanted(&self) -> bool {
+        self.sound.wanted()
     }
 
     /// Where a headless computer writes the PIN while pairing: `<data>/pairing-pin.txt`.

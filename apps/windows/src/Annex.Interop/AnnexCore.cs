@@ -201,6 +201,14 @@ public sealed class CoreClient : IDisposable
     /// folder, and paired devices may use the mouse and keyboard without being allowed one by one.</summary>
     public void SetHeadless(bool on) => NativeMethods.Check(NativeMethods.annex_core_set_headless(Raw, on));
 
+    /// <summary>Sound in sessions: share this PC's sound with viewers, play what the other computer sends,
+    /// send this PC's microphone, and make a viewer's microphone "Annex Microphone" (where supported).</summary>
+    public void SetAudio(bool shareSound, bool hearSound, bool sendMic, bool virtualMic) =>
+        NativeMethods.Check(NativeMethods.annex_core_set_audio(Raw, shareSound, hearSound, sendMic, virtualMic));
+
+    /// <summary>Whether a viewer's microphone can become "Annex Microphone" here (not on Windows yet).</summary>
+    public static bool VirtualMicrophoneSupported => NativeMethods.annex_virtual_microphone_supported();
+
     /// <summary>Where files from the other computer go; null refuses them.</summary>
     public void SetDownloads(string? folder) => NativeMethods.Check(NativeMethods.annex_core_set_downloads(Raw, folder));
 
@@ -318,6 +326,12 @@ public sealed unsafe class HostHandle : IDisposable
     public void CancelTransfer(ulong sessionId, bool incoming, ulong id)
     {
         if (_raw != 0) NativeMethods.annex_host_cancel_transfer(_raw, sessionId, incoming, id);
+    }
+
+    /// <summary>Pauses or resumes a file this computer is sending.</summary>
+    public void PauseTransfer(ulong sessionId, ulong id, bool paused)
+    {
+        if (_raw != 0) NativeMethods.Check(NativeMethods.annex_host_pause_transfer(_raw, sessionId, id, paused));
     }
 
     /// <summary>Stops the code (InternetCodeEnded "stopped"); connected sessions carry on.</summary>
@@ -458,6 +472,12 @@ public sealed unsafe class ViewerHandle : IDisposable
     public void CancelTransfer(bool incoming, ulong id)
     {
         if (_raw != 0) NativeMethods.annex_viewer_cancel_transfer(_raw, incoming, id);
+    }
+
+    /// <summary>Pauses or resumes a file this computer is sending.</summary>
+    public void PauseTransfer(ulong id, bool paused)
+    {
+        if (_raw != 0) NativeMethods.Check(NativeMethods.annex_viewer_pause_transfer(_raw, id, paused));
     }
 
     public void FramePresented(uint frameId)

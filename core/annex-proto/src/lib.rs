@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod audio;
 pub mod fragment;
 pub mod keys;
 mod record;

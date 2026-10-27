@@ -26,6 +26,15 @@ final class AppSettings: ObservableObject {
     @Published var notchDrop: Bool { didSet { defaults.set(notchDrop, forKey: Keys.notchDrop); changed("notchDrop", notchDrop) } }
     /// Take files the other computer sends, into Downloads. On by default.
     @Published var receiveFiles: Bool { didSet { defaults.set(receiveFiles, forKey: Keys.receiveFiles); changed("receiveFiles", receiveFiles) } }
+    /// Sound: people viewing this Mac hear what it plays. On by default.
+    @Published var shareSound: Bool { didSet { defaults.set(shareSound, forKey: Keys.shareSound); changed("shareSound", shareSound) } }
+    /// Sound: play the shared computer's sound here, and a viewer's microphone. On by default.
+    @Published var hearSound: Bool { didSet { defaults.set(hearSound, forKey: Keys.hearSound); changed("hearSound", hearSound) } }
+    /// Sound: this Mac's microphone plays on the computer it views. Off by default.
+    @Published var sendMicrophone: Bool { didSet { defaults.set(sendMicrophone, forKey: Keys.sendMicrophone); changed("sendMicrophone", sendMicrophone) } }
+    /// Sound: a viewer's microphone becomes "Annex Microphone" instead of playing aloud, where
+    /// supported (not on the Mac yet). On by default.
+    @Published var virtualMicrophone: Bool { didSet { defaults.set(virtualMicrophone, forKey: Keys.virtualMicrophone); changed("virtualMicrophone", virtualMicrophone) } }
     /// Viewer: default to using the other computer as an extra display.
     @Published var extendByDefault: Bool { didSet { defaults.set(extendByDefault, forKey: Keys.extend); changed("extendByDefault", extendByDefault) } }
     /// Viewer: bitrate ceiling asked of hosts. 0 best, 1 balanced, 2 fast (Wi-Fi).
@@ -83,6 +92,10 @@ final class AppSettings: ObservableObject {
         static let receiveFiles = "receiveFiles"
         static let notchDrop = "notchDrop"
         static let extend = "extendByDefault"
+        static let shareSound = "shareSound"
+        static let hearSound = "hearSound"
+        static let sendMicrophone = "sendMicrophone"
+        static let virtualMicrophone = "virtualMicrophone"
         static let name = "deviceName"
         static let quality = "quality"
         static let technical = "showTechnicalDetails"
@@ -117,7 +130,9 @@ final class AppSettings: ObservableObject {
         let data = (try? FileManager.default.contentsOfDirectory(atPath: AppModel.dataDirectory.path)) ?? []
         usedBefore = !saved.isEmpty || !data.isEmpty
         defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true, Keys.updates: true,
-                                       Keys.peerToPeer: true, Keys.clipboard: true, Keys.reverseScroll: true, Keys.receiveFiles: true, Keys.notchDrop: true])
+                                       Keys.peerToPeer: true, Keys.clipboard: true, Keys.reverseScroll: true, Keys.receiveFiles: true, Keys.notchDrop: true,
+                                       Keys.shareSound: true, Keys.hearSound: true, Keys.virtualMicrophone: true,
+                                       Keys.verboseLogging: true])
         preferHardwareEncoder = defaults.bool(forKey: Keys.hardware)
         startSharingAtLaunch = defaults.bool(forKey: Keys.autoShare)
         headless = defaults.bool(forKey: Keys.headless)
@@ -128,6 +143,10 @@ final class AppSettings: ObservableObject {
         receiveFiles = defaults.bool(forKey: Keys.receiveFiles)
         notchDrop = defaults.bool(forKey: Keys.notchDrop)
         extendByDefault = defaults.bool(forKey: Keys.extend)
+        shareSound = defaults.bool(forKey: Keys.shareSound)
+        hearSound = defaults.bool(forKey: Keys.hearSound)
+        sendMicrophone = defaults.bool(forKey: Keys.sendMicrophone)
+        virtualMicrophone = defaults.bool(forKey: Keys.virtualMicrophone)
         customDeviceName = defaults.string(forKey: Keys.name)
         quality = defaults.integer(forKey: Keys.quality)
         showTechnicalDetails = defaults.bool(forKey: Keys.technical)
@@ -153,6 +172,7 @@ final class AppSettings: ObservableObject {
         "hardware encoder \(preferHardwareEncoder), share at launch \(startSharingAtLaunch), headless \(headless), "
             + "control when viewing \(controlWhenViewing), full screen \(openFullScreen), reverse scroll \(reverseScrollOnOthers), "
             + "clipboard \(shareClipboard), notch drop \(notchDrop), receive files \(receiveFiles), extend by default \(extendByDefault), "
+            + "share sound \(shareSound), hear sound \(hearSound), send microphone \(sendMicrophone), annex microphone \(virtualMicrophone), "
             + "quality \(quality), technical details \(showTechnicalDetails), verbose \(verboseLogging), "
             + "update checks \(checkForUpdates), beta \(betaUpdates), extend scale \(extendScale), peer-to-peer \(peerToPeerWiFi), "
             + "custom name \(customDeviceName != nil), server \(rendezvousServer.isEmpty ? "Annex's" : rendezvousServer), "

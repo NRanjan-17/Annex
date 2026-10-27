@@ -170,7 +170,7 @@ sudo dnf install ./Annex-<version>-linux-x86_64.rpm
 tar xf Annex-<version>-linux-x86_64.tar.gz
 ```
 
-apt, dnf and zypper also install what Annex needs (GStreamer, wl-clipboard for the clipboard on Wayland). The packages carry gtk4-layer-shell (MIT) in `/usr/lib/annex`, for the drop island at the top of the screen on wlroots desktops and KDE; Annex restarts itself once with it preloaded there, as that library requires. On X11 desktops (Linux Mint, XFCE, MATE) the island needs nothing extra and glows as soon as files are picked up; GNOME on Wayland has no island, so files are dropped on the viewer window there.
+apt, dnf and zypper also install what Annex needs (GStreamer, wl-clipboard for the clipboard on Wayland, ALSA and pulseaudio-utils for sound: `parec` records this computer's sound and `pactl`/`pacat` make "Annex Microphone"; they work with PipeWire too). The packages carry gtk4-layer-shell (MIT) in `/usr/lib/annex`, for the drop island at the top of the screen on wlroots desktops and KDE; Annex restarts itself once with it preloaded there, as that library requires. On X11 desktops (Linux Mint, XFCE, MATE) the island needs nothing extra and glows as soon as files are picked up; GNOME on Wayland has no island, so files are dropped on the viewer window there.
 
 ### Uninstall
 
@@ -186,7 +186,7 @@ Options: `annex --share` starts sharing, `annex --connect <address or code> [--e
 
 ```sh
 # Ubuntu / Debian
-sudo apt install build-essential pkg-config libgtk-4-dev libgstreamer1.0-dev \
+sudo apt install build-essential pkg-config libgtk-4-dev libasound2-dev libgstreamer1.0-dev \
   libgstreamer-plugins-base1.0-dev libxkbcommon-dev libdbus-1-dev \
   gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-pipewire
 cd apps/linux && cargo build --release      # → target/release/annex

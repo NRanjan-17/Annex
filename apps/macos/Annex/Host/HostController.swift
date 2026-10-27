@@ -34,6 +34,11 @@ final class HostController {
     var extendScale = 0 {
         didSet { for s in extendSessions.values { s.setScale(extendScale) } }
     }
+    /// Settings → Sound → Share this computer's sound: mirror viewers hear this Mac, for new and
+    /// running captures. The core sends it only while a viewer listens.
+    var shareSound = false {
+        didSet { capturer.setCapturesSound(shareSound) }
+    }
     /// Every Extend display has its scaling applied (tests wait for this before changing modes).
     var extendScalingSettled: Bool { extendSessions.values.allSatisfy(\.scaleSettled) }
     private var host: HostHandle?
@@ -43,7 +48,13 @@ final class HostController {
     private var mirrorSessions: [UInt64: String] = [:]
     /// Latest adaptive-bitrate hint per mirror session; the shared encoder follows the lowest.
     private var mirrorScales: [UInt64: Int] = [:]
+    /// The mirror encoder's normal bitrate, for the full-size stream (also while the picture is smaller).
     private var mirrorBaseBitrate = 0
+    /// The stream mirror sessions started with; nil while there's no mirror capture.
+    private var mirrorFullStream: StreamConfig?
+    /// What the mirror encoder sends: the full stream, or adaptive bitrate's smaller picture.
+    private var mirrorPicture: StreamConfig?
+    private var mirrorReduced = false
     private var extendSessions: [UInt64: ExtendSession] = [:]
     private var inputSessions: [UInt64: String] = [:]
     private let injector = InputInjector()
@@ -64,6 +75,10 @@ final class HostController {
         self.core = core
         self.display = display
         self.preferHardware = preferHardware
+        capturer.wantsSound = { [weak core] in core?.soundWanted ?? false }
+        capturer.onSound = { [weak core] samples, frames, channels, rate in
+            core?.pushSound(samples, frames: frames, channels: channels, rate: rate)
+        }
     }
 
     var streamSize: (Int, Int) {
@@ -135,6 +150,15 @@ final class HostController {
         for id in inputSessions.keys { _ = try host?.sendFile(session: id, url: url) }
     }
 
+    /// Pauses or resumes a file being sent to a viewer. False: it isn't being sent.
+    func pauseTransfer(session: UInt64, id: UInt64, paused: Bool) -> Bool {
+        host?.pauseTransfer(session: session, id: id, paused: paused) == true
+    }
+
+    func cancelTransfer(session: UInt64, incoming: Bool, id: UInt64) {
+        host?.cancelTransfer(session: session, incoming: incoming, id: id)
+    }
+
     /// A viewer controlling this Mac, by name, if any.
     var controllingViewer: String? { inputSessions.values.sorted().first }
 
@@ -157,13 +181,17 @@ final class HostController {
             }
         case .sessionStarted(let s):
             mirrorSessions[s.sessionId] = s.peerName
-            status.stream = s.stream
             if encoder == nil, ExtendSession.captureEnabled {
                 startMirrorCapture(stream: s.stream)
             } else {
                 Annex.log(.debug, "[capture] \(s.peerName) joins the running mirror capture")
+                // It was told the full size; the picture is smaller for now.
+                if mirrorReduced, let p = mirrorPicture {
+                    host?.setStream(session: s.sessionId, width: p.width, height: p.height, fps: p.fps)
+                }
                 requestMirrorKeyframe()
             }
+            status.stream = mirrorPicture ?? s.stream
         case .sessionEnded(let id, _):
             if inputSessions.removeValue(forKey: id) != nil {
                 Annex.log(.debug, "[input] releasing held keys and buttons: session \(id) ended")
@@ -282,11 +310,49 @@ final class HostController {
         host?.endSession(id)
     }
 
+    /// The bitrate scale the shared mirror encoder runs at: the slowest viewer's.
+    private var mirrorScale: Int { mirrorScales.values.min() ?? 100 }
+
     private func applyMirrorBitrate() {
         guard mirrorBaseBitrate > 0 else { return }
-        let scale = mirrorScales.values.min() ?? 100
+        let scale = mirrorScale
         Annex.log(.debug, "[encode] mirror bitrate \(mirrorBaseBitrate * scale / 100) (\(scale) % of \(mirrorBaseBitrate))")
         encoder?.setBitrate(mirrorBaseBitrate * scale / 100)
+        updateMirrorPicture()
+    }
+
+    /// The picture for the mirror encoder's current bitrate: the full stream, or (on a slow link)
+    /// adaptive bitrate's smaller one, half the size at 30 fps, so text stays readable.
+    private func pictureForBitrate(_ full: StreamConfig) -> (reduced: Bool, picture: StreamConfig) {
+        let p = Annex.mirrorPicture(effectiveBps: mirrorBaseBitrate * mirrorScale / 100, reduced: mirrorReduced,
+                                    width: full.width, height: full.height, fps: full.fps)
+        return (p.reduced, StreamConfig(codec: full.codec, width: p.width, height: p.height, fps: p.fps))
+    }
+
+    /// Switches the mirror capture to the smaller picture or back when the bitrate crosses the
+    /// line. The encoder and capture restart at the new size (the encoder's first frame is a
+    /// keyframe); the bitrate stays as it is.
+    private func updateMirrorPicture() {
+        guard let full = mirrorFullStream else { return }
+        let (reduced, picture) = pictureForBitrate(full)
+        guard reduced != mirrorReduced else { return }
+        mirrorReduced = reduced
+        logPicture(picture)
+        startMirrorEncoding(picture)
+        announceMirrorPicture(picture)
+    }
+
+    /// Tells the mirror viewers the picture's size. They keep their window; it's for their stats
+    /// and pointer (the decoders follow the keyframe by themselves).
+    private func announceMirrorPicture(_ picture: StreamConfig) {
+        for id in mirrorSessions.keys {
+            host?.setStream(session: id, width: picture.width, height: picture.height, fps: picture.fps)
+        }
+    }
+
+    private func logPicture(_ picture: StreamConfig) {
+        Annex.log(.info, "[encode] sharing: smaller picture \(mirrorReduced ? "on" : "off") "
+                  + "bitrate=\(mirrorBaseBitrate * mirrorScale / 100) size=\(picture.width)x\(picture.height) fps=\(picture.fps)")
     }
 
     private func requestMirrorKeyframe() {
@@ -301,11 +367,25 @@ final class HostController {
     private var mirrorCaptureError: String?
 
     private func startMirrorCapture(stream: StreamConfig) {
-        stopMirrorCapture()
+        mirrorFullStream = stream
+        mirrorBaseBitrate = max(4_000_000, stream.width * stream.height * stream.fps / 10)
+        let wasReduced = mirrorReduced
+        mirrorReduced = false
+        let (reduced, picture) = pictureForBitrate(stream)
+        mirrorReduced = reduced
+        if reduced { logPicture(picture) }
+        startMirrorEncoding(picture)
+        if reduced || wasReduced { announceMirrorPicture(picture) }
+    }
+
+    /// (Re)starts the mirror encoder and capture at `stream`'s size, keeping the full stream's bitrate.
+    private func startMirrorEncoding(_ stream: StreamConfig) {
+        stopMirrorEncoding()
         generation += 1
         let gen = generation
-        let bitrate = max(4_000_000, stream.width * stream.height * stream.fps / 10)
-        mirrorBaseBitrate = bitrate
+        let bitrate = mirrorBaseBitrate
+        mirrorPicture = stream
+        status.stream = stream
         let preferHardware = self.preferHardware
         Annex.log(.info, "[capture] mirror capture of display \(display.id): \(stream.width)×\(stream.height) at \(stream.fps) fps, "
                   + "H.264 \(bitrate / 1000) kbit/s, \(preferHardware ? "hardware" : "software") encoder preferred")
@@ -376,7 +456,14 @@ final class HostController {
     }
 
     private func stopMirrorCapture() {
-        if encoder != nil { Annex.log(.info, "[capture] mirror capture stopped") }
+        stopMirrorEncoding()
+        mirrorFullStream = nil
+        mirrorPicture = nil
+        mirrorReduced = false
+    }
+
+    private func stopMirrorEncoding() {
+        if encoder != nil { Annex.log(mirrorSessions.isEmpty ? .info : .debug, "[capture] mirror capture stopped") }
         generation += 1
         let capturer = self.capturer
         capturer.onFrame = nil

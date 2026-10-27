@@ -177,9 +177,12 @@ public sealed partial class MainWindow : Window
             _core.SetPresence(true);
             _core.SetHeadless(_settings.Headless);
             _core.SetDownloads(_settings.ReceiveFiles ? DownloadsFolder : null);
+            ApplyAudio();
             _clipboard.Copied += OnCopied;
             _drop = new DropTray(_ui);
             _drop.Dropped += SendFiles;
+            _drop.PauseRequested += PauseTransfer;
+            _drop.CancelRequested += CancelTransfer;
             if (_settings.ShareClipboard) _clipboard.Start();
             _ = CheckFirewallAsync();
             StartUpdateChecks();
@@ -1786,6 +1789,8 @@ public sealed partial class MainWindow : Window
         SharingSection(p);
         p.Children.Add(Ui.Section("Viewing"));
         ViewingSection(p);
+        p.Children.Add(Ui.Section("Sound"));
+        SoundSection(p);
         p.Children.Add(Ui.Section("Internet"));
         InternetSettings(p);
         p.Children.Add(Ui.Section("Developer"));
@@ -1918,6 +1923,28 @@ public sealed partial class MainWindow : Window
             })));
     }
 
+    private void SoundSection(StackPanel p)
+    {
+        p.Children.Add(Ui.Card("", "Share this computer's sound", "People viewing this computer hear what it plays.",
+            Ui.Switch(_settings.ShareSound, on => { Setting("share this computer's sound", on); _settings.ShareSound = on; _settings.Save(); ApplyAudio(); })));
+        p.Children.Add(Ui.Card("", "Hear the other computer", "Plays the shared computer's sound here, and a viewer's microphone.",
+            Ui.Switch(_settings.HearSound, on => { Setting("hear the other computer", on); _settings.HearSound = on; _settings.Save(); ApplyAudio(); })));
+        p.Children.Add(Ui.Card("", "Send my microphone", "Your voice plays on the computer you're viewing. Use headphones to avoid an echo.",
+            Ui.Switch(_settings.SendMicrophone, on => { Setting("send my microphone", on); _settings.SendMicrophone = on; _settings.Save(); ApplyAudio(); })));
+        if (CoreClient.VirtualMicrophoneSupported)
+            p.Children.Add(Ui.Card("", "Use a viewer's microphone as Annex Microphone",
+                "Apps here, like Zoom or Meet, can pick Annex Microphone. Off: it plays aloud.",
+                Ui.Switch(_settings.VirtualMicrophone, on => { Setting("viewer's microphone as Annex Microphone", on); _settings.VirtualMicrophone = on; _settings.Save(); ApplyAudio(); })));
+    }
+
+    /// <summary>Hands the Sound settings to the core (at startup and on every change).</summary>
+    private void ApplyAudio()
+    {
+        if (_core is null) return;
+        try { _core.SetAudio(_settings.ShareSound, _settings.HearSound, _settings.SendMicrophone, _settings.VirtualMicrophone); }
+        catch (AnnexException e) { AnnexLog.Warn($"[settings] couldn't apply sound settings: {e.Message}"); }
+    }
+
     // Clipboard and files.
 
     /// <summary>Who dropped files go to: the host this PC controls, else a viewer controlling this PC.</summary>
@@ -1958,14 +1985,37 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OnTransfer(CoreEvent e)
+    /// <summary><paramref name="viewer"/>: the event came from the viewer (this PC watching another),
+    /// not from a host session, so the island's buttons go back to the right one.</summary>
+    private void OnTransfer(CoreEvent e, bool viewer)
     {
         switch (e)
         {
-            case CoreEvent.TransferStarted t: _drop?.Started(t.SessionId, t.Id, t.Incoming, t.Name, t.Size); break;
-            case CoreEvent.TransferProgress p: _drop?.Progress(p.SessionId, p.Id, p.Incoming, p.Done); break;
-            case CoreEvent.TransferEnded d: _drop?.Ended(d.SessionId, d.Id, d.Incoming, d.Ok, d.Path, d.Problem); break;
+            case CoreEvent.TransferStarted t: _drop?.Started(viewer, t.SessionId, t.Id, t.Incoming, t.Name, t.Size); break;
+            case CoreEvent.TransferProgress p: _drop?.Progress(viewer, p.SessionId, p.Id, p.Incoming, p.Done); break;
+            case CoreEvent.TransferEnded d: _drop?.Ended(viewer, d.SessionId, d.Id, d.Incoming, d.Ok, d.Path, d.Problem); break;
         }
+    }
+
+    /// <summary>Pause/Resume pressed on a file being sent in the island.</summary>
+    private void PauseTransfer(bool viewer, ulong session, ulong id, bool paused)
+    {
+        try
+        {
+            if (viewer) _viewer?.PauseTransfer(id, paused);
+            else _host?.PauseTransfer(session, id, paused);
+        }
+        catch (AnnexException e)
+        {
+            AnnexLog.Warn($"[transfer] couldn't {(paused ? "pause" : "resume")} file {id}: {e.Message}");
+        }
+    }
+
+    /// <summary>Unsend (a file going) or Stop (a file arriving) pressed in the island.</summary>
+    private void CancelTransfer(bool viewer, ulong session, ulong id, bool incoming)
+    {
+        if (viewer) _viewer?.CancelTransfer(incoming, id);
+        else _host?.CancelTransfer(session, incoming, id);
     }
 
     private static string DownloadsFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
@@ -2526,7 +2576,7 @@ public sealed partial class MainWindow : Window
                 else AnnexLog.Debug($"[clipboard] received {c.Mime}, {c.Data.Length} bytes: not applied, Share the clipboard is off");
                 return;
             case CoreEvent.TransferStarted or CoreEvent.TransferProgress or CoreEvent.TransferEnded:
-                OnTransfer(e);
+                OnTransfer(e, viewer: false);
                 return;
             case CoreEvent.PairingPin pin:
                 AnnexLog.Info($"[pairing] showing a PIN for {pin.PeerName}");
@@ -2755,7 +2805,7 @@ public sealed partial class MainWindow : Window
                 else AnnexLog.Debug($"[clipboard] received {c.Mime}, {c.Data.Length} bytes: not applied, Share the clipboard is off");
                 return;
             case CoreEvent.TransferStarted or CoreEvent.TransferProgress or CoreEvent.TransferEnded:
-                OnTransfer(e);
+                OnTransfer(e, viewer: true);
                 return;
             case CoreEvent.PairingPinRequired req:
                 await PromptForPin(req);

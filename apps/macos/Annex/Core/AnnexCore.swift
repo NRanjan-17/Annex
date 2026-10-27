@@ -51,6 +51,20 @@ enum Annex {
         annex_set_log_verbose(on)
     }
 
+    /// Whether a viewer's microphone can become "Annex Microphone" here (Linux only for now).
+    static var virtualMicrophoneSupported: Bool { annex_virtual_microphone_supported() }
+
+    /// Adaptive bitrate's smaller picture for a mirror stream of `width`×`height` at `fps`: what to
+    /// encode at `effectiveBps` (the encoder's target now), given whether it sends the smaller
+    /// picture now. The core decides, so every host switches at the same bitrates.
+    static func mirrorPicture(effectiveBps: Int, reduced: Bool, width: Int, height: Int,
+                              fps: Int) -> (reduced: Bool, width: Int, height: Int, fps: Int) {
+        var w: UInt32 = 0, h: UInt32 = 0, f: UInt32 = 0
+        let r = annex_mirror_picture(UInt64(max(0, effectiveBps)), reduced, UInt32(width), UInt32(height), UInt32(fps),
+                                     &w, &h, &f)
+        return (r, Int(w), Int(h), Int(f))
+    }
+
     /// macOS virtual key code for a HID usage from an `input` event.
     static func macKeyCode(hid: UInt16) -> CGKeyCode? {
         let c = annex_key_native_from_hid(hid)
@@ -216,6 +230,22 @@ final class CoreClient {
         _ = annex_core_set_downloads(raw, folder?.path)
     }
 
+    /// Sound switches, applied at once (running sessions too): share this Mac's sound with
+    /// viewers, play what the other computer sends, send this Mac's microphone, and make a viewer's
+    /// microphone "Annex Microphone" where supported (not on the Mac yet) instead of playing it aloud.
+    func setAudio(shareSound: Bool, hearSound: Bool, sendMicrophone: Bool, virtualMicrophone: Bool) {
+        _ = annex_core_set_audio(raw, shareSound, hearSound, sendMicrophone, virtualMicrophone)
+    }
+
+    /// This Mac's own sound, captured by the app: `frames` × `channels` interleaved floats at
+    /// `rate` Hz. Ignored while nobody listens. Safe from any thread.
+    func pushSound(_ samples: UnsafePointer<Float>, frames: Int, channels: Int, rate: Int) {
+        _ = annex_core_push_sound(raw, samples, frames, UInt32(channels), UInt32(rate))
+    }
+
+    /// A viewer listens to this Mac's sound (capture it only then).
+    var soundWanted: Bool { annex_core_sound_wanted(raw) == 1 }
+
     /// Answers a `pairingPinRequired` event with what the user typed.
     @discardableResult
     func submitPin(requestID: UInt64, pin: String) -> Bool {
@@ -310,6 +340,12 @@ final class HostHandle {
 
     func cancelTransfer(session: UInt64, incoming: Bool, id: UInt64) {
         if let raw { annex_host_cancel_transfer(raw, session, incoming, id) }
+    }
+
+    /// Pauses (or resumes) a file being sent to a viewer. False: it isn't being sent.
+    func pauseTransfer(session: UInt64, id: UInt64, paused: Bool) -> Bool {
+        guard let raw else { return false }
+        return annex_host_pause_transfer(raw, session, id, paused) == 1
     }
 
     /// Shares over the internet with one code (`internetCode`, …, `internetCodeEnded` events).
@@ -432,6 +468,12 @@ final class ViewerHandle {
 
     func cancelTransfer(incoming: Bool, id: UInt64) {
         if let raw { annex_viewer_cancel_transfer(raw, incoming, id) }
+    }
+
+    /// Pauses (or resumes) a file being sent to the host. False: it isn't being sent.
+    func pauseTransfer(id: UInt64, paused: Bool) -> Bool {
+        guard let raw else { return false }
+        return annex_viewer_pause_transfer(raw, id, paused) == 1
     }
 
     /// Asks the host for a direct Wi-Fi link (answered by directLinkOffer / directLinkUnavailable).

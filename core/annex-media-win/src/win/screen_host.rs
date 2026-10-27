@@ -1,7 +1,10 @@
 //! Windows host pipeline: capture a monitor, convert to NV12 at stream size on the GPU, encode
 //! H.264 (hardware if available), hand access units to the caller.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use windows::Win32::Foundation::LUID;
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN};
@@ -26,6 +29,9 @@ pub struct HostPipelineConfig {
     pub prefer_hardware: bool,
     /// Graphics card to capture and encode on (adapter LUID); None = Windows' default.
     pub gpu: Option<u64>,
+    /// Encode at most this many frames a second (adaptive bitrate's smaller picture); None:
+    /// every frame Windows captures.
+    pub max_fps: Option<u32>,
 }
 
 /// A graphics card the user can pick for sharing.
@@ -75,10 +81,31 @@ struct Inner {
     converter: Converter,
     encoder: Encoder,
     last: Option<ID3D11Texture2D>,
+    /// With `max_fps`: when the last frame was encoded, and whether a newer one was skipped.
+    last_encoded_us: i64,
+    skipped: bool,
 }
 unsafe impl Send for Inner {}
 
+/// With `max_fps`, sends a skipped frame once its turn comes if no newer one arrives: Windows
+/// captures only when the screen changes, so the last change could otherwise never be shown.
+struct Pacer {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for Pacer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 pub struct HostPipeline {
+    /// First: stopped (and joined) before the rest goes.
+    _pacer: Option<Pacer>,
     inner: Arc<Mutex<Inner>>,
     base_bitrate: u32,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -156,7 +183,12 @@ impl HostPipeline {
             converter: Converter::new(&device, cfg.width, cfg.height)?,
             encoder,
             last: None,
+            last_encoded_us: 0,
+            skipped: false,
         }));
+        // A little under the frame time, so a screen refreshing at exactly twice the rate isn't
+        // cut to a third by timing jitter. 0: every frame.
+        let min_gap_us: i64 = cfg.max_fps.map_or(0, |f| 900_000 / i64::from(f.max(1)));
         let capture = {
             let inner = inner.clone();
             let clock = clock.clone();
@@ -168,6 +200,13 @@ impl HostPipeline {
                     let mut g = inner.lock().unwrap();
                     let result = g.converter.convert(bgra).and_then(|nv12| {
                         g.last = Some(nv12.clone());
+                        if min_gap_us > 0 && ts - g.last_encoded_us < min_gap_us {
+                            // Too soon after the last one: the pacer sends it if nothing newer comes.
+                            g.skipped = true;
+                            return Ok(());
+                        }
+                        g.skipped = false;
+                        g.last_encoded_us = ts;
                         encode(&mut g, &nv12, ts)
                     });
                     if let Err(e) = result {
@@ -176,8 +215,47 @@ impl HostPipeline {
                 }),
             )?
         };
-        tracing::info!(hardware, width = cfg.width, height = cfg.height, "Windows host pipeline started");
-        Ok(HostPipeline { inner, base_bitrate: cfg.bitrate, clock, hardware, _capture: SendCapture(capture) })
+        let pacer = if min_gap_us > 0 {
+            let stop = Arc::new(AtomicBool::new(false));
+            let (inner, clock, stop2) = (inner.clone(), clock.clone(), stop.clone());
+            let thread = std::thread::Builder::new()
+                .name("annex-frame-pacer".into())
+                .spawn(move || {
+                    while !stop2.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_micros(min_gap_us as u64));
+                        let mut g = inner.lock().unwrap();
+                        let ts = clock();
+                        if !g.skipped || ts - g.last_encoded_us < min_gap_us {
+                            continue;
+                        }
+                        let Some(last) = g.last.clone() else { continue };
+                        g.skipped = false;
+                        g.last_encoded_us = ts;
+                        if let Err(e) = encode(&mut g, &last, ts) {
+                            tracing::warn!("frame dropped: {e}");
+                        }
+                    }
+                })
+                .map_err(|e| MediaError::Other(e.to_string()))?;
+            Some(Pacer { stop, thread: Some(thread) })
+        } else {
+            None
+        };
+        tracing::info!(
+            hardware,
+            width = cfg.width,
+            height = cfg.height,
+            max_fps = ?cfg.max_fps,
+            "Windows host pipeline started"
+        );
+        Ok(HostPipeline {
+            _pacer: pacer,
+            inner,
+            base_bitrate: cfg.bitrate,
+            clock,
+            hardware,
+            _capture: SendCapture(capture),
+        })
     }
 
     pub fn is_hardware(&self) -> bool {

@@ -309,6 +309,11 @@ impl HostHandle {
         self.transfers(session_id).ok_or_else(no_transfers)?.send_file(path)
     }
 
+    /// Pauses or resumes a file being sent to the viewer.
+    pub fn pause_transfer(&self, session_id: SessionId, id: u64, paused: bool) -> bool {
+        self.transfers(session_id).is_some_and(|t| t.pause(id, paused))
+    }
+
     pub fn cancel_transfer(&self, session_id: SessionId, incoming: bool, id: u64) {
         if let Some(t) = self.transfers(session_id) {
             t.cancel(incoming, id);
@@ -591,6 +596,7 @@ async fn run_session(
     }
     if quic.is_some() {
         caps.push(crate::transfer::CAP);
+        caps.push(crate::audio::CAP);
     }
     writer.send_control(&hello(&shared.core, vec![Role::Host], knows, &caps)).await?;
     let peer = check_hello(timeout(HANDSHAKE_TIMEOUT, reader.next_control()).await??, fp)?;
@@ -672,6 +678,13 @@ async fn run_session(
         }
     }
     *started = true;
+    // Sound both ways, while this session lasts.
+    let _audio = match quic {
+        Some(conn) if req.mode == Mode::Mirror && peer.caps.iter().any(|c| c == crate::audio::CAP) => {
+            Some(crate::audio::start(shared.core.clone(), conn.clone(), id, true, crate::audio::Incoming::Conn))
+        }
+        _ => None,
+    };
     let relay_ceiling = crate::rate::relay_ceiling(req.mode, &stream);
     (shared.events)(Event::SessionStarted {
         session_id: id,

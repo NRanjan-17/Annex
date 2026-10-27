@@ -31,6 +31,7 @@ struct HomeView: View {
                 SessionStrip(model: model)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
+            ConnectionStatusNotice(model: model)
             SameNameNotice(model: model) { model.pane = .settings }
             HStack(alignment: .top, spacing: 18) {
                 VStack(alignment: .leading, spacing: 10) {

@@ -23,6 +23,7 @@ struct MenuContent: View {
                     LiveBlock(model: model)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
+                ConnectionStatusNotice(model: model, compact: true)
                 SameNameNotice(model: model, compact: true) { open(.settings) }
             }
             .padding(.horizontal, 12)

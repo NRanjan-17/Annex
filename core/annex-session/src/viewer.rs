@@ -194,6 +194,11 @@ impl ViewerHandle {
         self.transfers.get().ok_or_else(crate::transfer::no_transfers)?.send_file(path)
     }
 
+    /// Pauses or resumes a file being sent to the host.
+    pub fn pause_transfer(&self, id: u64, paused: bool) -> bool {
+        self.transfers.get().is_some_and(|t| t.pause(id, paused))
+    }
+
     pub fn cancel_transfer(&self, incoming: bool, id: u64) {
         if let Some(t) = self.transfers.get() {
             t.cancel(incoming, id);
@@ -293,7 +298,7 @@ async fn run(
     let mut reader = Reader::new(reader);
     let mut writer = Writer::new(writer);
     let knows = core.knows(&fp);
-    let caps: &[&str] = if quic.is_some() { &["h264", crate::transfer::CAP] } else { &["h264"] };
+    let caps: &[&str] = if quic.is_some() { &["h264", crate::transfer::CAP, crate::audio::CAP] } else { &["h264"] };
     writer.send_control(&hello(&core, vec![Role::Viewer], knows, caps)).await?;
     let peer = match timeout(HANDSHAKE_TIMEOUT, reader.next_control()).await?? {
         Control::SessionReject { reason } => return Err(SessionError::Rejected(reason)),
@@ -409,6 +414,14 @@ async fn run(
 
     // QUIC: video arrives as FEC-protected datagrams; a lost frame triggers a keyframe request.
     let (lost_tx, mut lost_rx) = mpsc::unbounded_channel::<()>();
+    // Sound shares the datagrams; it's handed to the session's sound task.
+    let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let _audio = match &quic {
+        Some(conn) if cfg.mode == Mode::Mirror && peer.caps.iter().any(|c| c == crate::audio::CAP) => {
+            Some(crate::audio::start(core.clone(), conn.clone(), 0, false, crate::audio::Incoming::Handed(audio_rx)))
+        }
+        _ => None,
+    };
     let datagrams = {
         let deliver = deliver.clone();
         let quic = quic.clone();
@@ -417,6 +430,10 @@ async fn run(
             let Some(conn) = quic else { return std::future::pending::<()>().await };
             let mut reassembler = annex_proto::fragment::Reassembler::default();
             while let Ok(d) = conn.read_datagram().await {
+                if annex_proto::audio::is_audio(&d) {
+                    let _ = audio_tx.send(d.to_vec());
+                    continue;
+                }
                 counters.shards.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let recovered_before = reassembler.shards_recovered;
                 match reassembler.push(&d) {

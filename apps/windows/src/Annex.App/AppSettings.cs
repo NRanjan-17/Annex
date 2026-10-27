@@ -26,14 +26,25 @@ public sealed class AppSettings
     public bool ShareClipboard { get; set; } = true;
     /// <summary>Take files the other computer sends, into Downloads.</summary>
     public bool ReceiveFiles { get; set; } = true;
+    /// <summary>Viewers of this PC hear what it plays.</summary>
+    public bool ShareSound { get; set; } = true;
+    /// <summary>Play the shared computer's sound, and a viewer's microphone, here.</summary>
+    public bool HearSound { get; set; } = true;
+    /// <summary>Send this PC's microphone to the computer it views.</summary>
+    public bool SendMicrophone { get; set; }
+    /// <summary>A viewer's microphone becomes "Annex Microphone" instead of playing aloud (where supported).</summary>
+    public bool VirtualMicrophone { get; set; } = true;
     /// <summary>Drag files to the top of the screen to send them while connected.</summary>
     public bool DropAtTop { get; set; } = true;
     /// <summary>Viewer: move each new session onto this PC's hotspot right after it connects.</summary>
     public bool ConnectOverDirectWifi { get; set; }
     /// <summary>Show identity codes, addresses and connection figures (Settings → Developer).</summary>
     public bool ShowTechnicalDetails { get; set; }
-    /// <summary>Settings → Developer: also log each input event and progress step (annex.log grows faster).</summary>
-    public bool VerboseLogging { get; set; }
+    /// <summary>Settings → Developer: also log each input event and progress step (annex.log grows faster). On by
+    /// default, so a first report already says what broke.</summary>
+    public bool VerboseLogging { get; set; } = true;
+    /// <summary>Verbose logging was switched on once for installs from before it was the default.</summary>
+    public bool VerboseLoggingDefaulted { get; set; }
     /// <summary>Look for updates at launch and once a day.</summary>
     public bool CheckForUpdates { get; set; } = true;
     /// <summary>Include pre-releases; off goes back to the latest normal release. Until the user flips
@@ -90,7 +101,8 @@ public sealed class AppSettings
     public string Describe() =>
         $"name {(DeviceName is null ? "(this PC's)" : $"\"{DeviceName}\"")}, hardware encoder {PreferHardwareEncoder}, gpu {GpuLuid:x}, "
         + $"share at launch {StartSharingAtLaunch}, no one at screen {Headless}, control {UseMouseAndKeyboard}, extend by default {ExtendByDefault}, "
-        + $"clipboard {ShareClipboard}, receive files {ReceiveFiles}, drop at top {DropAtTop}, direct Wi-Fi first {ConnectOverDirectWifi}, "
+        + $"clipboard {ShareClipboard}, receive files {ReceiveFiles}, drop at top {DropAtTop}, "
+        + $"share sound {ShareSound}, hear sound {HearSound}, send microphone {SendMicrophone}, virtual microphone {VirtualMicrophone}, direct Wi-Fi first {ConnectOverDirectWifi}, "
         + $"technical details {ShowTechnicalDetails}, verbose log {VerboseLogging}, updates {CheckForUpdates} (beta {BetaUpdates}), quality {Quality}, "
         + $"server {(RendezvousServer.Trim().Length == 0 ? "Annex's" : RendezvousServer.Trim())}, own relay {(RelayUrl.Trim().Length == 0 ? "no" : "yes")}";
 
@@ -109,6 +121,11 @@ public sealed class AppSettings
             };
         }
         if (!settings.BetaUpdatesChosen) settings.BetaUpdates = RunningBeta;
+        if (!settings.VerboseLoggingDefaulted)
+        {
+            settings.VerboseLogging = true;
+            settings.VerboseLoggingDefaulted = true;
+        }
         // Checked before the core opens, which creates the identity and the log.
         settings.UsedBefore = File.Exists(FilePath)
             || File.Exists(Path.Combine(MainWindow.DataDirectory, "identity.cert.der"))

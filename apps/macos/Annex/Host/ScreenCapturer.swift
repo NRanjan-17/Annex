@@ -1,18 +1,32 @@
+import CoreAudio
 import CoreMedia
 import ScreenCaptureKit
 
 /// Captures one display with ScreenCaptureKit, scaled by the system to the stream size and
-/// delivered as NV12 (420v) pixel buffers ready for VideoToolbox.
+/// delivered as NV12 (420v) pixel buffers ready for VideoToolbox; optionally the Mac's own sound
+/// too (not Annex's), as interleaved floats.
 final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     // start/stop run off the caller's actor and may overlap, so the stream and a generation
-    // (bumped by every start and stop) are guarded by a lock.
+    // (bumped by every start and stop) are guarded by a lock. So are the running stream's
+    // configuration and the sound switch, which change while it runs.
     private let lock = NSLock()
     private var stream: SCStream?
+    private var config: SCStreamConfiguration?
     private var generation = 0
+    private var soundOn = false
     private let queue = DispatchQueue(label: "annex.capture", qos: .userInteractive)
+    private let soundQueue = DispatchQueue(label: "annex.capture.sound", qos: .userInteractive)
+    /// Interleaving scratch space, used only on `soundQueue`.
+    private var interleaved: [Float] = []
+    /// The sound format was logged (once per capture, on `soundQueue`).
+    private var soundFormatLogged = false
 
     /// Called on the capture queue for every new frame.
     var onFrame: ((CVPixelBuffer) -> Void)?
+    /// Whether anyone wants the sound right now; asked before each chunk is converted.
+    var wantsSound: (() -> Bool)?
+    /// Called on the sound queue with interleaved float samples: (samples, frames, channels, rate).
+    var onSound: ((UnsafePointer<Float>, Int, Int, Int) -> Void)?
     /// Called if the system stops the stream (permission revoked, display removed, ...).
     var onStop: ((Error) -> Void)?
 
@@ -37,21 +51,51 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         config.colorSpaceName = CGColorSpace.sRGB
         config.showsCursor = true
         config.queueDepth = 4
-        config.capturesAudio = false
+        let sound = capturesSound
+        config.capturesAudio = sound
+        // Annex's own playback (a viewer's microphone, or a session it views) stays out.
+        config.excludesCurrentProcessAudio = true
+        config.sampleRate = 48000
+        config.channelCount = 2
 
         guard isCurrent(gen) else { return Annex.log(.debug, "[capture] start of display \(displayID) superseded") }
-        Annex.log(.debug, "[capture] starting display \(displayID) at \(width)×\(height), \(fps) fps")
+        Annex.log(.debug, "[capture] starting display \(displayID) at \(width)×\(height), \(fps) fps, sound \(sound ? "on" : "off")")
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        // Always added, so turning sound on later only needs a configuration update.
+        try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: soundQueue)
+        soundQueue.async { self.soundFormatLogged = false }
         do {
             try await stream.startCapture()
         } catch {
             if isCurrent(gen) { throw error }
             return
         }
-        if !adopt(stream, generation: gen) {
+        if !adopt(stream, config: config, generation: gen) {
             Annex.log(.debug, "[capture] display \(displayID) stopped while starting")
             await Self.end(stream)
+        }
+    }
+
+    /// Capture this Mac's sound with the picture. Applies to a running capture at once.
+    var capturesSound: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return soundOn
+    }
+
+    func setCapturesSound(_ on: Bool) {
+        lock.lock()
+        soundOn = on
+        guard let running = stream, let config, config.capturesAudio != on else { lock.unlock(); return }
+        config.capturesAudio = on
+        lock.unlock()
+        running.updateConfiguration(config) { error in
+            if let error {
+                Annex.log(.warn, "[capture] couldn't turn sound \(on ? "on" : "off") on the running capture: \(error.localizedDescription)")
+            } else {
+                Annex.log(.debug, "[capture] sound \(on ? "on" : "off") on the running capture")
+            }
         }
     }
 
@@ -80,15 +124,20 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         generation += 1
         let old = stream
         stream = nil
+        config = nil
         return (generation, old)
     }
 
-    /// Keeps `stream` if no `stop()` or newer `start` came since `gen`.
-    private func adopt(_ stream: SCStream, generation gen: Int) -> Bool {
+    /// Keeps `stream` if no `stop()` or newer `start` came since `gen`. If the sound switch
+    /// changed while it started, applies that now.
+    private func adopt(_ stream: SCStream, config: SCStreamConfiguration, generation gen: Int) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
-        guard gen == generation else { return false }
+        guard gen == generation else { lock.unlock(); return false }
         self.stream = stream
+        self.config = config
+        let sound = soundOn
+        lock.unlock()
+        if config.capturesAudio != sound { setCapturesSound(sound) }
         return true
     }
 
@@ -99,6 +148,7 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        if type == .audio { return sound(sampleBuffer) }
         guard type == .screen, sampleBuffer.isValid,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
               let rawStatus = attachments.first?[.status] as? Int,
@@ -107,6 +157,54 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         else { return }
         Annex.log(.trace, "[capture] frame \(CVPixelBufferGetWidth(pixelBuffer))×\(CVPixelBufferGetHeight(pixelBuffer))")
         onFrame?(pixelBuffer)
+    }
+
+    /// One chunk of this Mac's sound, on the sound queue: float32 (usually one plane per channel)
+    /// made interleaved for the core. Skipped while nobody listens. Never logs the samples.
+    private func sound(_ sampleBuffer: CMSampleBuffer) {
+        guard sampleBuffer.isValid, let onSound, wantsSound?() == true,
+              let format = sampleBuffer.formatDescription?.audioStreamBasicDescription
+        else { return }
+        let channels = Int(format.mChannelsPerFrame)
+        let rate = Int(format.mSampleRate)
+        let planar = format.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0
+        if !soundFormatLogged {
+            soundFormatLogged = true
+            Annex.log(.debug, "[capture] sound: \(rate) Hz, \(channels) channel(s), \(format.mBitsPerChannel)-bit "
+                      + "\(format.mFormatFlags & kAudioFormatFlagIsFloat != 0 ? "float" : "integer"), \(planar ? "planar" : "interleaved")")
+        }
+        guard format.mFormatID == kAudioFormatLinearPCM, format.mFormatFlags & kAudioFormatFlagIsFloat != 0,
+              format.mBitsPerChannel == 32, channels > 0, rate > 0
+        else { return }
+        let frames = sampleBuffer.numSamples
+        guard frames > 0 else { return }
+        do {
+            try sampleBuffer.withAudioBufferList { list, _ in
+                if !planar {
+                    guard let first = list.first, let data = first.mData else { return }
+                    let n = min(frames, Int(first.mDataByteSize) / (4 * channels))
+                    if n > 0 { onSound(UnsafePointer(data.assumingMemoryBound(to: Float.self)), n, channels, rate) }
+                    return
+                }
+                guard list.count >= channels else { return }
+                let count = frames * channels
+                if interleaved.count < count { interleaved = [Float](repeating: 0, count: count) }
+                interleaved.withUnsafeMutableBufferPointer { out in
+                    guard let base = out.baseAddress else { return }
+                    for c in 0..<channels {
+                        let plane = list[c]
+                        let n = plane.mData == nil ? 0 : min(frames, Int(plane.mDataByteSize) / 4)
+                        if let src = plane.mData?.assumingMemoryBound(to: Float.self) {
+                            for i in 0..<n { base[i * channels + c] = src[i] }
+                        }
+                        for i in n..<frames { base[i * channels + c] = 0 }
+                    }
+                    onSound(UnsafePointer(base), frames, channels, rate)
+                }
+            }
+        } catch {
+            Annex.log(.trace, "[capture] couldn't read a sound chunk: \(error.localizedDescription)")
+        }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {

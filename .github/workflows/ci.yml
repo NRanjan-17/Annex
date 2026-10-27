@@ -34,6 +34,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
+      - name: Sound library headers (ALSA)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -60,6 +63,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show active-toolchain || rustup toolchain install
+      - name: Sound library headers (ALSA)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -137,7 +143,7 @@ jobs:
           # libgstreamer1.0-dev needs ("held broken packages").
           sudo apt-get remove -y -qq libunwind-14-dev || true
           sudo apt-get install -y --no-install-recommends libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libxkbcommon-dev libdbus-1-dev pkg-config rpm meson ninja-build libwayland-dev wayland-protocols
+            libxkbcommon-dev libdbus-1-dev libasound2-dev pkg-config rpm meson ninja-build libwayland-dev wayland-protocols
       - name: Install pinned toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -281,6 +287,9 @@ jobs:
         run: npx vitest run
       - name: Install pinned toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
+      - name: Sound library headers (ALSA)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends libasound2-dev pkg-config
       - name: Rust client against the Worker (wrangler dev)
         shell: bash
         run: |

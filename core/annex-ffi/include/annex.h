@@ -94,6 +94,19 @@ int32_t annex_core_set_headless(const AnnexCore *core, bool on);
 /* Where files from the other computer are saved (e.g. Downloads); NULL refuses them (default).
  * Applies to sessions that start afterwards. */
 int32_t annex_core_set_downloads(const AnnexCore *core, const char *dir);
+/* Sound switches, applied at once (running sessions too): share this computer's sound with viewers,
+ * play what the other computer sends, send this computer's microphone, and make a viewer's
+ * microphone "Annex Microphone" (where supported) instead of playing it aloud. Returns 0. */
+int32_t annex_core_set_audio(const AnnexCore *core, bool share_sound, bool hear_sound, bool send_mic,
+                             bool virtual_mic);
+/* This computer's own sound from an app that captures it (Mac, ScreenCaptureKit): frames x channels
+ * interleaved floats at rate Hz. Ignored while nobody listens. Returns 0. */
+int32_t annex_core_push_sound(const AnnexCore *core, const float *samples, size_t frames, uint32_t channels,
+                              uint32_t rate);
+/* 1 while a viewer listens to this computer's sound (capture it only then), else 0. */
+int32_t annex_core_sound_wanted(const AnnexCore *core);
+/* Whether "Annex Microphone" can be made here (Linux now; Mac and Windows need a driver). */
+bool annex_virtual_microphone_supported(void);
 /* This platform's key code (macOS virtual key code / Windows scancode, 0xE0xx = extended) for a
  * HID usage from an "input" event, or -1 if there is no such key. */
 int32_t annex_key_native_from_hid(uint16_t usage);
@@ -121,6 +134,13 @@ int32_t annex_host_submit_session_frame(const AnnexHost *host, uint64_t session_
 /* Changes one session's stream (e.g. its virtual display's resolution changed). */
 int32_t annex_host_set_session_stream(const AnnexHost *host, uint64_t session_id, const char *codec,
                                       uint32_t width, uint32_t height, uint32_t fps);
+/* Adaptive bitrate's smaller picture, for a mirror host. width x height at fps is the full
+ * stream, effective_bps the encoder's target now (normal bitrate x the bitrate_hint scale),
+ * reduced whether it sends the smaller picture now. Writes the picture to encode (full or
+ * smaller: each side halved, at most 30 fps) to the non-null out parameters and returns whether
+ * it is the smaller one. Keep the bitrate as it is. */
+bool annex_mirror_picture(uint64_t effective_bps, bool reduced, uint32_t width, uint32_t height, uint32_t fps,
+                          uint32_t *out_width, uint32_t *out_height, uint32_t *out_fps);
 /* Ends one session; its viewer is told "host_ended_session". */
 void annex_host_end_session(const AnnexHost *host, uint64_t session_id);
 /* Clipboard and files (sessions where both sides run 0.4+ over QUIC). mime: "text/plain;charset=utf-8"
@@ -129,6 +149,8 @@ void annex_host_end_session(const AnnexHost *host, uint64_t session_id);
 int32_t annex_host_send_clipboard(const AnnexHost *host, uint64_t session_id, const char *mime,
                                   const uint8_t *data, size_t len);
 int32_t annex_host_send_file(const AnnexHost *host, uint64_t session_id, const char *path, uint64_t *out_id);
+/* Pauses (paused=true) or resumes a file being sent to the viewer. Returns 1 if it is being sent. */
+int32_t annex_host_pause_transfer(const AnnexHost *host, uint64_t session_id, uint64_t id, bool paused);
 void annex_host_cancel_transfer(const AnnexHost *host, uint64_t session_id, bool incoming, uint64_t id);
 /* Shares over the internet with one code via the rendezvous server (wss://...). stun (NULL:
  * Cloudflare's) is host:port. turn_url (NULL or "": none) is the user's own relay, turn:host:port.
@@ -195,6 +217,8 @@ void annex_viewer_send_scroll(const AnnexViewer *viewer, int32_t dx, int32_t dy)
  * this viewer has control. */
 int32_t annex_viewer_send_clipboard(const AnnexViewer *viewer, const char *mime, const uint8_t *data, size_t len);
 int32_t annex_viewer_send_file(const AnnexViewer *viewer, const char *path, uint64_t *out_id);
+/* Pauses (paused=true) or resumes a file being sent to the host. Returns 1 if it is being sent. */
+int32_t annex_viewer_pause_transfer(const AnnexViewer *viewer, uint64_t id, bool paused);
 void annex_viewer_cancel_transfer(const AnnexViewer *viewer, bool incoming, uint64_t id);
 /* native_code: macOS virtual key code / Windows scancode. Returns 1 if sent, 0 if unmapped. */
 int32_t annex_viewer_send_key(const AnnexViewer *viewer, uint32_t native_code, bool down);
