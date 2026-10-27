@@ -324,9 +324,11 @@ fn add_input(
     // Leaving the window lets go of every key, so none stays held on the other computer.
     {
         let (h, down) = (handle.clone(), keys_down.clone());
-        let (model, app) = (model.clone(), app.clone());
+        let model = model.clone();
         window.connect_is_active_notify(move |w| {
-            crate::ui::act(&app, &model, |m| m.viewer_focus(w.is_active()));
+            if let Ok(mut m) = model.try_borrow_mut() {
+                m.viewer_focus(w.is_active());
+            }
             if !w.is_active() {
                 for usage in down.borrow_mut().drain() {
                     h.send_input(InputEvent::Key { usage, down: false });

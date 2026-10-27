@@ -31,8 +31,8 @@ public sealed partial class MainWindow : Window
     private ViewerHandle? _viewer;
     private HostHandle? _host;
     private readonly ClipboardSync _clipboard = new();
-    /// <summary>Viewer: copied while the viewer window wasn't in front; sent once it is.</summary>
-    private (string Mime, byte[] Data)? _clipboardForHost;
+    /// <summary>Viewer: something was copied while the viewer window wasn't in front.</summary>
+    private bool _copiedWhileAway;
     private DispatcherQueueTimer? _clipboardTimer;
     private IReadOnlyList<MonitorInfo> _monitors = [];
     private int _monitorIndex;
@@ -1661,7 +1661,7 @@ public sealed partial class MainWindow : Window
             {
                 _settings.ShareClipboard = on;
                 _settings.Save();
-                if (on) _clipboard.Start(); else { _clipboard.Stop(); _clipboardForHost = null; }
+                if (on) _clipboard.Start(); else { _clipboard.Stop(); _copiedWhileAway = false; }
             })));
         p.Children.Add(Ui.Card("", "Receive files", "Files the other computer sends go to Downloads.",
             Ui.Switch(_settings.ReceiveFiles, on =>
@@ -1676,9 +1676,9 @@ public sealed partial class MainWindow : Window
 
     private static string DownloadsFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
 
-    /// <summary>Copied on this PC: to the host this PC controls (once its window is in front, so what's
-    /// copied in other apps meanwhile stays here unless it's still on the clipboard), and to the
-    /// viewers controlling this PC.</summary>
+    /// <summary>Copied on this PC: to the host this PC controls (if copied elsewhere, once its window
+    /// comes to the front, and only what's on the clipboard then), and to the viewers controlling
+    /// this PC.</summary>
     private void OnCopied(string mime, byte[] data)
     {
         try
@@ -1688,7 +1688,7 @@ public sealed partial class MainWindow : Window
             if (_viewer is not null && _controlling)
             {
                 if (ViewerInFront()) _viewer.SendClipboard(mime, data);
-                else WaitForViewer(mime, data);
+                else WaitForViewer();
             }
         }
         catch (AnnexException)
@@ -1697,25 +1697,28 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void WaitForViewer(string mime, byte[] data)
+    /// <summary>Checks twice a second for the viewer window to come to the front, then sends what's on
+    /// the clipboard then.</summary>
+    private void WaitForViewer()
     {
-        _clipboardForHost = (mime, data);
+        _copiedWhileAway = true;
         if (_clipboardTimer is null)
         {
             _clipboardTimer = _ui.CreateTimer();
             _clipboardTimer.Interval = TimeSpan.FromMilliseconds(500);
-            _clipboardTimer.Tick += (t, _) =>
+            _clipboardTimer.Tick += async (t, _) =>
             {
-                if (_clipboardForHost is not { } item || _viewer is null || !_controlling)
+                if (!_copiedWhileAway || _viewer is null || !_controlling)
                 {
-                    _clipboardForHost = null;
+                    _copiedWhileAway = false;
                     t.Stop();
                 }
                 else if (ViewerInFront())
                 {
-                    _clipboardForHost = null;
+                    _copiedWhileAway = false;
                     t.Stop();
-                    try { _viewer.SendClipboard(item.Mime, item.Data); } catch (AnnexException) { }
+                    if (await _clipboard.ReadNowAsync() is var (mime, data) && _viewer is { } v)
+                        try { v.SendClipboard(mime, data); } catch (AnnexException) { }
                 }
             };
         }
@@ -2452,7 +2455,7 @@ public sealed partial class MainWindow : Window
         _viewer = null;
         _viewerLive = false;
         _viewerToken = null;
-        _clipboardForHost = null;
+        _copiedWhileAway = false;
         FreeLater(v);
     }
 

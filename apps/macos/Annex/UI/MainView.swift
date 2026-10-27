@@ -1067,7 +1067,7 @@ private struct SettingsPage: View {
             ToggleRow(title: "Open in full screen", isOn: $settings.openFullScreen)
             ToggleRow(title: "Extend display by default", isOn: $settings.extendByDefault)
             ToggleRow(title: "Reverse scrolling on Windows and Linux",
-                      subtitle: "Scrolling on them feels like it does on this Mac.",
+                      subtitle: "With natural scrolling on, scrolling on them feels like it does on this Mac.",
                       isOn: $settings.reverseScrollOnOthers)
         }
     }

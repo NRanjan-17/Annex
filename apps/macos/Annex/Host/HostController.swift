@@ -131,7 +131,9 @@ final class HostController {
         case .sessionStarted(let s) where s.mode == "extend":
             startExtend(s)
         case .inputAllowed(let id, let allowed):
-            if !allowed {
+            if allowed, let name = mirrorSessions[id] ?? extendSessions[id]?.viewerName {
+                inputSessions[id] = name
+            } else if !allowed {
                 inputSessions.removeValue(forKey: id)
                 injector.releaseAll()
             }

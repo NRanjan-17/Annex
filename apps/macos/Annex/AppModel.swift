@@ -108,8 +108,8 @@ final class AppModel: ObservableObject {
     /// Viewer: the host's system ("macos", "windows", "linux"), for scroll direction.
     private var viewerPeerOS: String?
     private let clipboard = ClipboardSync()
-    /// Viewer: copied on this Mac while the viewer window wasn't in front; sent once it is.
-    private var clipboardForHost: (mime: String, data: Data)?
+    /// Viewer: something was copied on this Mac while the viewer window wasn't in front.
+    private var copiedWhileAway = false
 
     /// Started by "Open at login": stay quietly in the menu bar.
     static let launchedAtLogin: Bool = {
@@ -218,7 +218,7 @@ final class AppModel: ObservableObject {
             clipboard.onCopy = { [weak self] mime, data in self?.copied(mime: mime, data: data) }
             settings.$shareClipboard.sink { [weak self] on in
                 guard let self else { return }
-                if on { clipboard.start() } else { clipboard.stop(); clipboardForHost = nil }
+                if on { clipboard.start() } else { clipboard.stop(); copiedWhileAway = false }
             }.store(in: &cancellables)
             settings.$reverseScrollOnOthers.sink { [weak self] on in
                 guard let self else { return }
@@ -688,7 +688,7 @@ final class AppModel: ObservableObject {
             latency = nil
             controllingHost = false
             viewerPeerOS = nil
-            clipboardForHost = nil
+            copiedWhileAway = false
             viewerExtends = nil
             holdingWindow = false
         default:
@@ -783,23 +783,24 @@ final class AppModel: ObservableObject {
 
     // MARK: Clipboard
 
-    /// Copied on this Mac: to the host this Mac controls (once its window is in front, so what's
-    /// copied in other apps meanwhile stays here unless it's still on the clipboard), and to the
-    /// viewers controlling this Mac.
+    /// Copied on this Mac: to the host this Mac controls (if copied elsewhere, once its window
+    /// comes to the front, and only what's on the clipboard then), and to the viewers controlling
+    /// this Mac.
     private func copied(mime: String, data: Data) {
         if viewer != nil, controllingHost {
             if viewerWindow?.isFocused == true {
                 _ = viewer?.sendClipboard(mime: mime, data: data)
             } else {
-                clipboardForHost = (mime, data)
+                copiedWhileAway = true
             }
         }
         host?.sendClipboard(mime: mime, data: data)
     }
 
     private func viewerFocused() {
-        guard let item = clipboardForHost, controllingHost else { return }
-        clipboardForHost = nil
+        guard copiedWhileAway, controllingHost else { return }
+        copiedWhileAway = false
+        guard let item = clipboard.current() else { return }
         _ = viewer?.sendClipboard(mime: item.mime, data: item.data)
     }
 

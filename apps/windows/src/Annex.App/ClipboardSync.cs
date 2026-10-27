@@ -50,6 +50,13 @@ internal sealed class ClipboardSync
         }
     }
 
+    /// <summary>What's on the clipboard now, if it's text or a picture and not marked private.</summary>
+    public async Task<(string Mime, byte[] Data)?> ReadNowAsync()
+    {
+        try { return await ReadAsync(); }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException) { return null; }
+    }
+
     private static async Task<(string, byte[])?> ReadAsync()
     {
         var view = Clipboard.GetContent();

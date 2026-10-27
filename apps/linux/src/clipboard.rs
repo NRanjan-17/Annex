@@ -8,6 +8,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gtk::gdk;
@@ -27,10 +28,12 @@ pub struct Clipboard {
     /// What was last seen on the clipboard, so writing what the other computer copied doesn't
     /// send it straight back.
     seen: Arc<Mutex<u64>>,
+    tx: async_channel::Sender<Msg>,
 }
 
 enum Backend {
-    WlClipboard(Child),
+    /// The watcher, and whether Annex is stopping it.
+    WlClipboard(Child, Arc<AtomicBool>),
     Gtk(gdk::Clipboard, Option<glib::SignalHandlerId>),
 }
 
@@ -65,64 +68,101 @@ fn wl_read() -> Option<(String, Vec<u8>)> {
     (out.status.success() && !out.stdout.is_empty()).then(|| (mime.to_string(), out.stdout))
 }
 
-impl Clipboard {
-    pub fn start(tx: async_channel::Sender<Msg>) -> Option<Clipboard> {
-        let seen = Arc::new(Mutex::new(0));
-        if wl_clipboard() {
-            // Prints a line each time something is copied (and once for what's there now).
-            let mut child = Command::new("wl-paste")
-                .args(["--watch", "echo", ""])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .ok()?;
-            let out = child.stdout.take()?;
-            let seen2 = seen.clone();
-            std::thread::Builder::new()
-                .name("annex-clipboard".into())
-                .spawn(move || {
-                    for _ in BufReader::new(out).lines().map_while(Result::ok) {
-                        let Some((mime, data)) = wl_read() else { continue };
-                        let d = digest(&data);
-                        if std::mem::replace(&mut *seen2.lock().unwrap(), d) == d {
-                            continue;
-                        }
-                        if tx.send_blocking(Msg::Copied { mime, data }).is_err() {
-                            break;
-                        }
-                    }
-                })
-                .ok()?;
-            tracing::info!("clipboard: through wl-clipboard");
-            return Some(Clipboard { backend: Backend::WlClipboard(child), seen });
+/// Reads the GTK clipboard and sends what's on it: `Msg::ClipboardNow` if asked for, else `Msg::Copied`.
+fn gtk_read(b: &gdk::Clipboard, tx: &async_channel::Sender<Msg>, current: bool) {
+    let formats = b.formats();
+    if formats.contain_mime_type(SECRET) {
+        return;
+    }
+    let (b, tx) = (b.clone(), tx.clone());
+    let image = formats.contain_mime_type(PNG) && !formats.contain_mime_type("text/uri-list");
+    glib::spawn_future_local(async move {
+        let item = if image {
+            b.read_texture_future().await.ok().flatten().map(|t| (PNG, t.save_to_png_bytes().to_vec()))
+        } else {
+            b.read_text_future().await.ok().flatten().map(|s| (TEXT, s.as_bytes().to_vec()))
+        };
+        if let Some((mime, data)) = item.filter(|(_, d)| !d.is_empty()) {
+            let mime = mime.to_string();
+            let _ = tx.send(if current { Msg::ClipboardNow { mime, data } } else { Msg::Copied { mime, data } }).await;
         }
+    });
+}
+
+impl Clipboard {
+    /// Through wl-clipboard when it's installed and works here, else GTK.
+    pub fn start(tx: async_channel::Sender<Msg>) -> Option<Clipboard> {
+        if wl_clipboard()
+            && let Some(c) = Self::start_wl(tx.clone())
+        {
+            return Some(c);
+        }
+        Self::start_gtk(tx)
+    }
+
+    fn start_wl(tx: async_channel::Sender<Msg>) -> Option<Clipboard> {
+        let seen = Arc::new(Mutex::new(0));
+        let stopping = Arc::new(AtomicBool::new(false));
+        // Prints a line each time something is copied (and once for what's there now).
+        let mut child = Command::new("wl-paste")
+            .args(["--watch", "echo", ""])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let out = child.stdout.take()?;
+        let (seen2, stopping2, tx2) = (seen.clone(), stopping.clone(), tx.clone());
+        std::thread::Builder::new()
+            .name("annex-clipboard".into())
+            .spawn(move || {
+                for _ in BufReader::new(out).lines().map_while(Result::ok) {
+                    let Some((mime, data)) = wl_read() else { continue };
+                    let d = digest(&data);
+                    if std::mem::replace(&mut *seen2.lock().unwrap(), d) == d {
+                        continue;
+                    }
+                    if tx2.send_blocking(Msg::Copied { mime, data }).is_err() {
+                        return;
+                    }
+                }
+                // GNOME has no clipboard access for other programs, so wl-paste stops at once there.
+                if !stopping2.load(Ordering::Relaxed) {
+                    let _ = tx2.send_blocking(Msg::ClipboardWatchEnded);
+                }
+            })
+            .ok()?;
+        tracing::info!("clipboard: through wl-clipboard");
+        Some(Clipboard { backend: Backend::WlClipboard(child, stopping), seen, tx })
+    }
+
+    pub fn start_gtk(tx: async_channel::Sender<Msg>) -> Option<Clipboard> {
         let board = gdk::Display::default()?.clipboard();
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            tracing::info!("clipboard: install wl-clipboard to share it while Annex's window isn't in front");
+            tracing::info!("clipboard: through GTK; it's shared only while Annex's window is in front");
         }
+        let tx2 = tx.clone();
         let id = board.connect_changed(move |b| {
             // Set by Annex itself: what the other computer copied.
-            if b.is_local() {
-                return;
+            if !b.is_local() {
+                gtk_read(b, &tx2, false);
             }
-            let formats = b.formats();
-            if formats.contain_mime_type(SECRET) {
-                return;
-            }
-            let (b, tx) = (b.clone(), tx.clone());
-            let image = formats.contain_mime_type(PNG) && !formats.contain_mime_type("text/uri-list");
-            glib::spawn_future_local(async move {
-                let item = if image {
-                    b.read_texture_future().await.ok().flatten().map(|t| (PNG, t.save_to_png_bytes().to_vec()))
-                } else {
-                    b.read_text_future().await.ok().flatten().map(|s| (TEXT, s.as_bytes().to_vec()))
-                };
-                if let Some((mime, data)) = item.filter(|(_, d)| !d.is_empty()) {
-                    let _ = tx.send(Msg::Copied { mime: mime.into(), data }).await;
-                }
-            });
         });
-        Some(Clipboard { backend: Backend::Gtk(board, Some(id)), seen })
+        Some(Clipboard { backend: Backend::Gtk(board, Some(id)), seen: Arc::new(Mutex::new(0)), tx })
+    }
+
+    /// Reads what's on the clipboard now; it arrives as `Msg::ClipboardNow`.
+    pub fn read_now(&self) {
+        match &self.backend {
+            Backend::WlClipboard(..) => {
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    if let Some((mime, data)) = wl_read() {
+                        let _ = tx.send_blocking(Msg::ClipboardNow { mime, data });
+                    }
+                });
+            }
+            Backend::Gtk(board, _) => gtk_read(board, &self.tx, true),
+        }
     }
 
     /// Puts what the other computer copied on this computer's clipboard.
@@ -133,7 +173,7 @@ impl Clipboard {
         }
         *self.seen.lock().unwrap() = digest(data);
         match &self.backend {
-            Backend::WlClipboard(_) => {
+            Backend::WlClipboard(..) => {
                 let mut cmd = Command::new("wl-copy");
                 if !text {
                     cmd.args(["--type", PNG]);
@@ -161,7 +201,8 @@ impl Clipboard {
 impl Drop for Clipboard {
     fn drop(&mut self) {
         match &mut self.backend {
-            Backend::WlClipboard(child) => {
+            Backend::WlClipboard(child, stopping) => {
+                stopping.store(true, Ordering::Relaxed);
                 let _ = child.kill();
                 let _ = child.wait();
             }

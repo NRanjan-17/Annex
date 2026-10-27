@@ -34,6 +34,13 @@ pub enum Msg {
         mime: String,
         data: Vec<u8>,
     },
+    /// What's on the clipboard now (asked for when the video window comes to the front).
+    ClipboardNow {
+        mime: String,
+        data: Vec<u8>,
+    },
+    /// wl-paste stopped (no clipboard access for other programs here): use GTK's clipboard.
+    ClipboardWatchEnded,
     /// The sharing pipeline stopped by itself (the screen-sharing permission was refused, the
     /// encoder failed, …).
     HostFailed(String),
@@ -167,8 +174,8 @@ pub struct Model {
     clipboard: Option<crate::clipboard::Clipboard>,
     /// Viewer: the video window takes this computer's keyboard.
     pub viewer_focused: bool,
-    /// Viewer: copied while the video window wasn't in front; sent once it is.
-    clipboard_for_host: Option<(String, Vec<u8>)>,
+    /// Viewer: something was copied while the video window wasn't in front.
+    copied_while_away: bool,
 
     tx: async_channel::Sender<Msg>,
     /// What the UI should do once it lets go of the model (see [`Model::take_changes`]).
@@ -226,7 +233,7 @@ impl Model {
             internet: None,
             clipboard: None,
             viewer_focused: false,
-            clipboard_for_host: None,
+            copied_while_away: false,
             tx,
             changes: Vec::new(),
         }));
@@ -558,7 +565,7 @@ impl Model {
         self.viewer_extends = None;
         self.controlling = false;
         self.viewer_focused = false;
-        self.clipboard_for_host = None;
+        self.copied_while_away = false;
         self.latency = None;
         self.stream_size = None;
         self.emit(Change::ViewerClose);
@@ -801,6 +808,17 @@ impl Model {
                 self.settings.save();
             }
             Msg::Copied { mime, data } => self.copied(mime, data),
+            Msg::ClipboardNow { mime, data } => {
+                if let Some(v) = self.viewer.as_ref().filter(|_| self.controlling && self.clipboard.is_some()) {
+                    v.handle.send_clipboard(&mime, data);
+                }
+            }
+            Msg::ClipboardWatchEnded => {
+                tracing::info!("clipboard: wl-paste can't watch the clipboard here");
+                if self.clipboard.is_some() {
+                    self.clipboard = crate::clipboard::Clipboard::start_gtk(self.tx.clone());
+                }
+            }
             Msg::HostFailed(why) => {
                 self.set_hosting(false);
                 self.host_error = Some(why);
@@ -814,7 +832,7 @@ impl Model {
     pub fn set_clipboard_sharing(&mut self, on: bool) {
         if !on {
             self.clipboard = None;
-            self.clipboard_for_host = None;
+            self.copied_while_away = false;
         } else if self.clipboard.is_none() {
             self.clipboard = crate::clipboard::Clipboard::start(self.tx.clone());
         }
@@ -824,9 +842,9 @@ impl Model {
         self.core.set_downloads(on.then(downloads_dir));
     }
 
-    /// Copied here: to the host this computer controls (once its window is in front, so what's
-    /// copied in other apps meanwhile stays here unless it's still on the clipboard), and to the
-    /// viewers controlling this computer.
+    /// Copied here: to the host this computer controls (if copied elsewhere, once its window
+    /// comes to the front, and only what's on the clipboard then), and to the viewers controlling
+    /// this computer.
     fn copied(&mut self, mime: String, data: Vec<u8>) {
         if self.clipboard.is_none() {
             return;
@@ -840,7 +858,7 @@ impl Model {
             if self.viewer_focused {
                 v.handle.send_clipboard(&mime, data);
             } else {
-                self.clipboard_for_host = Some((mime, data));
+                self.copied_while_away = true;
             }
         }
     }
@@ -850,9 +868,10 @@ impl Model {
         self.viewer_focused = focused;
         if focused
             && self.controlling
-            && let (Some(v), Some((mime, data))) = (&self.viewer, self.clipboard_for_host.take())
+            && std::mem::take(&mut self.copied_while_away)
+            && let Some(c) = &self.clipboard
         {
-            v.handle.send_clipboard(&mime, data);
+            c.read_now();
         }
     }
 
