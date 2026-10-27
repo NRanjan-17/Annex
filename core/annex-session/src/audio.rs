@@ -266,6 +266,17 @@ async fn run(core: Arc<Core>, conn: quinn::Connection, id: u64, host: bool, mut 
                     want_output = want;
                     player = None;
                     player_failed = false;
+                    // Annex Microphone is there for the whole session, so a call app can pick it
+                    // before the viewer starts talking.
+                    if want == Some(Output::VirtualMicrophone) {
+                        match Player::start(Output::VirtualMicrophone) {
+                            Ok(p) => player = Some(p),
+                            Err(e) => {
+                                tracing::warn!(target: "annex::audio", "can't add Annex Microphone: {e}");
+                                player_failed = true;
+                            }
+                        }
+                    }
                 }
             }
             d = next(&conn, &mut incoming) => {

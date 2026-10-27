@@ -194,6 +194,11 @@ impl ViewerHandle {
         self.transfers.get().ok_or_else(crate::transfer::no_transfers)?.send_file(path)
     }
 
+    /// Pauses or resumes a file being sent to the host.
+    pub fn pause_transfer(&self, id: u64, paused: bool) -> bool {
+        self.transfers.get().is_some_and(|t| t.pause(id, paused))
+    }
+
     pub fn cancel_transfer(&self, incoming: bool, id: u64) {
         if let Some(t) = self.transfers.get() {
             t.cancel(incoming, id);

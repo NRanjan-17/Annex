@@ -82,6 +82,8 @@ pub struct Transfers {
     next_id: AtomicU64,
     /// Cancel flags of running transfers, by (incoming, id).
     running: Mutex<HashMap<(bool, u64), Arc<AtomicBool>>>,
+    /// Pause flags of files being sent, by id.
+    paused: Mutex<HashMap<u64, Arc<AtomicBool>>>,
     tasks: Mutex<tokio::task::JoinSet<()>>,
     /// The apps send from their own threads, outside the runtime.
     rt: tokio::runtime::Handle,
@@ -105,6 +107,7 @@ impl Transfers {
             allow_incoming,
             next_id: AtomicU64::new(1),
             running: Mutex::new(HashMap::new()),
+            paused: Mutex::new(HashMap::new()),
             tasks: Mutex::new(tokio::task::JoinSet::new()),
             rt: tokio::runtime::Handle::current(),
         });
@@ -141,7 +144,7 @@ impl Transfers {
         self.tasks.lock().unwrap().spawn(async move {
             let flag = Arc::new(AtomicBool::new(false));
             let mut src: &[u8] = &data;
-            match me.send(&header, &mut src, &flag, |_| {}).await {
+            match me.send(&header, &mut src, &flag, &AtomicBool::new(false), |_| {}).await {
                 Ok(()) => tracing::debug!(id, "clipboard sent"),
                 Err(e) => tracing::warn!(id, "clipboard not sent: {e}"),
             }
@@ -160,6 +163,8 @@ impl Transfers {
         tracing::info!(id, name, size, paced = self.limited, "sending a file");
         let flag = Arc::new(AtomicBool::new(false));
         self.running.lock().unwrap().insert((false, id), flag.clone());
+        let pause = Arc::new(AtomicBool::new(false));
+        self.paused.lock().unwrap().insert(id, pause.clone());
         (self.events)(Event::TransferStarted {
             session_id: self.session_id,
             id,
@@ -176,7 +181,7 @@ impl Transfers {
                 Ok(mut f) => {
                     let events = me.events.clone();
                     let sid = me.session_id;
-                    me.send(&header, &mut f, &flag, move |done| {
+                    me.send(&header, &mut f, &flag, &pause, move |done| {
                         events(Event::TransferProgress { session_id: sid, id, incoming: false, done })
                     })
                     .await
@@ -184,10 +189,18 @@ impl Transfers {
                 Err(e) => Err(e.to_string()),
             };
             me.running.lock().unwrap().remove(&(false, id));
+            me.paused.lock().unwrap().remove(&id);
             log_outcome("sent", id, size, started, &result);
             me.ended(false, id, result.map(|()| None));
         });
         Ok(id)
+    }
+
+    /// Pauses or resumes a file being sent. Returns false if it isn't being sent.
+    pub fn pause(&self, id: u64, paused: bool) -> bool {
+        let found = self.paused.lock().unwrap().get(&id).cloned();
+        tracing::info!(id, paused, found = found.is_some(), "pausing a transfer");
+        found.map(|f| f.store(paused, Ordering::Relaxed)).is_some()
     }
 
     /// Stops a running transfer, either way. The receiving side deletes what it had written.
@@ -211,6 +224,7 @@ impl Transfers {
         header: &Header,
         src: &mut R,
         cancel: &AtomicBool,
+        pause: &AtomicBool,
         progress: impl Fn(u64),
     ) -> Result<(), String> {
         let mut out = self.conn.open_uni().await.map_err(|e| e.to_string())?;
@@ -221,7 +235,16 @@ impl Transfers {
         let mut buf = vec![0u8; if self.limited { LIMITED_CHUNK } else { CHUNK }];
         let (mut done, started) = (0u64, Instant::now());
         let mut last = Instant::now();
+        // Time spent paused, which the relay's pacing doesn't make up for afterwards.
+        let mut paused_for = Duration::ZERO;
         while done < header.size {
+            if pause.load(Ordering::Relaxed) {
+                let since = Instant::now();
+                while pause.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                paused_for += since.elapsed();
+            }
             if cancel.load(Ordering::Relaxed) {
                 let _ = out.reset(CANCELLED.into());
                 return Err("Cancelled.".into());
@@ -238,7 +261,7 @@ impl Transfers {
             if self.limited {
                 // Packet by packet at the relay's pace.
                 let due = Duration::from_secs_f64(done as f64 / LIMITED_RATE as f64);
-                if let Some(wait) = due.checked_sub(started.elapsed()) {
+                if let Some(wait) = due.checked_sub(started.elapsed().saturating_sub(paused_for)) {
                     tokio::time::sleep(wait).await;
                 }
             }

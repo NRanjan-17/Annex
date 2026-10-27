@@ -309,6 +309,11 @@ impl HostHandle {
         self.transfers(session_id).ok_or_else(no_transfers)?.send_file(path)
     }
 
+    /// Pauses or resumes a file being sent to the viewer.
+    pub fn pause_transfer(&self, session_id: SessionId, id: u64, paused: bool) -> bool {
+        self.transfers(session_id).is_some_and(|t| t.pause(id, paused))
+    }
+
     pub fn cancel_transfer(&self, session_id: SessionId, incoming: bool, id: u64) {
         if let Some(t) = self.transfers(session_id) {
             t.cancel(incoming, id);

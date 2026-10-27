@@ -142,6 +142,8 @@ void annex_host_end_session(const AnnexHost *host, uint64_t session_id);
 int32_t annex_host_send_clipboard(const AnnexHost *host, uint64_t session_id, const char *mime,
                                   const uint8_t *data, size_t len);
 int32_t annex_host_send_file(const AnnexHost *host, uint64_t session_id, const char *path, uint64_t *out_id);
+/* Pauses (paused=true) or resumes a file being sent to the viewer. Returns 1 if it is being sent. */
+int32_t annex_host_pause_transfer(const AnnexHost *host, uint64_t session_id, uint64_t id, bool paused);
 void annex_host_cancel_transfer(const AnnexHost *host, uint64_t session_id, bool incoming, uint64_t id);
 /* Shares over the internet with one code via the rendezvous server (wss://...). stun (NULL:
  * Cloudflare's) is host:port. turn_url (NULL or "": none) is the user's own relay, turn:host:port.
@@ -208,6 +210,8 @@ void annex_viewer_send_scroll(const AnnexViewer *viewer, int32_t dx, int32_t dy)
  * this viewer has control. */
 int32_t annex_viewer_send_clipboard(const AnnexViewer *viewer, const char *mime, const uint8_t *data, size_t len);
 int32_t annex_viewer_send_file(const AnnexViewer *viewer, const char *path, uint64_t *out_id);
+/* Pauses (paused=true) or resumes a file being sent to the host. Returns 1 if it is being sent. */
+int32_t annex_viewer_pause_transfer(const AnnexViewer *viewer, uint64_t id, bool paused);
 void annex_viewer_cancel_transfer(const AnnexViewer *viewer, bool incoming, uint64_t id);
 /* native_code: macOS virtual key code / Windows scancode. Returns 1 if sent, 0 if unmapped. */
 int32_t annex_viewer_send_key(const AnnexViewer *viewer, uint32_t native_code, bool down);

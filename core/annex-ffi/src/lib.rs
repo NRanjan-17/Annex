@@ -933,6 +933,15 @@ pub unsafe extern "C" fn annex_host_send_file(
     })
 }
 
+/// Pauses (or resumes) a file being sent to the viewer. Returns 1 if it is being sent, else 0.
+///
+/// # Safety
+/// `host` must be valid or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_pause_transfer(host: *const AnnexHost, session_id: u64, id: u64, paused: bool) -> i32 {
+    unsafe { host.as_ref() }.is_some_and(|h| h.handle.pause_transfer(session_id, id, paused)) as i32
+}
+
 /// Stops a file going either way (`incoming`: from the viewer).
 ///
 /// # Safety
@@ -1912,6 +1921,15 @@ pub unsafe extern "C" fn annex_viewer_send_file(
         }
         Ok(0)
     })
+}
+
+/// Pauses (or resumes) a file being sent to the host. Returns 1 if it is being sent, else 0.
+///
+/// # Safety
+/// `viewer` must be valid or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_pause_transfer(viewer: *const AnnexViewer, id: u64, paused: bool) -> i32 {
+    unsafe { viewer.as_ref() }.is_some_and(|v| v.handle.pause_transfer(id, paused)) as i32
 }
 
 /// Stops a file going either way (`incoming`: from the host).
