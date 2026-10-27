@@ -34,11 +34,18 @@ pub fn set_relay_refresh(every: Duration) {
 }
 
 /// A relay (TURN server) and the login for it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TurnServer {
     pub addr: SocketAddr,
     pub username: String,
     pub password: String,
+}
+
+/// Without the password, so it can't reach the log.
+impl std::fmt::Debug for TurnServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurnServer").field("addr", &self.addr).field("username", &self.username).finish_non_exhaustive()
+    }
 }
 
 /// The login for a relay, once its realm and nonce are known.
@@ -168,7 +175,9 @@ impl PunchSocket {
     pub async fn public_address(self: &Arc<Self>, stun_server: SocketAddr) -> io::Result<SocketAddr> {
         let answer = self.transact(stun_server, |id| stun::binding_request(&id)).await?;
         let a = stun::mapped_address(&answer).ok_or_else(|| io::Error::other("bad STUN answer"))?;
-        Ok(SocketAddr::new(a.ip().to_canonical(), a.port()))
+        let public = SocketAddr::new(a.ip().to_canonical(), a.port());
+        tracing::debug!(%stun_server, %public, "public address from STUN");
+        Ok(public)
     }
 
     /// A signed TURN request: `kind` with its own attributes (`allowed` for a permission), then
@@ -221,6 +230,7 @@ impl PunchSocket {
     ) -> io::Result<SocketAddr> {
         let srv = canonical(server.addr);
         let peers: Vec<SocketAddr> = peers.into_iter().map(|ip| SocketAddr::new(ip.to_canonical(), 0)).collect();
+        tracing::info!(server = %srv, ?peers, limited, "asking the relay for an address");
         let refused = |what: &str, r: &[u8]| {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -318,6 +328,7 @@ impl PunchSocket {
     pub fn punch(self: &Arc<Self>, peers: Vec<SocketAddr>) {
         let peers: Vec<SocketAddr> =
             peers.into_iter().map(|a| SocketAddr::new(a.ip().to_canonical(), a.port())).collect();
+        tracing::debug!(?peers, "punching through to");
         self.punched.lock().unwrap().extend(peers.iter().copied());
         let me = self.clone();
         tokio::spawn(async move {

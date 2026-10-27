@@ -14,6 +14,8 @@ final class InputInjector: @unchecked Sendable {
     private var buttonsDown: Set<CGMouseButton> = []
     private var flags: CGEventFlags = []
     private var lastClick: (button: CGMouseButton, time: TimeInterval, at: CGPoint, count: Int64)?
+    /// An event couldn't be made: logged once, not for every one after it.
+    private var reportedFailure = false
 
     /// Posting input events needs the Accessibility ("Device Control") permission.
     /// CGPreflightPostEventAccess is the exact check for CGEventPost; AXIsProcessTrusted can stay
@@ -22,6 +24,7 @@ final class InputInjector: @unchecked Sendable {
 
     /// Shows the system prompt that sends the user to the Accessibility list (once per launch).
     static func requestTrust() {
+        Annex.log(.info, "[permissions] Accessibility prompt shown")
         _ = CGRequestPostEventAccess()
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
@@ -41,6 +44,9 @@ final class InputInjector: @unchecked Sendable {
     /// Releases anything still held, e.g. when a session ends mid-drag or mid-shortcut.
     func releaseAll() {
         queue.async { [self] in
+            if !buttonsDown.isEmpty || !flags.isEmpty {
+                Annex.log(.debug, "[input] released \(buttonsDown.count) held button(s) and the held modifiers")
+            }
             for b in buttonsDown { post(mouseType(b, down: false), button: b) }
             buttonsDown.removeAll()
             for (usage, _) in Self.modifierFlags where flags.contains(Self.flag(for: usage)) {
@@ -88,11 +94,17 @@ final class InputInjector: @unchecked Sendable {
             if down { buttonsDown.insert(button) } else { buttonsDown.remove(button) }
             post(mouseType(button, down: down), button: button, clickState: down ? clickCount(button) : lastClick?.count ?? 1)
         case .scroll(let dx, let dy):
-            guard let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { return }
+            guard let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else {
+                return failed("scroll")
+            }
+            // Trackpad-style: apps scroll by exactly these pixels instead of animating each event
+            // as a mouse-wheel step, which turns a stream of small scrolls into a laggy judder.
+            e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
             e.flags = flags
             e.post(tap: .cghidEventTap)
         case .key(let usage, let down):
-            guard let code = Annex.macKeyCode(hid: usage) else { return }
+            // Never which key: only that one couldn't be mapped.
+            guard let code = Annex.macKeyCode(hid: usage) else { return Annex.log(.trace, "[input] key event with no Mac key code") }
             let f = Self.flag(for: usage)
             if !f.isEmpty {
                 if down { flags.insert(f) } else { flags.remove(f) }
@@ -140,15 +152,36 @@ final class InputInjector: @unchecked Sendable {
     }
 
     private func post(_ type: CGEventType, button: CGMouseButton, clickState: Int64 = 0) {
-        guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: location, mouseButton: button) else { return }
+        guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: location, mouseButton: button) else {
+            return failed("mouse")
+        }
         if clickState > 0 { e.setIntegerValueField(.mouseEventClickState, value: clickState) }
         e.flags = flags
         e.post(tap: .cghidEventTap)
     }
 
     private func postKey(_ code: CGKeyCode, down: Bool) {
-        guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { return }
+        guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { return failed("key") }
         e.flags = flags
         e.post(tap: .cghidEventTap)
+    }
+
+    private func failed(_ kind: String) {
+        guard !reportedFailure else { return }
+        reportedFailure = true
+        Annex.log(.warn, "[input] macOS couldn't create a \(kind) event; input may not reach this Mac")
+    }
+}
+
+extension InputEvent {
+    /// What kind of input, for the log: never which key.
+    var logShape: String {
+        switch self {
+        case .mouseMove: "mouse move"
+        case .mouseDelta: "mouse movement"
+        case .mouseButton(let button, let down): "\(button) button \(down ? "down" : "up")"
+        case .scroll: "scroll"
+        case .key(_, let down): "key \(down ? "down" : "up")"
+        }
     }
 }

@@ -44,6 +44,7 @@ async fn expect<R: AsyncRead + Unpin>(reader: &mut Reader<R>) -> Result<Control,
 }
 
 async fn fail<W: AsyncWrite + Unpin>(writer: &mut Writer<W>, reason: &str) -> SessionError {
+    tracing::warn!(reason, "pairing ended");
     let _ = writer.send_control(&Control::Bye { reason: reason.into() }).await;
     SessionError::Rejected(reason.into())
 }

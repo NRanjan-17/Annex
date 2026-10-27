@@ -8,6 +8,12 @@
 # SHA256SUMS.txt and its Ed25519 signature (the key the in-app updater trusts; needs OpenSSL 3), on
 # macOS against SHA256SUMS.txt and Apple's notarized Developer ID signature for Annex's team.
 #
+# The package manager installs what Annex needs with it (GStreamer, wl-clipboard, …).
+#
+# Uninstall (removes Annex, its settings and identity, and the packages installed only for it;
+# ANNEX_YES=1 skips the question):
+#   curl -fsSL https://raw.githubusercontent.com/NRanjan-17/Annex/main/scripts/install.sh | sh -s -- --uninstall
+#
 # ANNEX_VERSION=1.2.3 picks a version; ANNEX_DRY_RUN=1 downloads and checks but installs nothing.
 # ANNEX_BASE_URL: where the release files are, for testing.
 set -eu
@@ -26,6 +32,57 @@ run() {
 sudo_run() {
   if [ "$(id -u)" = 0 ]; then run "$@"; else need sudo; run sudo "$@"; fi
 }
+
+uninstall_linux() {
+  say "This removes Annex, its settings, its identity and the list of trusted devices,"
+  say "and the packages that were installed only for Annex."
+  if [ "${ANNEX_YES:-}" = 1 ]; then
+    answer=y
+  elif (: < /dev/tty) 2>/dev/null; then
+    printf 'Continue? [y/N] '
+    read -r answer < /dev/tty || answer=
+  else
+    fail "run this in a terminal to confirm, or set ANNEX_YES=1"
+  fi
+  case "$answer" in [Yy]*) ;; *) say "Cancelled."; exit 0 ;; esac
+  pkill -x annex >/dev/null 2>&1 || true
+  if command -v dpkg >/dev/null 2>&1 && dpkg -s annex >/dev/null 2>&1; then
+    # Only what Annex pulled in: packages that become unneeded once it's gone, not ones that
+    # were already unneeded before.
+    orphans() { apt-get -s autoremove 2>/dev/null | awk '/^Remv /{ print $2 }' | sort; }
+    orphans > "$TMP/before"
+    sudo_run apt-get purge -y annex
+    extra=$(orphans | comm -13 "$TMP/before" -)
+    if [ -n "$extra" ]; then
+      say "Removing what was installed for Annex: $(echo $extra)"
+      # shellcheck disable=SC2086
+      sudo_run apt-get purge -y $extra
+    fi
+  elif command -v rpm >/dev/null 2>&1 && rpm -q annex >/dev/null 2>&1; then
+    # Both remove the dependencies nothing else needs, and only those.
+    if command -v dnf >/dev/null 2>&1; then
+      sudo_run dnf remove -y annex
+    else
+      sudo_run zypper --non-interactive remove --clean-deps annex
+    fi
+  fi
+  run rm -rf "$HOME/.local/opt/annex"
+  [ -L "$HOME/.local/bin/annex" ] && run rm -f "$HOME/.local/bin/annex"
+  run rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/annex" "${XDG_CONFIG_HOME:-$HOME/.config}/annex" \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/autostart/annex.desktop"
+  say "Annex has been removed."
+}
+
+if [ "${1:-}" = --uninstall ]; then
+  TMP=$(mktemp -d)
+  trap 'rm -rf "$TMP"' EXIT
+  case "$(uname -s)" in
+    Linux) uninstall_linux ;;
+    Darwin) fail "on a Mac, use Uninstall Annex in Annex's Settings" ;;
+    *) fail "this script is for macOS and Linux" ;;
+  esac
+  exit 0
+fi
 
 need curl
 need uname

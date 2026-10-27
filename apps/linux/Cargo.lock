@@ -49,29 +49,39 @@ name = "annex-linux"
 version = "0.1.0"
 dependencies = [
  "annex-discovery",
+ "annex-log",
  "annex-media",
  "annex-proto",
  "annex-session",
  "ashpd",
  "async-channel",
  "futures-util",
+ "gdk4-x11",
  "gst-plugin-gtk4",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-video",
  "gtk4",
  "ksni",
+ "libc",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "wayland-client",
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "x11rb",
  "xkbcommon",
  "zbus",
+]
+
+[[package]]
+name = "annex-log"
+version = "0.1.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -875,6 +885,31 @@ name = "gdk4-win32-sys"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eddc1ec7b8be04fec1feec2766ba53225c09d58ddfc7bd9054512fcae16f416f"
+dependencies = [
+ "gdk4-sys",
+ "glib-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
+name = "gdk4-x11"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd10920274b392ff87d5b51932bebe24e428f9a2c0e1540b9d9be92a497f265a"
+dependencies = [
+ "gdk4",
+ "gdk4-x11-sys",
+ "gio",
+ "glib",
+ "libc",
+]
+
+[[package]]
+name = "gdk4-x11-sys"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8885d7dbeb194e6be61f0c62403200ad0c2f1da6930f816214eaf7124e0287bd"
 dependencies = [
  "gdk4-sys",
  "glib-sys",

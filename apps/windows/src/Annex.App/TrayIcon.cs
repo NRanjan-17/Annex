@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Annex.Interop;
 
 namespace Annex.App;
 
@@ -51,6 +52,7 @@ internal sealed unsafe partial class TrayIcon : IDisposable
         s_taskbarCreated = RegisterWindowMessageW("TaskbarCreated");
         _iconPath = iconPath;
         _icon = LoadImageW(0, iconPath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
+        if (_hwnd == 0 || _icon == 0) AnnexLog.Warn($"[tray] setup: window {_hwnd != 0}, icon {_icon != 0} ({Path.GetFileName(iconPath)})");
         Add();
     }
 
@@ -59,7 +61,12 @@ internal sealed unsafe partial class TrayIcon : IDisposable
     {
         if (iconPath == _iconPath) return;
         var icon = LoadImageW(0, iconPath, IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE);
-        if (icon == 0) return;
+        if (icon == 0)
+        {
+            AnnexLog.Warn($"[tray] couldn't load {Path.GetFileName(iconPath)}");
+            return;
+        }
+        AnnexLog.Debug($"[tray] icon: {Path.GetFileNameWithoutExtension(iconPath)}");
         var old = _icon;
         _icon = icon;
         _iconPath = iconPath;
@@ -92,7 +99,7 @@ internal sealed unsafe partial class TrayIcon : IDisposable
     private void Add()
     {
         var data = Data(NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP);
-        Shell_NotifyIconW(NIM_ADD, &data);
+        if (!Shell_NotifyIconW(NIM_ADD, &data)) AnnexLog.Warn("[tray] couldn't add the tray icon");
     }
 
     [UnmanagedCallersOnly]
@@ -105,20 +112,21 @@ internal sealed unsafe partial class TrayIcon : IDisposable
             {
                 switch ((uint)(lParam & 0xFFFF))
                 {
-                    case WM_LBUTTONUP: self.LeftClick?.Invoke(); break;
-                    case WM_RBUTTONUP or WM_CONTEXTMENU: self.RightClick?.Invoke(); break;
+                    case WM_LBUTTONUP: AnnexLog.Debug("[tray] click"); self.LeftClick?.Invoke(); break;
+                    case WM_RBUTTONUP or WM_CONTEXTMENU: AnnexLog.Debug("[tray] menu opened"); self.RightClick?.Invoke(); break;
                 }
                 return 0;
             }
             if (self is not null && msg == s_taskbarCreated && msg != 0)
             {
+                AnnexLog.Info("[tray] Explorer restarted, adding the icon again");
                 self.Add(); // Explorer restarted; re-create the icon.
                 return 0;
             }
         }
         catch (Exception e)
         {
-            System.Diagnostics.Debug.WriteLine($"tray: {e}");
+            AnnexLog.Warn($"[tray] {e}");
         }
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }

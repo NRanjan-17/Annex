@@ -83,9 +83,15 @@ internal sealed class Updater
         if (State == Stage.Checking)
         {
             if (!automatic) _recheckBeta = beta;
+            AnnexLog.Debug($"[update] check asked while one runs (beta {beta}){(automatic ? ", skipped" : ", runs after it")}");
             return;
         }
-        if (Busy) return;
+        if (Busy)
+        {
+            AnnexLog.Debug($"[update] check skipped: {State}");
+            return;
+        }
+        AnnexLog.Info($"[update] checking (beta {beta}, {(automatic ? "automatic" : "asked")}, {AssetSuffix})");
         Set(Stage.Checking);
         try
         {
@@ -95,9 +101,13 @@ internal sealed class Updater
             Error = null;
             LastChecked = DateTimeOffset.Now;
             Set(Available is null ? Stage.UpToDate : Stage.Available);
+            AnnexLog.Info(found is null ? $"[update] up to date ({AnnexNative.Version})"
+                : $"[update] {found.Version} available{(found.Prerelease ? " (pre-release)" : "")}{(found.Downgrade ? " (back to normal release)" : "")}"
+                  + (Available is null ? ", not offered by the daily check" : ""));
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or AnnexException)
         {
+            AnnexLog.Warn($"[update] check failed: {e.GetType().Name}: {e.Message}");
             Available = null;
             Error = "Couldn't check for updates. Check the internet connection and try again.";
             Set(Stage.Failed);
@@ -114,7 +124,12 @@ internal sealed class Updater
     /// starts it again when it's done (see /UPDATE in Annex.iss). Returns true once Setup is running.</summary>
     public async Task<bool> InstallAsync(bool beta)
     {
-        if (Available is null || Busy) return false;
+        if (Available is null || Busy)
+        {
+            AnnexLog.Warn($"[update] install skipped: {(Available is null ? "nothing to install" : State.ToString())}");
+            return false;
+        }
+        AnnexLog.Info($"[update] installing {Available.Version}: fetching the newest release first");
         Set(Stage.Downloading);
         // The offer can be hours old and releases come quickly: install the newest release now,
         // not the next one after this version. If GitHub can't be reached, the earlier offer stands.
@@ -125,6 +140,7 @@ internal sealed class Updater
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or AnnexException)
         {
+            AnnexLog.Warn($"[update] couldn't refresh the release list, installing the earlier offer: {e.Message}");
         }
         var u = Available!;
         Set(Stage.Downloading); // shows the version actually being installed
@@ -139,23 +155,32 @@ internal sealed class Updater
             var file = Path.Combine(dir, name);
             var sums = Path.Combine(dir, "SHA256SUMS.txt");
             var sig = Path.Combine(dir, "SHA256SUMS.txt.sig");
+            AnnexLog.Info($"[update] downloading {name} ({u.Version}) to {dir}");
             await Task.WhenAll(Download(u.AssetUrl, file), Download(u.SumsUrl, sums), Download(u.SigUrl, sig)).ConfigureAwait(false);
+            AnnexLog.Info($"[update] downloaded {new FileInfo(file).Length} bytes, checking the signature");
             AnnexNative.VerifyUpdate(sums, sig, file, name);
+            AnnexLog.Info("[update] signature good");
 
             Set(Stage.Installing);
             // Same install mode and folder as this copy, so Setup updates it in place.
             var folder = Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory);
             var args = "/SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /UPDATE=1 "
                 + (InstalledForAllUsers ? "/ALLUSERS" : "/CURRENTUSER") + $" /DIR=\"{folder}\"";
+            AnnexLog.Info($"[update] starting Setup: {args}");
             Process.Start(new ProcessStartInfo(file, args) { UseShellExecute = true });
             return true;
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException or IOException or AnnexException
                                       or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
+            AnnexLog.Error($"[update] install failed: {e.GetType().Name}: {e.Message}");
             Error = e is AnnexException ? e.Message : $"The update couldn't be installed: {e.Message}";
             Set(Stage.Failed);
-            try { Directory.Delete(dir, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            try { Directory.Delete(dir, recursive: true); }
+            catch (Exception d) when (d is IOException or UnauthorizedAccessException)
+            {
+                AnnexLog.Warn($"[update] couldn't remove {dir}: {d.Message}");
+            }
             return false;
         }
     }

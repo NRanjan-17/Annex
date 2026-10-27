@@ -86,12 +86,14 @@ pub fn apply(app: &gtk::Application, model: &Shared) {
                     show_pin(app, model, request_id, &pin, &peer_name, &fingerprint)
                 }
                 Change::PinDone { request_id } => {
+                    tracing::debug!(target: "annex::pairing", request_id, "pairing: done; closing its window");
                     if let Some(w) = with_ui(|ui| ui.pins.remove(&request_id)).flatten() {
                         w.destroy();
                     }
                 }
                 Change::InputRequested { peer_name, fingerprint } => ask_input(app, model, &peer_name, &fingerprint),
                 Change::Notify { title, body } => {
+                    tracing::debug!(title, "ui: notification");
                     let n = gio::Notification::new(&title);
                     n.set_body(Some(&body));
                     app.send_notification(Some("session"), &n);
@@ -198,6 +200,7 @@ fn build(app: &gtk::Application, model: &Shared) {
         let (app, model, entry) = (app.clone(), model.clone(), entry.clone());
         btn.connect_clicked(move |b| {
             let text = entry.text().to_string();
+            tracing::info!(target: "annex::viewer", extend, "ui: {} pressed", if extend { "Use as Display" } else { "Show Its Screen" });
             let display = crate::viewer::display_info(Some(b));
             act(&app, &model, |m| {
                 if looks_like_code(&text) {
@@ -231,6 +234,7 @@ fn build(app: &gtk::Application, model: &Shared) {
     {
         let (app, model) = (app.clone(), model.clone());
         share_switch.connect_state_set(move |_, on| {
+            tracing::debug!(target: "annex::host", on, "ui: Share This Screen switch");
             let (app, model) = (app.clone(), model.clone());
             // After the switch's own handler: hosting may open a portal dialog.
             glib::idle_add_local_once(move || act(&app, &model, |m| m.set_hosting(on)));
@@ -355,8 +359,9 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         let sw = gtk::Switch::new();
         sw.set_active(on);
         sw.set_valign(gtk::Align::Center);
-        let (app, model) = (app.clone(), model.clone());
+        let (app, model, name) = (app.clone(), model.clone(), text.to_string());
         sw.connect_state_set(move |_, on| {
+            tracing::info!(target: "annex::settings", setting = name, on, "settings: switched");
             act(&app, &model, |m| {
                 f(m, on);
                 m.save_settings();
@@ -409,6 +414,33 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         Box::new(|m, on| m.settings.use_mouse_and_keyboard = on),
     );
     toggle(&b, "Open in full screen", s.open_full_screen, Box::new(|m, on| m.settings.open_full_screen = on));
+    toggle(
+        &b,
+        "Share the clipboard",
+        s.share_clipboard,
+        Box::new(|m, on| {
+            m.settings.share_clipboard = on;
+            m.set_clipboard_sharing(on);
+        }),
+    );
+    toggle(
+        &b,
+        "Drop files at the top of the screen",
+        s.drop_at_top,
+        Box::new(|m, on| {
+            m.settings.drop_at_top = on;
+            m.update_drop_target();
+        }),
+    );
+    toggle(
+        &b,
+        "Receive files into Downloads",
+        s.receive_files,
+        Box::new(|m, on| {
+            m.settings.receive_files = on;
+            m.set_receive_files(on);
+        }),
+    );
     let row = hbox(12);
     row.append(&label("Picture", ""));
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -420,6 +452,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         let (app, model) = (app.clone(), model.clone());
         quality.connect_selected_notify(move |d| {
             let q = d.selected();
+            tracing::info!(target: "annex::settings", quality = q, "settings: Picture");
             act(&app, &model, |m| {
                 m.settings.quality = q;
                 m.save_settings();
@@ -436,6 +469,30 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.prefer_hardware_encoder,
         Box::new(|m, on| m.settings.prefer_hardware_encoder = on),
     );
+    let row = hbox(12);
+    row.append(&label("Extended display scaling", ""));
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    row.append(&spacer);
+    const SCALES: [u32; 6] = [0, 100, 125, 150, 175, 200];
+    let scale = gtk::DropDown::from_strings(&["Match the other screen", "100 %", "125 %", "150 %", "175 %", "200 %"]);
+    scale.set_selected(SCALES.iter().position(|&p| p == s.extend_scale).unwrap_or(0) as u32);
+    {
+        let (app, model) = (app.clone(), model.clone());
+        scale.connect_selected_notify(move |d| {
+            let p = SCALES[(d.selected() as usize).min(SCALES.len() - 1)];
+            act(&app, &model, |m| {
+                m.settings.extend_scale = p;
+                m.save_settings();
+            });
+        });
+    }
+    row.append(&scale);
+    b.append(&row);
+    b.append(&label(
+        "Text size on a computer using this one as an extra display. Turn sharing off and on to apply.",
+        "dim",
+    ));
 
     b.append(&label("Internet", "section"));
     b.append(&label("Codes and relays go through Annex's server unless you use your own.", "dim"));
@@ -453,6 +510,8 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         let (app, model) = (app.clone(), model.clone());
         e.connect_changed(move |e| {
             let v = e.text().to_string();
+            // The field's name only: never what's typed (a relay password, for one).
+            tracing::debug!(target: "annex::settings", field = hint, empty = v.is_empty(), "settings: edited");
             act(&app, &model, |m| {
                 set(m, v);
                 m.save_settings();
@@ -468,15 +527,36 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.show_technical_details,
         Box::new(|m, on| m.settings.show_technical_details = on),
     );
-    let log = crate::settings::data_dir().join("annex.log");
+    toggle(
+        &b,
+        "Verbose logging",
+        s.verbose_logging,
+        Box::new(|m, on| {
+            m.settings.verbose_logging = on;
+            annex_log::set_verbose(on);
+        }),
+    );
+    let log_dir = annex_log::dir().unwrap_or_else(crate::settings::data_dir);
     b.append(&label(
         &format!(
-            "Annex always keeps a log at {}. It stays on this computer; Annex never sends it \
-             anywhere. If something goes wrong, attach it to a bug report.",
-            log.display()
+            "Annex always keeps a log at {}, and a copy of what led up to each error in its crashes \
+             folder. It stays on this computer; Annex never sends it anywhere. If something goes \
+             wrong, attach it to a bug report. Verbose logging adds every mouse and key event \
+             (not which key) and fills the log faster.",
+            log_dir.join("annex.log").display()
         ),
         "dim",
     ));
+    let show = gtk::Button::with_label("Show Log Files");
+    show.set_halign(gtk::Align::Start);
+    show.connect_clicked(move |_| {
+        tracing::info!(target: "annex::settings", "settings: Show Log Files");
+        let uri = gio::File::for_path(&log_dir).uri();
+        if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>) {
+            tracing::warn!(target: "annex::settings", "settings: couldn't open the log folder: {e}");
+        }
+    });
+    b.append(&show);
     b
 }
 
@@ -558,6 +638,7 @@ fn render_live(ui: &mut Ui, m: &Model, model: &Shared) {
             b.set_halign(gtk::Align::Start);
             let (app, model, viewing) = (app_of(ui), model.clone(), matches!(role, SessionRole::Viewing { .. }));
             b.connect_clicked(move |_| {
+                tracing::info!(target: "annex::session", "ui: {} pressed", if viewing { "Disconnect" } else { "Stop Sharing" });
                 act(&app, &model, |m| if viewing { m.disconnect() } else { m.set_hosting(false) });
             });
             card.append(&b);
@@ -633,6 +714,7 @@ fn render_nearby(ui: &mut Ui, m: &Model, model: &Shared) {
             for (b, extend) in buttons {
                 let (app, model, peer) = (app_of(ui), model.clone(), p.clone());
                 b.connect_clicked(move |b| {
+                    tracing::info!(target: "annex::viewer", peer = peer.name, extend, "ui: connect pressed in Nearby");
                     let display = crate::viewer::display_info(Some(b));
                     act(&app, &model, |m| m.connect_peer(&peer, extend, display));
                 });
@@ -811,6 +893,7 @@ fn ask_pin(app: &gtk::Application, model: &Shared, request_id: u64, peer: &str, 
     row.append(&cancel);
     row.append(&ok);
     b.append(&row);
+    tracing::info!(target: "annex::pairing", request_id, peer, "pairing: asking for the PIN shown on the other computer");
     let submit = {
         let (model, entry, w) = (model.clone(), entry.clone(), w.clone());
         move || {
@@ -833,6 +916,8 @@ fn ask_pin(app: &gtk::Application, model: &Shared, request_id: u64, peer: &str, 
 }
 
 fn show_pin(app: &gtk::Application, model: &Shared, request_id: u64, pin: &str, peer: &str, fingerprint: &str) {
+    // Never the PIN itself.
+    tracing::info!(target: "annex::pairing", request_id, peer, "pairing: showing a PIN");
     let (w, b) = dialog(app, "Pair with Annex");
     b.append(&label(&format!("{peer} wants to connect. Type this PIN there:"), "role"));
     let p = label(pin, "pin");
@@ -854,6 +939,7 @@ fn show_pin(app: &gtk::Application, model: &Shared, request_id: u64, pin: &str, 
 }
 
 fn ask_input(app: &gtk::Application, model: &Shared, peer: &str, fingerprint: &str) {
+    tracing::info!(target: "annex::permissions", peer, fingerprint, "sharing: asking to allow control");
     let (w, b) = dialog(app, "Allow control?");
     b.append(&label(&format!("{peer} wants to use this computer's mouse and keyboard."), "role"));
     b.append(&label("You can change this later in Paired Devices.", "dim"));
@@ -866,9 +952,13 @@ fn ask_input(app: &gtk::Application, model: &Shared, peer: &str, fingerprint: &s
     row.append(&yes);
     b.append(&row);
     let w2 = w.clone();
-    no.connect_clicked(move |_| w2.destroy());
+    no.connect_clicked(move |_| {
+        tracing::info!(target: "annex::permissions", "sharing: control not allowed");
+        w2.destroy()
+    });
     let (app, model, fp, w2) = (app.clone(), model.clone(), fingerprint.to_string(), w.clone());
     yes.connect_clicked(move |_| {
+        tracing::info!(target: "annex::permissions", "sharing: control allowed");
         let fp = fp.clone();
         act(&app, &model, |m| m.set_allow_input(&fp, true));
         w2.destroy();

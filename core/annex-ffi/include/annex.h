@@ -62,9 +62,16 @@ char *annex_core_device_name(const AnnexCore *core);
 char *annex_core_trusted_peers_json(const AnnexCore *core);
 /* Returns 1 if removed, 0 if not trusted. */
 int32_t annex_core_untrust(const AnnexCore *core, const char *fingerprint);
-/* Writes the core's log to <data_dir>/annex.log while enabled. On by default. */
+/* Writes the log to <data_dir>/annex.log while enabled. On by default. */
 void annex_set_log_enabled(bool enabled);
-/* Writes one line from the app to the log while it's on: level 0 = info, 1 = warning, 2 = error. */
+/* Verbose logging: everything at trace (each input event, each progress step). Off by default. */
+void annex_set_log_verbose(bool verbose);
+/* Saves the last few thousand log lines to <data_dir>/crashes/ now (as happens on each error).
+ * `why` (may be NULL) goes in the file name. Returns the file (annex_string_free), or NULL. */
+char *annex_log_save_recording(const char *why);
+/* Writes one line from the app to the log: level 0 = info, 1 = warning, 2 = error (also saves what
+ * led up to it), 3 = debug, 4 = trace (verbose only). Start with the feature in brackets, e.g.
+ * "[clipboard] copied text, 12 bytes". Never log what's copied or a secret. */
 void annex_log(int32_t level, const char *message);
 /* Lists this device under "Nearby" on other computers while Annex is open (as not sharing until a
  * host starts). Call once at startup and again after a rename. */
@@ -78,6 +85,9 @@ int32_t annex_core_set_allow_input(const AnnexCore *core, const char *fingerprin
 /* Headless (nobody at this screen): pairing PINs also go to <data>/pairing-pin.txt and paired
  * devices may use the mouse and keyboard without being allowed one by one. Returns 0. */
 int32_t annex_core_set_headless(const AnnexCore *core, bool on);
+/* Where files from the other computer are saved (e.g. Downloads); NULL refuses them (default).
+ * Applies to sessions that start afterwards. */
+int32_t annex_core_set_downloads(const AnnexCore *core, const char *dir);
 /* This platform's key code (macOS virtual key code / Windows scancode, 0xE0xx = extended) for a
  * HID usage from an "input" event, or -1 if there is no such key. */
 int32_t annex_key_native_from_hid(uint16_t usage);
@@ -107,6 +117,13 @@ int32_t annex_host_set_session_stream(const AnnexHost *host, uint64_t session_id
                                       uint32_t width, uint32_t height, uint32_t fps);
 /* Ends one session; its viewer is told "host_ended_session". */
 void annex_host_end_session(const AnnexHost *host, uint64_t session_id);
+/* Clipboard and files (sessions where both sides run 0.4+ over QUIC). mime: "text/plain;charset=utf-8"
+ * or "image/png". send_clipboard returns 1 if sent, 0 if the viewer can't take it or it's too big.
+ * send_file sets *out_id (see transfer_started / transfer_progress / transfer_ended events). */
+int32_t annex_host_send_clipboard(const AnnexHost *host, uint64_t session_id, const char *mime,
+                                  const uint8_t *data, size_t len);
+int32_t annex_host_send_file(const AnnexHost *host, uint64_t session_id, const char *path, uint64_t *out_id);
+void annex_host_cancel_transfer(const AnnexHost *host, uint64_t session_id, bool incoming, uint64_t id);
 /* Shares over the internet with one code via the rendezvous server (wss://...). stun (NULL:
  * Cloudflare's) is host:port. turn_url (NULL or "": none) is the user's own relay, turn:host:port.
  * Events: internet_code, internet_joined, internet_relay, then internet_code_ended. */
@@ -168,6 +185,11 @@ void annex_viewer_send_mouse_delta(const AnnexViewer *viewer, int32_t dx, int32_
 void annex_viewer_send_mouse_button(const AnnexViewer *viewer, uint32_t button, bool down);
 /* Pixels; positive dy scrolls up (content moves down), positive dx scrolls left. */
 void annex_viewer_send_scroll(const AnnexViewer *viewer, int32_t dx, int32_t dy);
+/* Clipboard and files to the host (see annex_host_send_clipboard). The host takes them only while
+ * this viewer has control. */
+int32_t annex_viewer_send_clipboard(const AnnexViewer *viewer, const char *mime, const uint8_t *data, size_t len);
+int32_t annex_viewer_send_file(const AnnexViewer *viewer, const char *path, uint64_t *out_id);
+void annex_viewer_cancel_transfer(const AnnexViewer *viewer, bool incoming, uint64_t id);
 /* native_code: macOS virtual key code / Windows scancode. Returns 1 if sent, 0 if unmapped. */
 int32_t annex_viewer_send_key(const AnnexViewer *viewer, uint32_t native_code, bool down);
 /* Direct Wi-Fi link (one side runs a hotspot; credentials travel only inside the session).

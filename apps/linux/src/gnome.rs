@@ -37,6 +37,7 @@ fn err(e: zbus::Error) -> String {
 
 /// `virtual_display`: record a new monitor (Extend) instead of the primary one.
 pub async fn start(virtual_display: bool) -> Result<Started, String> {
+    tracing::info!(virtual_display, "GNOME: starting a Mutter screen cast");
     let conn = zbus::Connection::session().await.map_err(err)?;
     let rd = zbus::Proxy::new(&conn, RD, "/org/gnome/Mutter/RemoteDesktop", RD).await.map_err(err)?;
     let rd_path: OwnedObjectPath = rd.call("CreateSession", &()).await.map_err(err)?;
@@ -71,6 +72,7 @@ pub async fn start(virtual_display: bool) -> Result<Started, String> {
         .deserialize()
         .map_err(err)?;
 
+    tracing::info!(node, virtual_display, "GNOME: screen stream started");
     let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
     let (tx, mut rx) = mpsc::unbounded_channel::<PortalInput>();
     let stream_path = stream_path.to_string();
@@ -99,12 +101,15 @@ pub async fn start(virtual_display: bool) -> Result<Started, String> {
                         }
                     };
                     if let Err(e) = r {
-                        tracing::debug!("GNOME input: {e}");
+                        crate::inject::failed(&format!("GNOME: {e}"));
                     }
                 }
             }
         }
-        let _ = rd_session.call::<_, _, ()>("Stop", &()).await;
+        if let Err(e) = rd_session.call::<_, _, ()>("Stop", &()).await {
+            tracing::debug!("GNOME: stopping the session: {e}");
+        }
+        tracing::info!("GNOME: screen stream stopped");
     });
     Ok(Started { node, input: tx, _stop: stop })
 }

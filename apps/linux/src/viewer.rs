@@ -89,6 +89,7 @@ impl Decoder {
             let _ = pipeline.set_state(gst::State::Null);
             return Err(e.to_string());
         }
+        tracing::info!("viewer: decoder playing; asking for a keyframe");
         handle.request_keyframe();
 
         let started = Arc::new(AtomicBool::new(false));
@@ -96,8 +97,10 @@ impl Decoder {
             // A stream can only start at a keyframe.
             if !started.load(Ordering::Relaxed) {
                 if !f.keyframe {
+                    tracing::trace!("viewer: frame before the first keyframe, skipped");
                     return;
                 }
+                tracing::info!(bytes = f.data.len(), "viewer: first keyframe");
                 started.store(true, Ordering::Relaxed);
             }
             let mut buf = gst::Buffer::from_mut_slice(f.data.to_vec());
@@ -109,7 +112,9 @@ impl Decoder {
                     b.set_flags(gst::BufferFlags::DELTA_UNIT);
                 }
             }
-            let _ = src.push_buffer(buf);
+            if let Err(e) = src.push_buffer(buf) {
+                tracing::trace!("viewer: the decoder didn't take a frame: {e:?}");
+            }
         });
         Ok((Decoder { pipeline, paintable }, frames))
     }
@@ -117,6 +122,7 @@ impl Decoder {
 
 impl Drop for Decoder {
     fn drop(&mut self) {
+        tracing::debug!("viewer: decoder stopped");
         let _ = self.pipeline.set_state(gst::State::Null);
     }
 }
@@ -219,6 +225,7 @@ pub fn open(app: &gtk::Application, model: &Shared) {
 
     let (m2, app2) = (model.clone(), app.clone());
     window.connect_close_request(move |_| {
+        tracing::info!("viewer: video window closed; ending the session");
         // Closing the window ends the session (the model then drops this window).
         glib::idle_add_local_once({
             let (m, a) = (m2.clone(), app2.clone());
@@ -233,6 +240,7 @@ pub fn open(app: &gtk::Application, model: &Shared) {
     if full_screen {
         window.fullscreen();
     }
+    tracing::info!(stream_w = sw, stream_h = sh, full_screen, "viewer: video window opened");
     window.present();
     picture.grab_focus();
     WINDOW.with(|w| *w.borrow_mut() = Some(VideoWindow { window, _decoder: decoder, size }));
@@ -240,6 +248,7 @@ pub fn open(app: &gtk::Application, model: &Shared) {
 
 pub fn close() {
     if let Some(v) = WINDOW.with(|w| w.borrow_mut().take()) {
+        tracing::debug!("viewer: video window removed");
         v.window.destroy();
     }
 }
@@ -247,6 +256,7 @@ pub fn close() {
 pub fn stream_size(width: u32, height: u32) {
     WINDOW.with(|w| {
         if let Some(v) = w.borrow().as_ref() {
+            tracing::info!(width, height, "viewer: the stream changed size");
             *v.size.borrow_mut() = (width, height);
         }
     });
@@ -277,6 +287,7 @@ fn add_input(
             if state.contains(chord) {
                 match keyval.to_lower() {
                     gdk::Key::q => {
+                        tracing::info!("viewer: Ctrl+Alt+Shift+Q, ending the session");
                         let (m, a) = (m.clone(), a.clone());
                         glib::idle_add_local_once(move || {
                             m.borrow_mut().disconnect();
@@ -285,6 +296,7 @@ fn add_input(
                         return glib::Propagation::Stop;
                     }
                     gdk::Key::f => {
+                        tracing::info!(full_screen = !w.is_fullscreen(), "viewer: Ctrl+Alt+Shift+F");
                         if w.is_fullscreen() {
                             w.unfullscreen()
                         } else {
@@ -321,11 +333,36 @@ fn add_input(
     }
     window.add_controller(key);
 
+    // Files dropped on the picture go to the other computer (while controlling it).
+    {
+        let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        let (tx, ctl) = (model.try_borrow().map(|m| m.sender()).ok(), controlling.clone());
+        drop.connect_drop(move |_, value, _, _| {
+            let (Some(tx), true, Ok(list)) = (&tx, ctl(), value.get::<gdk::FileList>()) else {
+                tracing::info!(target: "annex::transfer", "files: dropped on the video window; not sent, not controlling");
+                return false;
+            };
+            let files: Vec<_> =
+                list.files().iter().filter_map(|f| f.path()).flat_map(|p| crate::drop_tray::files_in(&p)).collect();
+            tracing::debug!(target: "annex::transfer", count = files.len(), "files: dropped on the video window");
+            !files.is_empty() && tx.send_blocking(crate::model::Msg::DropFiles(files)).is_ok()
+        });
+        picture.add_controller(drop);
+    }
+
     // Leaving the window lets go of every key, so none stays held on the other computer.
     {
         let (h, down) = (handle.clone(), keys_down.clone());
+        let model = model.clone();
         window.connect_is_active_notify(move |w| {
+            if let Ok(mut m) = model.try_borrow_mut() {
+                m.viewer_focus(w.is_active());
+            }
             if !w.is_active() {
+                let held = down.borrow().len();
+                if held > 0 {
+                    tracing::debug!(target: "annex::input", held, "viewer: window left; letting go of held keys");
+                }
                 for usage in down.borrow_mut().drain() {
                     h.send_input(InputEvent::Key { usage, down: false });
                 }
@@ -340,6 +377,7 @@ fn add_input(
             if ctl()
                 && let Some(t) = w.surface().and_then(|s| s.downcast::<gdk::Toplevel>().ok())
             {
+                tracing::debug!(target: "annex::input", "viewer: system shortcuts go to the other computer");
                 t.inhibit_system_shortcuts(None::<&gdk::Event>);
             }
         });

@@ -51,7 +51,7 @@ final class HostController {
     private let extendDisplays = LockedBox<[UInt64: CGDirectDisplayID]>()
     private(set) var status = Status() {
         didSet {
-            if let e = status.error, e != oldValue.error { Annex.log("host: \(e)", error: true) }
+            if let e = status.error, e != oldValue.error { Annex.log(.error, "[host] \(e)") }
             onStatus?(status)
         }
     }
@@ -87,7 +87,9 @@ final class HostController {
         let handler: (CoreEvent) -> Void = { [weak self] event in
             // Input skips the main queue: it's frequent and latency-sensitive.
             if case .input(let id, let e) = event {
-                injector.inject(e, display: extendDisplays.value?[id] ?? mirrorDisplay)
+                let display = extendDisplays.value?[id] ?? mirrorDisplay
+                Annex.log(.trace, "[input] \(e.logShape) from session \(id) to display \(display)")
+                injector.inject(e, display: display)
                 return
             }
             DispatchQueue.main.async { self?.handle(event) }
@@ -98,10 +100,12 @@ final class HostController {
                                   onEvent: handler)
         } catch {
             // Default port busy (e.g. the CLI is hosting): take any free port; mDNS advertises it.
+            Annex.log(.warn, "[host] port 47800 unavailable (\(error.localizedDescription)); taking any free port")
             host = try HostHandle(core: core, port: 0, width: w, height: h, fps: fps, advertise: true, extend: extend,
                                   onEvent: handler)
         }
         status.listeningPort = Int(host?.port ?? 0)
+        Annex.log(.info, "[host] listening on \(status.listeningPort ?? 0), stream up to \(w)×\(h) at \(fps) fps, extend \(extend)")
     }
 
     func stop() {
@@ -118,30 +122,60 @@ final class HostController {
         status = Status()
     }
 
+    /// Puts what was copied here on the clipboard of each viewer controlling this Mac.
+    func sendClipboard(mime: String, data: Data) {
+        for (id, name) in inputSessions {
+            let sent = host?.sendClipboard(session: id, mime: mime, data: data) == true
+            Annex.log(sent ? .debug : .warn, "[clipboard] \(sent ? "sent" : "couldn't send") \(mime), \(data.count) bytes to \(name)")
+        }
+    }
+
+    /// Sends a file to each viewer controlling this Mac.
+    func sendFile(_ url: URL) throws {
+        for id in inputSessions.keys { _ = try host?.sendFile(session: id, url: url) }
+    }
+
+    /// A viewer controlling this Mac, by name, if any.
+    var controllingViewer: String? { inputSessions.values.sorted().first }
+
     private func handle(_ event: CoreEvent) {
         if case .sessionStarted(let s) = event, s.input == true {
             inputSessions[s.sessionId] = s.peerName
+            warnIfInputBlocked(s.peerName)
         }
         switch event {
         case .sessionStarted(let s) where s.mode == "extend":
             startExtend(s)
         case .inputAllowed(let id, let allowed):
-            if !allowed {
+            if allowed, let name = mirrorSessions[id] ?? extendSessions[id]?.viewerName {
+                inputSessions[id] = name
+                warnIfInputBlocked(name)
+            } else if !allowed {
                 inputSessions.removeValue(forKey: id)
+                Annex.log(.debug, "[input] releasing held keys and buttons: control of session \(id) ended")
                 injector.releaseAll()
             }
         case .sessionStarted(let s):
             mirrorSessions[s.sessionId] = s.peerName
             status.stream = s.stream
-            if encoder == nil, ExtendSession.captureEnabled { startMirrorCapture(stream: s.stream) } else { requestMirrorKeyframe() }
+            if encoder == nil, ExtendSession.captureEnabled {
+                startMirrorCapture(stream: s.stream)
+            } else {
+                Annex.log(.debug, "[capture] \(s.peerName) joins the running mirror capture")
+                requestMirrorKeyframe()
+            }
         case .sessionEnded(let id, _):
-            if inputSessions.removeValue(forKey: id) != nil { injector.releaseAll() }
+            if inputSessions.removeValue(forKey: id) != nil {
+                Annex.log(.debug, "[input] releasing held keys and buttons: session \(id) ended")
+                injector.releaseAll()
+            }
             extendDisplays.update { $0?.removeValue(forKey: id) }
             if let ext = extendSessions.removeValue(forKey: id) {
                 ext.stop()
             } else if mirrorSessions.removeValue(forKey: id) != nil {
                 mirrorScales.removeValue(forKey: id)
                 if mirrorSessions.isEmpty {
+                    Annex.log(.info, "[capture] last mirror viewer left: stopping capture")
                     stopMirrorCapture()
                     status.stream = nil
                 } else {
@@ -149,6 +183,7 @@ final class HostController {
                 }
             }
         case .keyframeRequested(let id):
+            Annex.log(.debug, "[encode] keyframe asked for by session \(id)")
             if let ext = extendSessions[id] { ext.requestKeyframe() } else { requestMirrorKeyframe() }
         case .bitrateHint(let id, let scale):
             if let ext = extendSessions[id] {
@@ -173,6 +208,13 @@ final class HostController {
         status.viewers = (mirror + extend).sorted { ($0.name, $0.id) < ($1.name, $1.id) }
     }
 
+    /// The viewer may control this Mac, but macOS drops what Annex posts without Accessibility.
+    private func warnIfInputBlocked(_ name: String) {
+        if !InputInjector.isTrusted {
+            Annex.log(.warn, "[permissions] \(name) may control this Mac, but Accessibility is off: macOS ignores its mouse and keyboard")
+        }
+    }
+
     /// Asks a viewer (a Windows PC) to start its hotspot for a direct link. False if it's gone.
     func requestDirectLink(session: UInt64) -> Bool {
         host?.requestDirectLink(session: session) ?? false
@@ -193,7 +235,8 @@ final class HostController {
     }
 
     private func startExtend(_ s: SessionStarted) {
-        guard let host else { return }
+        guard let host else { return Annex.log(.warn, "[display] extend from \(s.peerName) after sharing stopped") }
+        Annex.log(.info, "[display] \(s.peerName) extends this Mac: creating a virtual display")
         // Without Screen Recording the extra display would only ever send black, while windows and
         // the pointer move onto it: refuse instead of stranding them on a screen nobody sees.
         if ExtendSession.captureEnabled && !CGPreflightScreenCaptureAccess() {
@@ -204,6 +247,7 @@ final class HostController {
         // The same viewer back before its old session timed out (a dropped connection, or a switch to
         // direct Wi-Fi): that session is dead, and its display has the serial the new one needs.
         for old in extendSessions.values where old.viewerFingerprint == s.fingerprint {
+            Annex.log(.info, "[display] \(s.peerName) is back (session \(s.sessionId)): ending its old session \(old.sessionID)")
             extendDisplays.update { $0?.removeValue(forKey: old.sessionID) }
             extendSessions.removeValue(forKey: old.sessionID)?.stop()
             host.endSession(old.sessionID)
@@ -229,6 +273,7 @@ final class HostController {
     }
 
     private func failExtend(_ id: UInt64, _ message: String) {
+        Annex.log(.info, "[display] extend session \(id) failed; removing its display")
         status.error = message
         extendDisplays.update { $0?.removeValue(forKey: id) }
         extendSessions.removeValue(forKey: id)?.stop()
@@ -240,6 +285,7 @@ final class HostController {
     private func applyMirrorBitrate() {
         guard mirrorBaseBitrate > 0 else { return }
         let scale = mirrorScales.values.min() ?? 100
+        Annex.log(.debug, "[encode] mirror bitrate \(mirrorBaseBitrate * scale / 100) (\(scale) % of \(mirrorBaseBitrate))")
         encoder?.setBitrate(mirrorBaseBitrate * scale / 100)
     }
 
@@ -261,6 +307,8 @@ final class HostController {
         let bitrate = max(4_000_000, stream.width * stream.height * stream.fps / 10)
         mirrorBaseBitrate = bitrate
         let preferHardware = self.preferHardware
+        Annex.log(.info, "[capture] mirror capture of display \(display.id): \(stream.width)×\(stream.height) at \(stream.fps) fps, "
+                  + "H.264 \(bitrate / 1000) kbit/s, \(preferHardware ? "hardware" : "software") encoder preferred")
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = Result {
                 try H264Encoder(width: stream.width, height: stream.height, fps: stream.fps, bitrate: bitrate,
@@ -279,14 +327,20 @@ final class HostController {
             return
         }
         guard gen == generation else {
+            Annex.log(.debug, "[encode] mirror encoder ready after capture stopped; dropping it")
             enc.invalidate()
             return
         }
+        Annex.log(.info, "[encode] mirror encoder ready (\(enc.usingHardware ? "hardware" : "software"))")
         status.hardwareEncoder = enc.usingHardware
         let host = self.host
         if let scale = mirrorScales.values.min(), scale != 100 { enc.setBitrate(mirrorBaseBitrate * scale / 100) }
         enc.onEncoded = { data, key, ts in
-            host?.submit(data, captureMicros: ts, keyframe: key)
+            let r = host?.submit(data, captureMicros: ts, keyframe: key)
+            Annex.log(.trace, "[encode] mirror frame \(data.count) bytes\(key ? ", keyframe" : ""): \(r.map { "\($0)" } ?? "no host")")
+        }
+        enc.onFailure = { status in
+            Annex.log(.error, "[encode] the mirror encoder keeps failing (OSStatus \(status)); viewers see a frozen picture")
         }
         encoder = enc
         let lastFrame = self.lastFrame
@@ -306,11 +360,14 @@ final class HostController {
         Task { [weak self] in
             do {
                 try await capturer.start(displayID: id, width: stream.width, height: stream.height, fps: stream.fps)
+                Annex.log(.info, "[capture] mirror capture started")
                 // Clear only this capture's own earlier failure, not an unrelated (extend) error.
                 guard let self, gen == self.generation, self.status.error == self.mirrorCaptureError else { return }
                 self.status.error = nil
             } catch {
-                guard let self, gen == self.generation else { return }
+                guard let self, gen == self.generation else {
+                    return Annex.log(.debug, "[capture] a superseded mirror capture failed: \(error.localizedDescription)")
+                }
                 let message = "Screen capture failed: \(error.localizedDescription). Allow Annex in System Settings → Privacy & Security → Screen & System Audio Recording."
                 self.mirrorCaptureError = message
                 self.status.error = message
@@ -319,6 +376,7 @@ final class HostController {
     }
 
     private func stopMirrorCapture() {
+        if encoder != nil { Annex.log(.info, "[capture] mirror capture stopped") }
         generation += 1
         let capturer = self.capturer
         capturer.onFrame = nil

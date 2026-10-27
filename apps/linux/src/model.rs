@@ -29,6 +29,20 @@ pub enum Msg {
     Host(Event),
     /// The desktop's permission to share the screen, to skip its dialog next time.
     ScreenToken(String),
+    /// Something was copied on this computer.
+    Copied {
+        mime: String,
+        data: Vec<u8>,
+    },
+    /// What's on the clipboard now (asked for when the video window comes to the front).
+    ClipboardNow {
+        mime: String,
+        data: Vec<u8>,
+    },
+    /// Files dropped on the island or the viewer window, to send.
+    DropFiles(Vec<std::path::PathBuf>),
+    /// wl-paste stopped (no clipboard access for other programs here): use GTK's clipboard.
+    ClipboardWatchEnded,
     /// The sharing pipeline stopped by itself (the screen-sharing permission was refused, the
     /// encoder failed, …).
     HostFailed(String),
@@ -159,6 +173,13 @@ pub struct Model {
     pub host_sessions: Vec<HostSession>,
     pub internet: Option<InternetShare>,
 
+    clipboard: Option<crate::clipboard::Clipboard>,
+    drop_tray: Option<crate::drop_tray::DropTray>,
+    /// Viewer: the video window takes this computer's keyboard.
+    pub viewer_focused: bool,
+    /// Viewer: something was copied while the video window wasn't in front.
+    copied_while_away: bool,
+
     tx: async_channel::Sender<Msg>,
     /// What the UI should do once it lets go of the model (see [`Model::take_changes`]).
     changes: Vec<Change>,
@@ -170,7 +191,10 @@ impl Model {
     pub fn new(tx: async_channel::Sender<Msg>) -> Shared {
         let settings = Settings::load();
         let data = settings::data_dir();
-        crate::log::init(&data);
+        annex_log::init(&data, true);
+        if settings.verbose_logging {
+            annex_log::set_verbose(true);
+        }
         let name = settings.device_name.clone().unwrap_or_else(system_name);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -186,7 +210,9 @@ impl Model {
                 (Core::ephemeral(&name, TrustPolicy::Pair).expect("in-memory identity"), Some(err))
             }
         };
+        tracing::info!(target: "annex::pairing", name, fingerprint = core.fingerprint(), "identity ready");
         core.set_headless(settings.headless);
+        core.set_downloads(settings.receive_files.then(downloads_dir));
         let model = Rc::new(RefCell::new(Model {
             rt,
             core,
@@ -212,6 +238,10 @@ impl Model {
             host_error: None,
             host_sessions: Vec::new(),
             internet: None,
+            clipboard: None,
+            drop_tray: None,
+            viewer_focused: false,
+            copied_while_away: false,
             tx,
             changes: Vec::new(),
         }));
@@ -267,7 +297,10 @@ impl Model {
         match d.browse(move |e| {
             let _ = tx.send_blocking(Msg::Discovery(e));
         }) {
-            Ok(b) => self._browser = Some(b),
+            Ok(b) => {
+                tracing::info!(target: "annex::network", "nearby: looking for computers");
+                self._browser = Some(b)
+            }
             Err(e) => tracing::warn!("couldn't look for computers nearby: {e}"),
         }
     }
@@ -315,6 +348,7 @@ impl Model {
                 .and_then(|d| d.advertise(&name, annex_session::DEFAULT_PORT, false, false).map_err(|e| e.to_string()))
             {
                 Ok(new) => {
+                    tracing::debug!(target: "annex::network", name, "nearby: advertising that Annex is open here");
                     for a in old {
                         a.replaced_by(&new);
                     }
@@ -334,6 +368,7 @@ impl Model {
         let name = self.core.device_name();
         match self.discovery().and_then(|d| d.advertise(&name, port, true, extend).map_err(|e| e.to_string())) {
             Ok(a) => {
+                tracing::info!(target: "annex::network", name, port, extend, "nearby: advertising sharing");
                 if let Some(old) = presence {
                     old.replaced_by(&a);
                 }
@@ -357,6 +392,7 @@ impl Model {
         let trimmed = name.trim();
         let fallback = system_name();
         let stored = self.core.set_device_name(if trimmed.is_empty() { &fallback } else { trimmed });
+        tracing::info!(target: "annex::settings", name = stored, own = !trimmed.is_empty(), "settings: renamed");
         self.settings.device_name = if trimmed.is_empty() { None } else { Some(stored) };
         self.settings.save();
         self.refresh_presence();
@@ -376,6 +412,7 @@ impl Model {
     }
 
     pub fn forget(&mut self, fingerprint: &str) {
+        tracing::info!(target: "annex::pairing", fingerprint, "paired devices: forget");
         if let Err(e) = self.core.untrust(fingerprint) {
             tracing::warn!("couldn't remove a paired device: {e}");
         }
@@ -384,6 +421,7 @@ impl Model {
     }
 
     pub fn set_allow_input(&mut self, fingerprint: &str, allow: bool) {
+        tracing::info!(target: "annex::pairing", fingerprint, allow, "paired devices: mouse and keyboard");
         if let Err(e) = self.core.set_allow_input(fingerprint, allow) {
             tracing::warn!("couldn't change input permission: {e}");
         }
@@ -392,10 +430,12 @@ impl Model {
     }
 
     pub fn submit_pin(&self, request_id: u64, pin: &str) {
+        tracing::info!(target: "annex::pairing", request_id, digits = pin.len(), "pairing: PIN typed");
         self.core.submit_pin(request_id, pin);
     }
 
     pub fn cancel_request(&self, request_id: u64) {
+        tracing::info!(target: "annex::pairing", request_id, "pairing: cancelled here");
         self.core.cancel_request(request_id);
     }
 
@@ -446,12 +486,21 @@ impl Model {
 
     pub fn connect_peer(&mut self, peer: &PeerInfo, extend: bool, display: DisplayInfo) {
         let Some(address) = connect_address(peer) else {
+            tracing::warn!(target: "annex::viewer", peer = peer.name, "viewer: no address to connect to");
             self.viewer_status = Some(format!("{} didn't say how to reach it.", peer.name));
             self.render();
             return;
         };
         // Pin the certificate of a computer already paired with, so a look-alike can't step in.
         let pinned = peer.fingerprint.clone().filter(|fp| self.trusted.iter().any(|t| &t.fingerprint == fp));
+        tracing::info!(
+            target: "annex::viewer",
+            peer = peer.name,
+            address,
+            extend,
+            paired = pinned.is_some(),
+            "viewer: connect to a computer nearby"
+        );
         self.connect(address, peer.name.clone(), pinned, extend, display, None);
     }
 
@@ -460,6 +509,7 @@ impl Model {
         if address.is_empty() {
             return;
         }
+        tracing::info!(target: "annex::viewer", address, extend, "viewer: connect by address");
         self.connect(address.clone(), address, None, extend, display, None);
     }
 
@@ -468,6 +518,8 @@ impl Model {
         if code.is_empty() {
             return;
         }
+        // Never the code itself.
+        tracing::info!(target: "annex::viewer", extend, server = self.settings.server(), "viewer: connect with a code");
         let servers = InternetServers {
             rendezvous: self.settings.server().to_string(),
             stun: annex_session::DEFAULT_STUN.to_string(),
@@ -499,6 +551,7 @@ impl Model {
         let generation = self.generation;
         let tx = self.tx.clone();
         let events: EventSink = Arc::new(move |event| {
+            annex_session::log_event(&event);
             let _ = tx.send_blocking(Msg::Viewer { generation, event });
         });
         let frames: FrameTarget = Arc::new(Mutex::new(None));
@@ -520,6 +573,17 @@ impl Model {
             internet: None,
             join,
         };
+        tracing::debug!(
+            target: "annex::viewer",
+            generation,
+            input = cfg.input,
+            quality = ?cfg.quality,
+            width = cfg.display.width_px,
+            height = cfg.display.height_px,
+            hz = cfg.display.refresh_hz,
+            scale = cfg.display.scale_percent,
+            "viewer: starting"
+        );
         let _enter = self.rt.enter();
         let handle = Arc::new(annex_session::connect_viewer(self.core.clone(), cfg, events, frame_sink));
         self.viewer = Some(Viewer { handle, frames });
@@ -535,6 +599,7 @@ impl Model {
     pub fn disconnect(&mut self) {
         self.generation += 1;
         if let Some(v) = self.viewer.take() {
+            tracing::info!(target: "annex::viewer", peer = self.viewer_peer, "viewer: disconnecting");
             *v.frames.lock().unwrap() = None;
             let handle = v.handle;
             self.rt.spawn(async move { handle.disconnect().await });
@@ -542,6 +607,8 @@ impl Model {
         self.viewer_status = None;
         self.viewer_extends = None;
         self.controlling = false;
+        self.viewer_focused = false;
+        self.copied_while_away = false;
         self.latency = None;
         self.stream_size = None;
         self.emit(Change::ViewerClose);
@@ -585,7 +652,6 @@ impl Model {
                 self.controlling = allowed;
             }
             Event::LatencyStats { stats, .. } => {
-                tracing::debug!(fps = stats.fps, p50_ms = stats.p50_ms, p95_ms = stats.p95_ms, "viewer latency");
                 self.latency = Some(stats);
                 // Numbers only; the window and the session bar redraw on their own.
                 self.render();
@@ -612,7 +678,14 @@ impl Model {
                 self.disconnect();
                 self.viewer_status = status;
             }
-            Event::Error { message } => tracing::warn!("viewer: {message}"),
+            Event::ClipboardReceived { mime, data, .. } => {
+                self.clipboard_received(&mime, &data);
+                return;
+            }
+            e @ (Event::TransferStarted { .. } | Event::TransferProgress { .. } | Event::TransferEnded { .. }) => {
+                self.transfer(e);
+                return;
+            }
             _ => {}
         }
         self.render();
@@ -629,12 +702,17 @@ impl Model {
             return;
         }
         if on {
+            tracing::info!(target: "annex::host", "sharing: turning on");
             self.host_error = None;
             match Host::start(self) {
                 Ok(h) => self.host = Some(h),
-                Err(e) => self.host_error = Some(e),
+                Err(e) => {
+                    tracing::error!(target: "annex::host", "sharing: didn't start: {e}");
+                    self.host_error = Some(e)
+                }
             }
         } else if let Some(h) = self.host.take() {
+            tracing::info!(target: "annex::host", sessions = self.host_sessions.len(), "sharing: turning off");
             let advert = h.stop(&self.rt);
             self.host_sessions.clear();
             self.internet = None;
@@ -658,6 +736,12 @@ impl Model {
             password: s.relay_password.clone(),
         });
         let name = self.core.device_name();
+        tracing::info!(
+            target: "annex::network",
+            server = self.settings.server(),
+            own_relay = own_relay.is_some(),
+            "sharing: getting a code"
+        );
         if let Some(h) = self.host.as_mut() {
             h.share_code(&self.rt, name, servers, own_relay);
         }
@@ -666,6 +750,7 @@ impl Model {
     }
 
     pub fn stop_code(&mut self) {
+        tracing::info!(target: "annex::network", "sharing: code stopped here");
         if let Some(h) = self.host.as_mut() {
             h.stop_code();
         }
@@ -737,8 +822,16 @@ impl Model {
                     (r, _) => Some(InternetShare::Ended(Some(friendly_internet_error(r)))),
                 };
             }
+            Event::ClipboardReceived { mime, data, .. } => {
+                self.clipboard_received(&mime, &data);
+                return;
+            }
+            e @ (Event::TransferStarted { .. } | Event::TransferProgress { .. } | Event::TransferEnded { .. }) => {
+                self.transfer(e);
+                return;
+            }
             Event::Error { message } => {
-                tracing::warn!("host: {message}");
+                tracing::debug!(target: "annex::host", "sharing: showing the error in the banner");
                 self.host_error = Some(message);
             }
             _ => return,
@@ -747,12 +840,28 @@ impl Model {
     }
 
     pub fn handle(&mut self, msg: Msg) {
+        self.handle_msg(msg);
+        self.update_drop_target();
+    }
+
+    fn handle_msg(&mut self, msg: Msg) {
         match msg {
             Msg::Discovery(DiscoveryEvent::PeerFound(p)) => {
+                tracing::debug!(
+                    target: "annex::network",
+                    name = p.name,
+                    addresses = ?p.addresses,
+                    port = p.port,
+                    sharing = p.sharing,
+                    extend = ?p.extend,
+                    mesh = p.mesh,
+                    "nearby: found"
+                );
                 self.peers.insert(p.instance.clone(), p);
                 self.render();
             }
             Msg::Discovery(DiscoveryEvent::PeerLost { instance }) => {
+                tracing::debug!(target: "annex::network", instance, "nearby: gone");
                 if self.peers.remove(&instance).is_some() {
                     self.render();
                 }
@@ -760,17 +869,205 @@ impl Model {
             Msg::Viewer { generation, event } => {
                 if generation == self.generation {
                     self.handle_viewer(event);
+                } else {
+                    tracing::trace!(target: "annex::viewer", generation, "viewer: event from an ended session, ignored");
                 }
             }
             Msg::Host(event) => self.handle_host(event),
             Msg::ScreenToken(t) => {
+                tracing::info!(target: "annex::permissions", "sharing: the desktop's permission is saved for next time");
                 self.settings.screen_token = Some(t);
                 self.settings.save();
             }
+            Msg::Copied { mime, data } => self.copied(mime, data),
+            Msg::DropFiles(files) => self.send_files(files),
+            Msg::ClipboardNow { mime, data } => {
+                const T: &str = "annex::clipboard";
+                match &self.viewer {
+                    Some(v) if self.controlling && self.clipboard.is_some() => {
+                        tracing::debug!(target: T, mime, bytes = data.len(), "clipboard: sent what was copied while away");
+                        v.handle.send_clipboard(&mime, data);
+                    }
+                    Some(_) if self.clipboard.is_none() => {
+                        tracing::debug!(target: T, "clipboard: not sent, sharing is off")
+                    }
+                    Some(_) => tracing::debug!(target: T, "clipboard: not sent, not controlling"),
+                    None => tracing::debug!(target: T, "clipboard: not sent, the session ended"),
+                }
+            }
+            Msg::ClipboardWatchEnded => {
+                tracing::info!("clipboard: wl-paste can't watch the clipboard here; using GTK's");
+                if self.clipboard.is_some() {
+                    self.clipboard = crate::clipboard::Clipboard::start_gtk(self.tx.clone());
+                }
+            }
             Msg::HostFailed(why) => {
+                tracing::warn!(target: "annex::host", "sharing: stopping, it failed: {why}");
                 self.set_hosting(false);
                 self.host_error = Some(why);
                 self.render();
+            }
+        }
+    }
+
+    // ---- Clipboard and files ------------------------------------------------------------
+
+    pub fn start_drop_tray(&mut self) {
+        self.drop_tray = crate::drop_tray::DropTray::new(self.tx.clone());
+        tracing::info!(target: "annex::drop", island = self.drop_tray.is_some(), "drop: island ready");
+    }
+
+    /// Who dropped files go to: the host this computer controls, else a viewer controlling it.
+    pub fn update_drop_target(&self) {
+        let Some(tray) = &self.drop_tray else { return };
+        let peer = if !self.settings.drop_at_top {
+            None
+        } else if self.viewer.is_some() && self.controlling {
+            Some(self.label(&self.viewer_peer))
+        } else if self.host.is_some() {
+            self.host_sessions.iter().find(|s| s.input).map(|s| self.label(&s.name))
+        } else {
+            None
+        };
+        tray.set_target(peer);
+    }
+
+    fn files_target(&self) -> &'static str {
+        if self.viewer.is_some() && self.controlling {
+            "the computer this one controls"
+        } else if self.host.is_some() {
+            "viewers that control this computer"
+        } else {
+            "nothing connected"
+        }
+    }
+
+    fn send_files(&mut self, files: Vec<std::path::PathBuf>) {
+        const T: &str = "annex::transfer";
+        let bytes: u64 = files.iter().filter_map(|f| std::fs::metadata(f).ok()).map(|m| m.len()).sum();
+        tracing::info!(target: T, count = files.len(), bytes, to = self.files_target(), "files: dropped, sending");
+        for f in files {
+            tracing::debug!(target: T, file = %f.display(), "files: sending");
+            let result = if let Some(v) = self.viewer.as_ref().filter(|_| self.controlling) {
+                v.handle.send_file(&f).map(drop)
+            } else if let Some(h) = &self.host {
+                self.host_sessions.iter().filter(|s| s.input).try_for_each(|s| h.send_file(s.id, &f).map(drop))
+            } else {
+                Err("Nothing is connected.".into())
+            };
+            if let Err(e) = result {
+                tracing::warn!(target: T, file = %f.display(), "files: couldn't send: {e}");
+                let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.emit(Change::Notify { title: format!("Couldn't send {name}"), body: e });
+            }
+        }
+    }
+
+    fn transfer(&mut self, e: Event) {
+        match e {
+            Event::TransferStarted { session_id, id, incoming, name, size } => {
+                if let Some(t) = &self.drop_tray {
+                    t.started(session_id, id, incoming, name, size);
+                }
+            }
+            Event::TransferProgress { session_id, id, incoming, done } => {
+                if let Some(t) = &self.drop_tray {
+                    t.progress(session_id, id, incoming, done);
+                }
+            }
+            Event::TransferEnded { session_id, id, incoming, ok, path, error } => {
+                if let Some(t) = &self.drop_tray {
+                    t.ended(session_id, id, incoming, ok, path, error);
+                } else if incoming && ok {
+                    // No island here (GNOME, X11): say so where it lands.
+                    let name = path
+                        .as_deref()
+                        .and_then(|p| std::path::Path::new(p).file_name())
+                        .map(|n| n.to_string_lossy().into_owned());
+                    self.emit(Change::Notify {
+                        title: format!("Received {}", name.unwrap_or_else(|| "a file".into())),
+                        body: "It's in Downloads.".into(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn set_clipboard_sharing(&mut self, on: bool) {
+        if !on {
+            tracing::info!(target: "annex::clipboard", "clipboard: sharing off");
+            self.clipboard = None;
+            self.copied_while_away = false;
+        } else if self.clipboard.is_none() {
+            self.clipboard = crate::clipboard::Clipboard::start(self.tx.clone());
+            if self.clipboard.is_none() {
+                tracing::warn!(target: "annex::clipboard", "clipboard: no way to watch the clipboard here");
+            }
+        }
+    }
+
+    pub fn set_receive_files(&self, on: bool) {
+        tracing::info!(target: "annex::transfer", on, "files: receive into Downloads");
+        self.core.set_downloads(on.then(downloads_dir));
+    }
+
+    /// Copied here: to the host this computer controls (if copied elsewhere, once its window
+    /// comes to the front, and only what's on the clipboard then), and to the viewers controlling
+    /// this computer.
+    fn copied(&mut self, mime: String, data: Vec<u8>) {
+        const T: &str = "annex::clipboard";
+        let bytes = data.len();
+        if self.clipboard.is_none() {
+            tracing::debug!(target: T, mime, bytes, "clipboard: copied here; not sent, sharing is off");
+            return;
+        }
+        tracing::debug!(target: T, mime, bytes, "clipboard: copied here");
+        if let Some(h) = &self.host {
+            for s in self.host_sessions.iter().filter(|s| s.input) {
+                let sent = h.send_clipboard(s.id, &mime, data.clone());
+                tracing::debug!(target: T, session = s.id, peer = s.name, sent, "clipboard: to a viewer");
+            }
+            if !self.host_sessions.iter().any(|s| s.input) {
+                tracing::debug!(target: T, "clipboard: no viewer controls this computer; not sent to viewers");
+            }
+        }
+        match self.viewer.as_ref() {
+            Some(v) if self.controlling => {
+                if self.viewer_focused {
+                    tracing::debug!(target: T, peer = self.viewer_peer, "clipboard: to the computer this one controls");
+                    v.handle.send_clipboard(&mime, data);
+                } else {
+                    tracing::debug!(target: T, "clipboard: the video window isn't in front; sent once it is");
+                    self.copied_while_away = true;
+                }
+            }
+            Some(_) => tracing::debug!(target: T, "clipboard: viewing without control; not sent"),
+            None => {}
+        }
+    }
+
+    /// The video window came to the front.
+    pub fn viewer_focus(&mut self, focused: bool) {
+        if focused != self.viewer_focused {
+            tracing::debug!(target: "annex::viewer", focused, "viewer: the video window {}", if focused { "came to the front" } else { "went to the back" });
+        }
+        self.viewer_focused = focused;
+        if focused
+            && self.controlling
+            && std::mem::take(&mut self.copied_while_away)
+            && let Some(c) = &self.clipboard
+        {
+            tracing::debug!(target: "annex::clipboard", "clipboard: reading it again, something was copied while away");
+            c.read_now();
+        }
+    }
+
+    fn clipboard_received(&self, mime: &str, data: &[u8]) {
+        match &self.clipboard {
+            Some(c) => c.apply(mime, data),
+            None => {
+                tracing::debug!(target: "annex::clipboard", mime, bytes = data.len(), "clipboard: received; not applied, sharing is off")
             }
         }
     }
@@ -850,6 +1147,12 @@ fn friendly_internet_error(r: &str) -> String {
     } else {
         format!("Sharing with a code stopped: {r}")
     }
+}
+
+/// Where files from the other computer go.
+fn downloads_dir() -> std::path::PathBuf {
+    gtk::glib::user_special_dir(gtk::glib::UserDirectory::Downloads)
+        .unwrap_or_else(|| gtk::glib::home_dir().join("Downloads"))
 }
 
 #[cfg(test)]

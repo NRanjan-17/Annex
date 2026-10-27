@@ -58,6 +58,8 @@ struct SessionStarted: Decodable, Equatable {
     /// The host understands pointer movement (protocol 1.2), so Extend can send that instead of
     /// positions and the host's pointer can leave the extended display.
     let pointerDeltas: Bool?
+    /// The other computer's system: "macos", "windows" or "linux"; nil from older versions.
+    let peerOs: String?
 
     var connectionDescription: String {
         let t = transport == "quic" ? "QUIC" : transport == "tcp" ? "TCP" : nil
@@ -159,6 +161,15 @@ extension InputEvent: Decodable {
     }
 }
 
+/// A file going either way during a session (`incoming`: to this Mac).
+struct Transfer: Decodable, Equatable {
+    let sessionId: UInt64
+    let id: UInt64
+    let incoming: Bool
+    let name: String
+    let size: UInt64
+}
+
 enum CoreEvent: Equatable {
     case listening(port: Int)
     /// Sharing over the internet: the code to show, valid `expiresIn` seconds and once.
@@ -190,6 +201,12 @@ enum CoreEvent: Equatable {
     case directLinkOffer(sessionId: UInt64, ssid: String, passphrase: String)
     case directLinkUnavailable(sessionId: UInt64, reason: String)
     case sessionEnded(sessionId: UInt64, reason: String)
+    /// The other computer copied this: put it on this Mac's clipboard (if shared).
+    case clipboardReceived(sessionId: UInt64, mime: String, data: Data)
+    case transferStarted(Transfer)
+    case transferProgress(sessionId: UInt64, id: UInt64, incoming: Bool, done: UInt64)
+    /// `path`: where a received file was saved; `error`: why it failed, for the user.
+    case transferEnded(sessionId: UInt64, id: UInt64, incoming: Bool, ok: Bool, path: String?, error: String?)
     case error(message: String)
     case peerFound(PeerInfo)
     case peerLost(instance: String)
@@ -219,10 +236,18 @@ enum CoreEvent: Equatable {
     private struct Offer: Decodable { let sessionId: UInt64; let ssid: String; let passphrase: String }
     private struct Unavailable: Decodable { let sessionId: UInt64; let reason: String }
     private struct InputAsk: Decodable { let sessionId: UInt64; let peerName: String; let fingerprint: String }
+    private struct Clip: Decodable { let sessionId: UInt64; let mime: String; let data: Data }
+    private struct Progress: Decodable { let sessionId: UInt64; let id: UInt64; let incoming: Bool; let done: UInt64 }
+    private struct TransferEnd: Decodable {
+        let sessionId: UInt64; let id: UInt64; let incoming: Bool; let ok: Bool; let path: String?; let error: String?
+    }
 
     static func decode(_ data: Data) -> CoreEvent {
         let d = decoder
-        guard let tag = try? d.decode(Tag.self, from: data) else { return .unknown(type: "invalid") }
+        guard let tag = try? d.decode(Tag.self, from: data) else {
+            Annex.log(.warn, "[app] a core event wasn't JSON (\(data.count) bytes)")
+            return .unknown(type: "invalid")
+        }
         do {
             switch tag.type {
             case "listening": return .listening(port: try d.decode(Port.self, from: data).port)
@@ -265,13 +290,37 @@ enum CoreEvent: Equatable {
             case "session_ended":
                 let e = try d.decode(Ended.self, from: data)
                 return .sessionEnded(sessionId: e.sessionId, reason: e.reason)
+            case "clipboard_received":
+                let c = try d.decode(Clip.self, from: data)
+                return .clipboardReceived(sessionId: c.sessionId, mime: c.mime, data: c.data)
+            case "transfer_started": return .transferStarted(try d.decode(Transfer.self, from: data))
+            case "transfer_progress":
+                let p = try d.decode(Progress.self, from: data)
+                return .transferProgress(sessionId: p.sessionId, id: p.id, incoming: p.incoming, done: p.done)
+            case "transfer_ended":
+                let e = try d.decode(TransferEnd.self, from: data)
+                return .transferEnded(sessionId: e.sessionId, id: e.id, incoming: e.incoming, ok: e.ok, path: e.path, error: e.error)
             case "error": return .error(message: try d.decode(Message.self, from: data).message)
             case "peer_found": return .peerFound(try d.decode(PeerInfo.self, from: data))
             case "peer_lost": return .peerLost(instance: try d.decode(Instance.self, from: data).instance)
             default: return .unknown(type: tag.type)
             }
         } catch {
+            // Only the type and the reason: the event itself may hold a clipboard or a passphrase.
+            Annex.log(.warn, "[app] couldn't read a \(tag.type) event: \(Self.shape(of: error))")
             return .unknown(type: tag.type)
+        }
+    }
+
+    /// A decoding error without the values it quotes.
+    private static func shape(of error: Error) -> String {
+        guard let e = error as? DecodingError else { return "\(type(of: error))" }
+        switch e {
+        case .keyNotFound(let key, _): return "missing \(key.stringValue)"
+        case .typeMismatch(let t, let c): return "\(c.codingPath.map(\.stringValue).joined(separator: ".")) isn't \(t)"
+        case .valueNotFound(let t, let c): return "\(c.codingPath.map(\.stringValue).joined(separator: ".")) has no \(t)"
+        case .dataCorrupted(let c): return "corrupt at \(c.codingPath.map(\.stringValue).joined(separator: "."))"
+        @unknown default: return "decoding failed"
         }
     }
 }

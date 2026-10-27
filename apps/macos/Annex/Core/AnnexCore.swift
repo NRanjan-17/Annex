@@ -31,8 +31,26 @@ enum Annex {
     static var version: String { String(cString: annex_version()) }
     static func nowMicros() -> Int64 { annex_now_us() }
     static func displayFingerprint(_ fp: String) -> String { takeString(annex_display_fingerprint(fp)) }
-    /// Writes a line to annex.log (always on), next to the core's own.
-    static func log(_ message: String, error: Bool = false) { annex_log(error ? 2 : 0, message) }
+    /// How serious a log line is. `error` also saves what led up to it to crashes/; `trace` is
+    /// written only with verbose logging on.
+    enum LogLevel: Int32 { case info = 0, warn = 1, error = 2, debug = 3, trace = 4 }
+
+    /// Verbose logging is on (Settings → Developer). Cached here so hot paths skip trace lines
+    /// without building them.
+    private(set) static var verbose = false
+
+    /// Writes a line to annex.log, next to the core's own. Start with the feature in brackets:
+    /// "[clipboard] copied text, 12 bytes". Never what's copied, keys pressed, or a secret.
+    static func log(_ level: LogLevel, _ message: @autoclosure () -> String) {
+        if level == .trace && !verbose { return }
+        annex_log(level.rawValue, message())
+    }
+
+    static func setVerboseLogging(_ on: Bool) {
+        verbose = on
+        annex_set_log_verbose(on)
+    }
+
     /// macOS virtual key code for a HID usage from an `input` event.
     static func macKeyCode(hid: UInt16) -> CGKeyCode? {
         let c = annex_key_native_from_hid(hid)
@@ -134,7 +152,12 @@ final class CoreClient {
 
     var trustedPeers: [TrustedPeer] {
         let json = takeString(annex_core_trusted_peers_json(raw))
-        return (try? CoreEvent.decoder.decode([TrustedPeer].self, from: Data(json.utf8))) ?? []
+        do {
+            return try CoreEvent.decoder.decode([TrustedPeer].self, from: Data(json.utf8))
+        } catch {
+            Annex.log(.warn, "[pairing] couldn't read the paired devices list: \(error)")
+            return []
+        }
     }
 
     @discardableResult
@@ -152,6 +175,11 @@ final class CoreClient {
     /// folder, and paired devices may use the mouse and keyboard without being allowed one by one.
     func setHeadless(_ on: Bool) {
         _ = annex_core_set_headless(raw, on)
+    }
+
+    /// Where files from the other computer are saved; nil refuses them.
+    func setDownloads(_ folder: URL?) {
+        _ = annex_core_set_downloads(raw, folder?.path)
     }
 
     /// Answers a `pairingPinRequired` event with what the user typed.
@@ -229,6 +257,25 @@ final class HostHandle {
 
     func endSession(_ session: UInt64) {
         if let raw { annex_host_end_session(raw, session) }
+    }
+
+    /// Puts text or a PNG on one viewer's clipboard. False if it can't take it.
+    @discardableResult
+    func sendClipboard(session: UInt64, mime: String, data: Data) -> Bool {
+        guard let raw else { return false }
+        return data.withUnsafeBytes { annex_host_send_clipboard(raw, session, mime, $0.bindMemory(to: UInt8.self).baseAddress, data.count) } == 1
+    }
+
+    /// Sends a file to one viewer; progress comes as transfer events with the returned id.
+    func sendFile(session: UInt64, url: URL) throws -> UInt64 {
+        guard let raw else { throw AnnexError(message: "Not sharing.") }
+        var id: UInt64 = 0
+        try check(annex_host_send_file(raw, session, url.path, &id))
+        return id
+    }
+
+    func cancelTransfer(session: UInt64, incoming: Bool, id: UInt64) {
+        if let raw { annex_host_cancel_transfer(raw, session, incoming, id) }
     }
 
     /// Shares over the internet with one code (`internetCode`, …, `internetCodeEnded` events).
@@ -332,6 +379,25 @@ final class ViewerHandle {
 
     func sendScroll(dx: Int32, dy: Int32) {
         if let raw { annex_viewer_send_scroll(raw, dx, dy) }
+    }
+
+    /// Puts text or a PNG on the host's clipboard. False if it can't take it.
+    @discardableResult
+    func sendClipboard(mime: String, data: Data) -> Bool {
+        guard let raw else { return false }
+        return data.withUnsafeBytes { annex_viewer_send_clipboard(raw, mime, $0.bindMemory(to: UInt8.self).baseAddress, data.count) } == 1
+    }
+
+    /// Sends a file to the host; progress comes as transfer events with the returned id.
+    func sendFile(_ url: URL) throws -> UInt64 {
+        guard let raw else { throw AnnexError(message: "Not connected.") }
+        var id: UInt64 = 0
+        try check(annex_viewer_send_file(raw, url.path, &id))
+        return id
+    }
+
+    func cancelTransfer(incoming: Bool, id: UInt64) {
+        if let raw { annex_viewer_cancel_transfer(raw, incoming, id) }
     }
 
     /// Asks the host for a direct Wi-Fi link (answered by directLinkOffer / directLinkUnavailable).

@@ -24,9 +24,20 @@ pub struct Settings {
     pub use_mouse_and_keyboard: bool,
     pub open_full_screen: bool,
     pub extend_by_default: bool,
+    /// Copy on one computer, paste on the other, while one controls the other.
+    pub share_clipboard: bool,
+    /// Take files the other computer sends, into Downloads.
+    pub receive_files: bool,
+    /// Drag files to the top of the screen to send them (wlroots desktops and KDE).
+    pub drop_at_top: bool,
     /// Sharing: use the graphics chip's video encoder when there is one.
     pub prefer_hardware_encoder: bool,
+    /// Sharing: the size of text and windows on a screen extending this one. 0 = the other
+    /// screen's own scale (200 % on a Retina Mac); otherwise a percentage, 100–200.
+    pub extend_scale: u32,
     pub show_technical_details: bool,
+    /// Everything Annex does goes in the log (every input event, every progress step).
+    pub verbose_logging: bool,
     pub check_for_updates: bool,
     pub beta_updates: bool,
     /// Empty: Annex's server.
@@ -49,8 +60,13 @@ impl Default for Settings {
             use_mouse_and_keyboard: true,
             open_full_screen: false,
             extend_by_default: false,
+            share_clipboard: true,
+            receive_files: true,
+            drop_at_top: true,
             prefer_hardware_encoder: true,
+            extend_scale: 0,
             show_technical_details: false,
+            verbose_logging: false,
             check_for_updates: true,
             beta_updates: false,
             rendezvous_server: String::new(),
@@ -64,7 +80,14 @@ impl Default for Settings {
 
 impl Settings {
     pub fn load() -> Settings {
-        std::fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        let Ok(bytes) = std::fs::read(path()) else {
+            tracing::info!("settings: none saved yet, using the defaults");
+            return Settings::default();
+        };
+        serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            tracing::warn!("settings: {} couldn't be read ({e}); using the defaults", path().display());
+            Settings::default()
+        })
     }
 
     pub fn save(&self) {
@@ -74,11 +97,39 @@ impl Settings {
         }
         let tmp = p.with_extension("json.tmp");
         // The relay password is in here: readable by this user only.
-        if let Ok(json) = serde_json::to_vec_pretty(self)
-            && write_private(&tmp, &json).is_ok()
-        {
-            let _ = std::fs::rename(&tmp, &p);
+        let saved = serde_json::to_vec_pretty(self)
+            .map_err(|e| e.to_string())
+            .and_then(|json| write_private(&tmp, &json).map_err(|e| e.to_string()))
+            .and_then(|()| std::fs::rename(&tmp, &p).map_err(|e| e.to_string()));
+        if let Err(e) = saved {
+            tracing::warn!("couldn't save the settings to {}: {e}", p.display());
         }
+    }
+
+    /// The choices, for the log: no relay login, no screen-sharing token.
+    pub fn describe(&self) -> String {
+        format!(
+            "open_at_login={} start_sharing_at_launch={} headless={} quality={} use_mouse_and_keyboard={} \
+             open_full_screen={} extend_by_default={} share_clipboard={} receive_files={} drop_at_top={} \
+             prefer_hardware_encoder={} show_technical_details={} verbose_logging={} own_server={} own_relay={} \
+             screen_token={}",
+            self.open_at_login,
+            self.start_sharing_at_launch,
+            self.headless,
+            self.quality,
+            self.use_mouse_and_keyboard,
+            self.open_full_screen,
+            self.extend_by_default,
+            self.share_clipboard,
+            self.receive_files,
+            self.drop_at_top,
+            self.prefer_hardware_encoder,
+            self.show_technical_details,
+            self.verbose_logging,
+            !self.rendezvous_server.trim().is_empty(),
+            !self.relay_url.trim().is_empty(),
+            self.screen_token.is_some(),
+        )
     }
 
     /// The code server to use: the user's, or Annex's.
@@ -127,6 +178,7 @@ pub fn set_open_at_login(on: bool) -> std::io::Result<()> {
             _ => Ok(()),
         };
     }
+    tracing::info!("settings: open at login on ({})", file.display());
     std::fs::create_dir_all(&dir)?;
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "annex".into());
     std::fs::write(
@@ -148,5 +200,18 @@ mod tests {
         assert_eq!(s.quality, 2);
         assert!(s.use_mouse_and_keyboard);
         assert_eq!(s.server(), ANNEX_SERVER);
+        assert!(!s.verbose_logging);
+    }
+
+    #[test]
+    fn description_has_no_secrets() {
+        let s = Settings {
+            relay_username: "alice".into(),
+            relay_password: "hunter2".into(),
+            screen_token: Some("token-123".into()),
+            ..Settings::default()
+        };
+        let d = s.describe();
+        assert!(!d.contains("alice") && !d.contains("hunter2") && !d.contains("token-123"));
     }
 }

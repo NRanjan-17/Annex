@@ -19,17 +19,29 @@ enum DirectWiFi {
 
     /// Joins `ssid`. Returns nil on success, or what went wrong. Blocks for a few seconds: call off the main thread.
     static func join(ssid: String, passphrase: String) -> String? {
-        guard let iface = wifiInterface() else { return "This Mac has no Wi-Fi." }
+        guard let iface = wifiInterface() else {
+            Annex.log(.warn, "[network] no Wi-Fi interface found")
+            return "This Mac has no Wi-Fi."
+        }
         // The network can take a moment to appear after the hotspot starts.
         var last = ""
-        for _ in 0..<4 {
+        for attempt in 0..<4 {
             let r = run("/usr/sbin/networksetup", ["-setairportnetwork", iface, ssid, passphrase])
             let text = (r.output ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            if r.status == 0 && text.isEmpty { return nil }
+            if r.status == 0 && text.isEmpty {
+                Annex.log(.debug, "[network] joined \"\(ssid)\" on \(iface) (try \(attempt + 1))")
+                return nil
+            }
             last = text.isEmpty ? "networksetup exited with \(r.status)" : text
+            Annex.log(.debug, "[network] joining \"\(ssid)\" on \(iface), try \(attempt + 1) of 4: \(redact(last, passphrase))")
             Thread.sleep(forTimeInterval: 2)
         }
         return last
+    }
+
+    /// `text` with the passphrase taken out, for the log.
+    static func redact(_ text: String, _ passphrase: String) -> String {
+        passphrase.isEmpty ? text : text.replacingOccurrences(of: passphrase, with: "(passphrase)")
     }
 
     private static func run(_ path: String, _ args: [String]) -> (status: Int32, output: String?) {

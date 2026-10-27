@@ -22,6 +22,22 @@ pub enum Action {
     Quit,
 }
 
+impl Action {
+    /// For the log.
+    pub fn describe(&self) -> String {
+        match self {
+            Action::Show => "Open Annex".into(),
+            Action::Settings => "Settings".into(),
+            Action::Share(on) => format!("Share This Screen {}", if *on { "on" } else { "off" }),
+            Action::Connect { peer, extend } => {
+                format!("{} on {}", if *extend { "Use as Display" } else { "Show Its Screen" }, peer.name)
+            }
+            Action::Disconnect => "Disconnect".into(),
+            Action::Quit => "Quit Annex".into(),
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct Snapshot {
     name: String,
@@ -193,6 +209,7 @@ pub fn start(model: &Model, tx: async_channel::Sender<Action>) -> bool {
     let tray = Tray { s: snapshot(model), tx };
     match tray.spawn() {
         Ok(h) => {
+            tracing::info!("tray: icon shown");
             let _ = HANDLE.set(h);
             true
         }

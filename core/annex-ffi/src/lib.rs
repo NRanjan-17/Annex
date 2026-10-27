@@ -62,6 +62,7 @@ fn guard(f: impl FnOnce() -> Result<i32, (i32, String)>) -> i32 {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(v)) => v,
         Ok(Err((code, msg))) => {
+            tracing::warn!(target: "annex::ffi", code, "call failed: {msg}");
             set_error(msg);
             code
         }
@@ -138,6 +139,7 @@ impl Callbacks {
     fn event_sink(self: &Arc<Self>) -> EventSink {
         let me = self.clone();
         Arc::new(move |e: Event| {
+            annex_session::log_event(&e);
             if let Ok(json) = serde_json::to_string(&e) {
                 me.event_json(&json);
             }
@@ -286,102 +288,39 @@ pub struct AnnexDiscovery {
     callbacks: Arc<Callbacks>,
 }
 
-/// The log file: `<data_dir>/annex.log`, always written (debug level for Annex's own steps).
-/// Local only: never uploaded; users attach it to bug reports themselves. Past 5 MB it moves to `annex.old.log` and a new one starts, so
-/// the two never take more than about 10 MB.
-struct LogFile {
-    enabled: std::sync::atomic::AtomicBool,
-    path: Mutex<Option<PathBuf>>,
-    /// The open file and how many bytes it holds.
-    file: Mutex<Option<(std::fs::File, u64)>>,
-}
-
-const LOG_MAX: u64 = 5 * 1024 * 1024;
-
-static LOG: LogFile =
-    LogFile { enabled: std::sync::atomic::AtomicBool::new(true), path: Mutex::new(None), file: Mutex::new(None) };
-
-/// Where tracing writes: `annex.log`, unless an app turned it off.
-struct LogSink;
-
-impl std::io::Write for LogSink {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if !LOG.enabled.load(std::sync::atomic::Ordering::Relaxed) {
-            return Ok(buf.len());
-        }
-        let mut file = LOG.file.lock().unwrap_or_else(|e| e.into_inner());
-        if file.as_ref().is_some_and(|(_, len)| *len > LOG_MAX) {
-            *file = None;
-        }
-        if file.is_none() {
-            let Some(path) = LOG.path.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return Ok(buf.len()) };
-            if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX) {
-                let _ = std::fs::rename(&path, path.with_file_name("annex.old.log"));
-            }
-            *file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok().map(|f| {
-                let len = f.metadata().map_or(0, |m| m.len());
-                (f, len)
-            });
-        }
-        match file.as_mut() {
-            Some((f, len)) => {
-                let n = f.write(buf)?;
-                *len += n as u64;
-                Ok(n)
-            }
-            None => Ok(buf.len()),
-        }
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Points the log at `<data_dir>/annex.log` and installs the logger (once per process): debug
-/// for Annex's own crates, info for the libraries under it. `ANNEX_LOG=0` turns it off.
-fn init_logging(data_dir: &std::path::Path) {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    let _ = std::fs::create_dir_all(data_dir);
-    *LOG.path.lock().unwrap_or_else(|e| e.into_inner()) = Some(data_dir.join("annex.log"));
-    ONCE.call_once(|| {
-        if std::env::var_os("ANNEX_LOG").is_some_and(|v| v == "0") {
-            LOG.enabled.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
-        let levels = tracing_subscriber::filter::Targets::new()
-            .with_default(tracing::Level::INFO)
-            .with_target("annex", tracing::Level::DEBUG)
-            .with_target("app", tracing::Level::DEBUG);
-        let _ = tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer().with_writer(|| LogSink).with_ansi(false).with_target(false))
-            .with(levels)
-            .try_init();
-        // Panics on background threads don't end the process, but they explain what stopped working.
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let thread = std::thread::current();
-            tracing::error!(thread = thread.name().unwrap_or("?"), "panic: {info}");
-            previous(info);
-        }));
-        tracing::info!(version = env!("CARGO_PKG_VERSION"), os = std::env::consts::OS, "annex core started");
-    });
-}
-
-/// Turns the log file on or off (on by default; the apps leave it on). Takes effect immediately.
+/// Turns the log file (`<data_dir>/annex.log`) on or off (on by default; the apps leave it on).
+/// Takes effect immediately. See the `annex-log` crate for what goes in it.
 #[unsafe(no_mangle)]
 pub extern "C" fn annex_set_log_enabled(enabled: bool) {
-    LOG.enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
-    if enabled {
-        tracing::info!(version = env!("CARGO_PKG_VERSION"), os = std::env::consts::OS, "logging on");
-    } else {
-        *LOG.file.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    annex_log::set_enabled(enabled);
+}
+
+/// Verbose logging: everything at trace (each input event, each progress step), for chasing a
+/// problem. Off by default.
+#[unsafe(no_mangle)]
+pub extern "C" fn annex_set_log_verbose(verbose: bool) {
+    annex_log::set_verbose(verbose);
+}
+
+/// Saves the last few thousand log lines to `<data_dir>/crashes/` now, as happens by itself on
+/// each error. `why`: a word for the file name (may be null). Returns the file (free with
+/// `annex_string_free`), or null before a core was created.
+///
+/// # Safety
+/// `why` must be a valid NUL-terminated string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_log_save_recording(why: *const c_char) -> *mut c_char {
+    let why = unsafe { opt_str_arg(why, "why") }.ok().flatten().unwrap_or("saved");
+    match annex_log::save_recording(why) {
+        Some(path) => out_string(&path.to_string_lossy()),
+        None => std::ptr::null_mut(),
     }
 }
 
-/// Writes one line from the app to the log (while it's on): `level` 0 = info, 1 = warning,
-/// 2 = error. The app's own steps (capture, encoding, virtual displays) explain what the core can't.
+/// Writes one line from the app to the log: `level` 0 = info, 1 = warning, 2 = error (also saves
+/// what led up to it), 3 = debug, 4 = trace (verbose only). Start `message` with the feature in
+/// brackets, e.g. "[clipboard] copied text, 12 bytes". The app's own steps (capture, encoding,
+/// clipboard, drag and drop) explain what the core can't. Never log what's copied or a secret.
 ///
 /// # Safety
 /// `message` must be a valid NUL-terminated string or null.
@@ -391,6 +330,8 @@ pub unsafe extern "C" fn annex_log(level: i32, message: *const c_char) {
     match level {
         2 => tracing::error!(target: "app", "{message}"),
         1 => tracing::warn!(target: "app", "{message}"),
+        3 => tracing::debug!(target: "app", "{message}"),
+        4 => tracing::trace!(target: "app", "{message}"),
         _ => tracing::info!(target: "app", "{message}"),
     }
 }
@@ -509,7 +450,7 @@ pub unsafe extern "C" fn annex_core_new(
         }
         let dir = PathBuf::from(unsafe { str_arg(data_dir, "data_dir") }?);
         let name = unsafe { str_arg(device_name, "device_name") }?;
-        init_logging(&dir);
+        annex_log::init(&dir, false);
         let core = Core::open(&dir, name, TrustPolicy::Pair).map_err(failed)?;
         new_core(core, out)
     })
@@ -628,6 +569,32 @@ pub unsafe extern "C" fn annex_core_set_headless(core: *const AnnexCore, on: boo
         c.core.set_headless(on);
         Ok(0)
     })
+}
+
+/// Where files from the other computer are saved (usually Downloads); NULL refuses them (the
+/// default). Applies to sessions that start afterwards.
+///
+/// # Safety
+/// `core` must be valid; `dir` a NUL-terminated string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_set_downloads(core: *const AnnexCore, dir: *const c_char) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        let dir = unsafe { opt_str_arg(dir, "dir") }?.filter(|d| !d.is_empty()).map(PathBuf::from);
+        c.core.set_downloads(dir);
+        Ok(0)
+    })
+}
+
+/// `data`/`len` as bytes (empty allowed).
+unsafe fn bytes_arg<'a>(data: *const u8, len: usize) -> Result<&'a [u8], (i32, String)> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if data.is_null() {
+        return Err(invalid("data is null"));
+    }
+    Ok(unsafe { std::slice::from_raw_parts(data, len) })
 }
 
 /// This platform's key code (macOS virtual key code, Windows scancode with 0xE0xx for extended
@@ -835,6 +802,62 @@ pub unsafe extern "C" fn annex_host_set_session_stream(
 pub unsafe extern "C" fn annex_host_end_session(host: *const AnnexHost, session_id: u64) {
     if let Some(h) = unsafe { host.as_ref() } {
         h.handle.end_session(session_id);
+    }
+}
+
+/// Puts a clipboard item (`mime` "text/plain;charset=utf-8" or "image/png") on one viewer's
+/// clipboard. Returns 1 if it's on its way; 0 if that viewer can't take it (older Annex, TCP
+/// session) or it's too big for the link (32 MB, 1 MB through our relay).
+///
+/// # Safety
+/// `host` must be valid; `mime` a NUL-terminated string; `data` `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_send_clipboard(
+    host: *const AnnexHost,
+    session_id: u64,
+    mime: *const c_char,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    guard(|| {
+        let h = unsafe { host.as_ref() }.ok_or_else(|| invalid("host is null"))?;
+        let mime = unsafe { str_arg(mime, "mime") }?;
+        let data = unsafe { bytes_arg(data, len) }?.to_vec();
+        Ok(i32::from(h.handle.send_clipboard(session_id, mime, data)))
+    })
+}
+
+/// Sends a file to one viewer. `*out_id` is the id in its `transfer_*` events. Fails (with
+/// `annex_last_error`) if the viewer can't take files.
+///
+/// # Safety
+/// `host` must be valid; `path` a NUL-terminated string; `out_id` writable or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_send_file(
+    host: *const AnnexHost,
+    session_id: u64,
+    path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
+    guard(|| {
+        let h = unsafe { host.as_ref() }.ok_or_else(|| invalid("host is null"))?;
+        let path = unsafe { str_arg(path, "path") }?;
+        let id = h.handle.send_file(session_id, std::path::Path::new(path)).map_err(failed)?;
+        if let Some(out) = unsafe { out_id.as_mut() } {
+            *out = id;
+        }
+        Ok(0)
+    })
+}
+
+/// Stops a file going either way (`incoming`: from the viewer).
+///
+/// # Safety
+/// `host` must be valid or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_cancel_transfer(host: *const AnnexHost, session_id: u64, incoming: bool, id: u64) {
+    if let Some(h) = unsafe { host.as_ref() } {
+        h.handle.cancel_transfer(session_id, incoming, id);
     }
 }
 
@@ -1766,6 +1789,59 @@ pub unsafe extern "C" fn annex_viewer_send_scroll(viewer: *const AnnexViewer, dx
     }
 }
 
+/// Puts a clipboard item on the host's clipboard (see `annex_host_send_clipboard`). Returns 1 if
+/// it's on its way, 0 if the host can't take it or it's too big for the link.
+///
+/// # Safety
+/// `viewer` must be valid; `mime` a NUL-terminated string; `data` `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_send_clipboard(
+    viewer: *const AnnexViewer,
+    mime: *const c_char,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    guard(|| {
+        let v = unsafe { viewer.as_ref() }.ok_or_else(|| invalid("viewer is null"))?;
+        let mime = unsafe { str_arg(mime, "mime") }?;
+        let data = unsafe { bytes_arg(data, len) }?.to_vec();
+        Ok(i32::from(v.handle.send_clipboard(mime, data)))
+    })
+}
+
+/// Sends a file to the host. `*out_id` is the id in its `transfer_*` events. The host takes
+/// files only while this viewer has control.
+///
+/// # Safety
+/// `viewer` must be valid; `path` a NUL-terminated string; `out_id` writable or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_send_file(
+    viewer: *const AnnexViewer,
+    path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
+    guard(|| {
+        let v = unsafe { viewer.as_ref() }.ok_or_else(|| invalid("viewer is null"))?;
+        let path = unsafe { str_arg(path, "path") }?;
+        let id = v.handle.send_file(std::path::Path::new(path)).map_err(failed)?;
+        if let Some(out) = unsafe { out_id.as_mut() } {
+            *out = id;
+        }
+        Ok(0)
+    })
+}
+
+/// Stops a file going either way (`incoming`: from the host).
+///
+/// # Safety
+/// `viewer` must be valid or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_cancel_transfer(viewer: *const AnnexViewer, incoming: bool, id: u64) {
+    if let Some(v) = unsafe { viewer.as_ref() } {
+        v.handle.cancel_transfer(incoming, id);
+    }
+}
+
 /// A key press or release, as this platform's key code (see `annex_key_native_from_hid`).
 /// Returns 1 if sent, 0 if the key has no cross-platform code.
 #[unsafe(no_mangle)]
@@ -1894,6 +1970,7 @@ pub unsafe extern "C" fn annex_discovery_start(
             .discovery()?
             .browse(move |e| {
                 if let Ok(json) = serde_json::to_string(&e) {
+                    tracing::debug!(target: "annex::discovery", "{json}");
                     cb.event_json(&json);
                 }
             })

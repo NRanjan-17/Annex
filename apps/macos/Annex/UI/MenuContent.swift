@@ -81,7 +81,10 @@ struct MenuContent: View {
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(.secondary)
             Spacer()
-            Button("Quit Annex") { model.quit() }
+            Button("Quit Annex") {
+                Annex.log(.info, "[tray] Quit pressed")
+                model.quit()
+            }
                 .pointingHand()
                 .buttonStyle(.plain)
                 .font(.system(size: 11.5, weight: .medium))
@@ -91,6 +94,7 @@ struct MenuContent: View {
     }
 
     private func open(_ pane: Pane) {
+        Annex.log(.info, "[tray] open \(pane)")
         model.pane = pane
         openWindow(id: "main")
         // A menu bar app isn't frontmost; bring the window forward.
@@ -178,12 +182,14 @@ private struct LiveBlock: View {
             }
             HStack(spacing: 8) {
                 Button(model.isViewing ? "Disconnect" : "Stop Sharing") {
+                    Annex.log(.info, "[tray] \(model.isViewing ? "Disconnect" : "Stop Sharing") pressed")
                     if model.isViewing { model.disconnectViewer() } else { model.setHosting(false) }
                 }
                 .pointingHand()
                 .buttonStyle(PillStyle(prominent: true))
                 if !model.isViewing, !model.hostStatus.extendViewers.isEmpty {
                     Button("Arrange Displays") {
+                        Annex.log(.info, "[tray] Arrange Displays pressed")
                         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension")!)
                     }
                     .pointingHand()

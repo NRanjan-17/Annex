@@ -34,9 +34,13 @@ pub struct Started {
 fn err(e: ashpd::Error) -> String {
     match e {
         ashpd::Error::Response(ashpd::desktop::ResponseError::Cancelled) => {
+            tracing::info!(target: "annex::permissions", "portal: the user didn't allow screen sharing");
             "Screen sharing wasn't allowed. Turn sharing on again and choose a screen.".into()
         }
-        e => format!("The desktop's screen-sharing service failed: {e}"),
+        e => {
+            tracing::warn!(target: "annex::permissions", "portal: {e:?}");
+            format!("The desktop's screen-sharing service failed: {e}")
+        }
     }
 }
 
@@ -50,6 +54,11 @@ pub async fn start(token: Option<String>, virtual_display: bool) -> Result<Start
     // RemoteDesktop with a screen: one dialog for both.
     match RemoteDesktop::new().await {
         Ok(rd) if rd.available_device_types().await.is_ok_and(|t| t.contains(DeviceType::Pointer)) => {
+            tracing::info!(
+                virtual_display,
+                saved = token.is_some(),
+                "portal: RemoteDesktop with a screen (one dialog)"
+            );
             let session = rd.create_session().await.map_err(err)?;
             rd.select_devices(
                 &session,
@@ -92,17 +101,19 @@ pub async fn start(token: Option<String>, virtual_display: bool) -> Result<Start
                                 PortalInput::Key { code, down } => rd.notify_keyboard_keycode(&session, code, state(down)).await,
                             };
                             if let Err(e) = r {
-                                tracing::debug!("portal input: {e}");
+                                crate::inject::failed(&format!("portal: {e}"));
                             }
                         }
                     }
                 }
                 let _ = session.close().await;
+                tracing::info!("portal: screen-sharing session closed");
             });
             Ok(Started { fd, node, size: stream.size(), token, input: Some(tx), _stop: stop })
         }
         _ => {
             // No RemoteDesktop portal (xdg-desktop-portal-wlr): the picture only.
+            tracing::info!(virtual_display, saved = token.is_some(), "portal: ScreenCast only (no RemoteDesktop)");
             let session = screencast.create_session().await.map_err(err)?;
             screencast
                 .select_sources(
@@ -122,6 +133,7 @@ pub async fn start(token: Option<String>, virtual_display: bool) -> Result<Start
             tokio::spawn(async move {
                 let _ = stopped.await;
                 let _ = session.close().await;
+                tracing::info!("portal: screen-sharing session closed");
             });
             Ok(Started { fd, node: stream.pipe_wire_node_id(), size: stream.size(), token, input: None, _stop: stop })
         }

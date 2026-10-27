@@ -170,6 +170,16 @@ sudo dnf install ./Annex-<version>-linux-x86_64.rpm
 tar xf Annex-<version>-linux-x86_64.tar.gz
 ```
 
+apt, dnf and zypper also install what Annex needs (GStreamer, wl-clipboard for the clipboard on Wayland). The packages carry gtk4-layer-shell (MIT) in `/usr/lib/annex`, for the drop island at the top of the screen on wlroots desktops and KDE; Annex restarts itself once with it preloaded there, as that library requires. On X11 desktops (Linux Mint, XFCE, MATE) the island needs nothing extra and glows as soon as files are picked up; GNOME on Wayland has no island, so files are dropped on the viewer window there.
+
+### Uninstall
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/NRanjan-17/Annex/main/scripts/install.sh | sh -s -- --uninstall
+```
+
+It removes Annex, its settings, its identity and trusted devices, and the packages that were installed only for Annex; packages you had before stay. `sudo apt remove annex` removes Annex alone.
+
 Options: `annex --share` starts sharing, `annex --connect <address or code> [--extend]` connects, `annex --background` starts in the tray, `annex --headless` turns on No one at this screen ([GUIDE.md](GUIDE.md#a-computer-with-no-one-at-its-screen)).
 
 ## 6a. Building

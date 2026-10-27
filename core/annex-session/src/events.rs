@@ -88,6 +88,9 @@ pub enum Event {
         /// The host understands pointer movement ([`annex_proto::InputEvent::MouseDelta`],
         /// protocol 1.2), so the viewer may send that instead of positions.
         pointer_deltas: bool,
+        /// The other computer's system ("macos", "windows", "linux"); absent from older versions.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        peer_os: Option<String>,
     },
     /// Input was allowed or revoked during a session (both sides).
     InputAllowed {
@@ -144,12 +147,98 @@ pub enum Event {
         session_id: u64,
         reason: String,
     },
+    /// The other computer copied something: put it on this one's clipboard (if the user shares
+    /// the clipboard). `mime`: "text/plain;charset=utf-8" or "image/png". `data` is base64 in JSON.
+    ClipboardReceived {
+        session_id: u64,
+        mime: String,
+        #[serde(serialize_with = "base64")]
+        data: Vec<u8>,
+    },
+    /// A file started going either way. `incoming`: from the other computer to this one.
+    TransferStarted {
+        session_id: u64,
+        id: u64,
+        incoming: bool,
+        name: String,
+        size: u64,
+    },
+    /// Bytes done so far, about four times a second.
+    TransferProgress {
+        session_id: u64,
+        id: u64,
+        incoming: bool,
+        done: u64,
+    },
+    /// Finished. `path`: where a received file was saved. `error`: why it failed, for the user.
+    TransferEnded {
+        session_id: u64,
+        id: u64,
+        incoming: bool,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     Error {
         message: String,
     },
 }
 
 pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
+
+/// Logs an event the core hands to the app, without what must stay private: PINs, internet codes,
+/// Wi-Fi passphrases, clipboard contents and which keys were pressed are left out. Input,
+/// progress and latency (many a second) only show with verbose logging.
+pub fn log_event(e: &Event) {
+    const T: &str = "annex::event";
+    match e {
+        // A code to connect by stays out; addresses are fine.
+        Event::Connecting { address } if !address.contains(['.', ':']) => {
+            tracing::debug!(target: T, "connecting by internet code")
+        }
+        Event::InternetCode { expires_in, .. } => tracing::debug!(target: T, expires_in, "internet code ready"),
+        Event::PairingPin { request_id, peer_name, fingerprint_display, .. } => {
+            tracing::debug!(target: T, request_id, peer_name, fingerprint_display, "showing a pairing PIN")
+        }
+        Event::DirectLinkOffer { session_id, ssid, .. } => {
+            tracing::debug!(target: T, session_id, ssid, "direct link offered")
+        }
+        Event::ClipboardReceived { session_id, mime, data } => {
+            tracing::debug!(target: T, session_id, mime, bytes = data.len(), "clipboard received")
+        }
+        Event::Input { session_id, event } => {
+            let kind = match event {
+                InputEvent::MouseMove { .. } => "mouse move",
+                InputEvent::MouseButton { .. } => "mouse button",
+                InputEvent::Scroll { .. } => "scroll",
+                InputEvent::Key { .. } => "key",
+                InputEvent::MouseDelta { .. } => "mouse delta",
+            };
+            tracing::trace!(target: T, session_id, kind, "input")
+        }
+        Event::TransferProgress { .. } | Event::LatencyStats { .. } => tracing::trace!(target: T, "{e:?}"),
+        Event::SessionEnded { session_id, reason } => tracing::info!(target: T, session_id, reason, "session ended"),
+        Event::Error { message } => tracing::warn!(target: T, "error for the app: {message}"),
+        Event::TransferEnded { ok: false, .. } => tracing::warn!(target: T, "{e:?}"),
+        _ => tracing::debug!(target: T, "{e:?}"),
+    }
+}
+
+/// Standard base64 with padding, for bytes inside JSON events.
+fn base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S::Error> {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n =
+            (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            out.push(if i <= c.len() { A[(n >> shift & 63) as usize] as char } else { '=' });
+        }
+    }
+    s.serialize_str(&out)
+}
 
 /// A received video frame, borrowed for the duration of the callback.
 #[derive(Debug)]

@@ -43,7 +43,7 @@ internal sealed unsafe class CallbackTarget : IDisposable
         catch (Exception e)
         {
             // Exceptions must never unwind into Rust.
-            System.Diagnostics.Debug.WriteLine($"Annex event handler failed: {e}");
+            AnnexLog.Error($"[app] event handler failed: {e}");
         }
     }
 
@@ -57,8 +57,54 @@ internal sealed unsafe class CallbackTarget : IDisposable
         }
         catch (Exception e)
         {
-            System.Diagnostics.Debug.WriteLine($"Annex frame handler failed: {e}");
+            AnnexLog.Error($"[app] frame handler failed: {e}");
         }
+    }
+}
+
+/// <summary>
+/// Annex's log: annex.log in the data folder, shared with the core (see annex_log in annex.h). Lines
+/// are dropped until a <see cref="CoreClient"/> is open. Start each line with the feature in brackets,
+/// e.g. "[clipboard] copied text, 12 bytes". Never log what's copied, keys pressed, PINs, codes,
+/// passwords or relay credentials: log shapes (kinds, byte counts) instead.
+/// </summary>
+public static class AnnexLog
+{
+    public enum Level { Info = 0, Warn = 1, Error = 2, Debug = 3, Trace = 4 }
+
+    /// <summary>Verbose logging is on: check it before building a trace line on a busy path.</summary>
+    public static bool Verbose { get; private set; } = Environment.GetEnvironmentVariable("ANNEX_LOG") == "verbose";
+
+    /// <summary>Verbose logging: trace lines too (each input event, each progress step). Off by default.</summary>
+    public static void SetVerbose(bool verbose)
+    {
+        Verbose = verbose;
+        try { NativeMethods.annex_set_log_verbose(verbose); }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException) { }
+    }
+
+    public static void Write(Level level, string message)
+    {
+        if (level == Level.Trace && !Verbose) return;
+        // Also called while reporting that annex_ffi didn't load: never throw from here.
+        try { NativeMethods.annex_log((int)level, message); }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException) { }
+    }
+
+    public static void Info(string message) => Write(Level.Info, message);
+    public static void Warn(string message) => Write(Level.Warn, message);
+    /// <summary>A feature stopped working; also saves the lines that led up to it to the crashes folder.</summary>
+    public static void Error(string message) => Write(Level.Error, message);
+    public static void Debug(string message) => Write(Level.Debug, message);
+    /// <summary>Only written while <see cref="Verbose"/>; check it first so the line isn't built for nothing.</summary>
+    public static void Trace(string message) => Write(Level.Trace, message);
+
+    /// <summary>Saves the last few thousand log lines to the crashes folder in the data folder now. Returns the
+    /// file, or null (no core opened yet, or it couldn't be written).</summary>
+    public static string? SaveRecording(string? why)
+    {
+        var p = NativeMethods.annex_log_save_recording(why);
+        return p == 0 ? null : NativeMethods.TakeString(p);
     }
 }
 
@@ -142,6 +188,9 @@ public sealed class CoreClient : IDisposable
     /// <summary>Headless (nobody at this screen): pairing PINs also go to <c>pairing-pin.txt</c> in the data
     /// folder, and paired devices may use the mouse and keyboard without being allowed one by one.</summary>
     public void SetHeadless(bool on) => NativeMethods.Check(NativeMethods.annex_core_set_headless(Raw, on));
+
+    /// <summary>Where files from the other computer go; null refuses them.</summary>
+    public void SetDownloads(string? folder) => NativeMethods.Check(NativeMethods.annex_core_set_downloads(Raw, folder));
 
     /// <summary>Answers a <see cref="CoreEvent.PairingPinRequired"/> with the PIN the user typed.</summary>
     public bool SubmitPin(ulong requestId, string pin) => NativeMethods.annex_core_submit_pin(Raw, requestId, pin) == 1;
@@ -236,6 +285,27 @@ public sealed unsafe class HostHandle : IDisposable
     public void ShareCode(string rendezvous, string? turnUrl = null, string? turnUsername = null, string? turnPassword = null)
     {
         if (_raw != 0) NativeMethods.Check(NativeMethods.annex_host_share_code(_raw, rendezvous, null, turnUrl, turnUsername, turnPassword));
+    }
+
+    /// <summary>Puts text ("text/plain;charset=utf-8") or a PNG ("image/png") on one viewer's clipboard.
+    /// False if it can't take it (older version, or too big for the link).</summary>
+    public bool SendClipboard(ulong sessionId, string mime, ReadOnlySpan<byte> data)
+    {
+        if (_raw == 0) return false;
+        fixed (byte* p = data)
+            return NativeMethods.Check(NativeMethods.annex_host_send_clipboard(_raw, sessionId, mime, p, (nuint)data.Length)) == 1;
+    }
+
+    /// <summary>Sends a file to one viewer; progress comes as transfer events with the returned id.</summary>
+    public ulong SendFile(ulong sessionId, string path)
+    {
+        NativeMethods.Check(NativeMethods.annex_host_send_file(_raw, sessionId, path, out var id));
+        return id;
+    }
+
+    public void CancelTransfer(ulong sessionId, bool incoming, ulong id)
+    {
+        if (_raw != 0) NativeMethods.annex_host_cancel_transfer(_raw, sessionId, incoming, id);
     }
 
     /// <summary>Stops the code (InternetCodeEnded "stopped"); connected sessions carry on.</summary>
@@ -356,6 +426,26 @@ public sealed unsafe class ViewerHandle : IDisposable
     public void RefuseDirectLink(string reason)
     {
         if (_raw != 0) NativeMethods.Check(NativeMethods.annex_viewer_refuse_direct_link(_raw, reason));
+    }
+
+    /// <summary>Puts text or a PNG on the host's clipboard. The host takes it only while this PC controls it.</summary>
+    public bool SendClipboard(string mime, ReadOnlySpan<byte> data)
+    {
+        if (_raw == 0) return false;
+        fixed (byte* p = data)
+            return NativeMethods.Check(NativeMethods.annex_viewer_send_clipboard(_raw, mime, p, (nuint)data.Length)) == 1;
+    }
+
+    /// <summary>Sends a file to the host; progress comes as transfer events with the returned id.</summary>
+    public ulong SendFile(string path)
+    {
+        NativeMethods.Check(NativeMethods.annex_viewer_send_file(_raw, path, out var id));
+        return id;
+    }
+
+    public void CancelTransfer(bool incoming, ulong id)
+    {
+        if (_raw != 0) NativeMethods.annex_viewer_cancel_transfer(_raw, incoming, id);
     }
 
     public void FramePresented(uint frameId)

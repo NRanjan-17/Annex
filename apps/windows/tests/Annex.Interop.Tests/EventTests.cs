@@ -26,6 +26,20 @@ public class EventTests
     }
 
     [Fact]
+    public void ParsesClipboardAndTransfers()
+    {
+        var c = Assert.IsType<CoreEvent.ClipboardReceived>(CoreEvent.Parse("""{"type":"clipboard_received","session_id":0,"mime":"text/plain;charset=utf-8","data":"aMOpbGxv"}"""));
+        Assert.Equal("héllo", System.Text.Encoding.UTF8.GetString(c.Data));
+        var t = Assert.IsType<CoreEvent.TransferStarted>(CoreEvent.Parse("""{"type":"transfer_started","session_id":2,"id":1,"incoming":true,"name":"a.bin","size":5}"""));
+        Assert.True(t.Incoming);
+        var e = Assert.IsType<CoreEvent.TransferEnded>(CoreEvent.Parse("""{"type":"transfer_ended","session_id":2,"id":1,"incoming":true,"ok":false,"error":"cancelled"}"""));
+        Assert.Null(e.Path);
+        Assert.Equal("cancelled", e.Problem);
+        var s = Assert.IsType<CoreEvent.SessionStarted>(CoreEvent.Parse("""{"type":"session_started","session_id":0,"mode":"mirror","peer_name":"Mac","fingerprint":"ab","stream":{"codec":"h264","width":1,"height":1,"fps":60},"peer_os":"macos"}"""));
+        Assert.Equal("macos", s.PeerOs);
+    }
+
+    [Fact]
     public void PeerAddressFormatting()
     {
         var p = Assert.IsType<CoreEvent.PeerFound>(CoreEvent.Parse("""{"type":"peer_found","instance":"x","name":"Studio","addresses":["fe80::1"],"port":47800,"fingerprint":null,"proto_major":1}"""));

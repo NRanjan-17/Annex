@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing::Instrument as _;
 
 use annex_proto::{Codec, Control, DisplayInfo, Mode, Role, StreamConfig, VideoFlags, VideoHeader};
 use tokio::net::TcpListener;
@@ -21,6 +22,7 @@ use crate::conn::{Incoming, Reader, Writer, check_hello, hello};
 use crate::events::{Event, EventSink, LinkKind};
 use crate::pairing::{PairContext, pair_as_host};
 use crate::punch::{PunchSocket, TurnServer};
+use crate::transfer::no_transfers;
 use crate::transport::{
     BoxRead, BoxWrite, Established, TransportKind, accept_quic, accept_tcp, is_link_local, quic_server_config,
 };
@@ -112,6 +114,8 @@ struct SessionSlot {
     ended: tokio::sync::Notify,
     /// Messages the app sends to this viewer (direct-link offers).
     outbox: mpsc::UnboundedSender<Control>,
+    /// Clipboard and files, when both sides take them (QUIC sessions only).
+    transfers: Option<Arc<crate::transfer::Transfers>>,
 }
 
 struct Shared {
@@ -290,6 +294,27 @@ impl HostHandle {
         self.send_to(session_id, Control::DirectLinkUnavailable { reason: reason.into() })
     }
 
+    fn transfers(&self, session_id: SessionId) -> Option<Arc<crate::transfer::Transfers>> {
+        self.shared.sessions.lock().unwrap().get(&session_id).and_then(|s| s.transfers.clone())
+    }
+
+    /// Puts a clipboard item on the viewer's clipboard. False: no such session, the viewer can't
+    /// take it (older version, TCP), or it's too big for the link.
+    pub fn send_clipboard(&self, session_id: SessionId, mime: &str, data: Vec<u8>) -> bool {
+        self.transfers(session_id).is_some_and(|t| t.send_clipboard(mime, data))
+    }
+
+    /// Sends a file to the viewer; the returned id is in its transfer events.
+    pub fn send_file(&self, session_id: SessionId, path: &std::path::Path) -> Result<u64, String> {
+        self.transfers(session_id).ok_or_else(no_transfers)?.send_file(path)
+    }
+
+    pub fn cancel_transfer(&self, session_id: SessionId, incoming: bool, id: u64) {
+        if let Some(t) = self.transfers(session_id) {
+            t.cancel(incoming, id);
+        }
+    }
+
     fn send_to(&self, session_id: SessionId, c: Control) -> bool {
         self.shared.sessions.lock().unwrap().get(&session_id).is_some_and(|s| s.outbox.send(c).is_ok())
     }
@@ -430,19 +455,20 @@ async fn accept_loop(
                             Ok(est) => handle_conn(est, shared, shutdown).await,
                             Err(e) => tracing::info!("TCP handshake failed: {e}"),
                         }
-                    });
+                    }.instrument(conn_span(addr)));
                 }
                 Err(e) => tracing::warn!("accept failed: {e}"),
             },
             Some(incoming) = quic_accept(&quic) => {
                 tracing::info!(addr = %crate::transport::canonical(incoming.remote_address()), "incoming QUIC connection");
                 let (shared, shutdown) = (shared.clone(), shutdown.clone());
+                let span = conn_span(incoming.remote_address());
                 sessions.spawn(async move {
                     match accept_quic(incoming).await {
                         Ok(est) => handle_conn(est, shared, shutdown).await,
                         Err(e) => tracing::info!("QUIC handshake failed: {e}"),
                     }
-                });
+                }.instrument(span));
             }
             _ = shutdown.changed() => break,
             Some(_) = sessions.join_next(), if !sessions.is_empty() => {}
@@ -453,6 +479,11 @@ async fn accept_loop(
         q.close(0u32.into(), b"host stopped");
         let _ = timeout(Duration::from_millis(500), q.wait_idle()).await;
     }
+}
+
+/// Every line about one viewer's connection carries its address, and its session once it has one.
+fn conn_span(addr: std::net::SocketAddr) -> tracing::Span {
+    tracing::info_span!("viewer", addr = %crate::transport::canonical(addr), session = tracing::field::Empty)
 }
 
 async fn handle_conn(est: Established, shared: Arc<Shared>, shutdown: watch::Receiver<bool>) {
@@ -492,9 +523,23 @@ async fn handle_conn(est: Established, shared: Arc<Shared>, shutdown: watch::Rec
             LinkKind::Network
         },
     };
-    let result =
-        run_session(&mut reader, &mut writer, &fp, &exporter, &shared, shutdown, id, link, &video, &mut started).await;
-    shared.sessions.lock().unwrap().remove(&id);
+    let result = run_session(
+        &mut reader,
+        &mut writer,
+        &fp,
+        &exporter,
+        &shared,
+        shutdown,
+        id,
+        link,
+        &video,
+        quic.as_ref(),
+        &mut started,
+    )
+    .await;
+    if let Some(t) = shared.sessions.lock().unwrap().remove(&id).and_then(|s| s.transfers.clone()) {
+        t.close();
+    }
     shared.claimed.fetch_sub(1, Ordering::AcqRel);
     let reason = match result {
         Ok(reason) => reason,
@@ -533,14 +578,21 @@ async fn run_session(
     id: SessionId,
     link: Link,
     video: &VideoOut,
+    quic: Option<&quinn::Connection>,
     started: &mut bool,
 ) -> Result<String, SessionError> {
     if fp == shared.core.fingerprint() {
         return Err(SessionError::Violation("peer uses our own identity".into()));
     }
     let knows = shared.core.knows(fp);
-    let caps: &[&str] = if shared.extend { &["h264", "extend"] } else { &["h264"] };
-    writer.send_control(&hello(&shared.core, vec![Role::Host], knows, caps)).await?;
+    let mut caps = vec!["h264"];
+    if shared.extend {
+        caps.push("extend");
+    }
+    if quic.is_some() {
+        caps.push(crate::transfer::CAP);
+    }
+    writer.send_control(&hello(&shared.core, vec![Role::Host], knows, &caps)).await?;
     let peer = check_hello(timeout(HANDSHAKE_TIMEOUT, reader.next_control()).await??, fp)?;
     if knows && peer.knows_peer {
         shared.core.touch(fp);
@@ -571,6 +623,7 @@ async fn run_session(
     } else {
         None
     };
+    tracing::Span::current().record("session", id);
     tracing::info!(id, peer = %peer.device_name, mode = ?req.mode, input = req.input, quality = ?req.quality, "session request");
     if let Some(reason) = reject {
         tracing::warn!(id, reason, "session rejected");
@@ -593,6 +646,21 @@ async fn run_session(
         next_frame_id: AtomicU32::new(0),
         ended: tokio::sync::Notify::new(),
         outbox,
+        transfers: match quic {
+            Some(conn) if peer.caps.iter().any(|c| c == crate::transfer::CAP) => {
+                // Only from a viewer that asked for, and still has, control of this computer.
+                let (core, fp, asked) = (shared.core.clone(), fp.to_string(), req.input);
+                Some(crate::transfer::Transfers::start(
+                    conn.clone(),
+                    id,
+                    shared.events.clone(),
+                    shared.core.downloads(),
+                    link.limited,
+                    Box::new(move || asked && core.allows_input(&fp)),
+                ))
+            }
+            _ => None,
+        },
     });
     shared.sessions.lock().unwrap().insert(id, slot.clone());
     if req.mode == Mode::Mirror {
@@ -616,6 +684,7 @@ async fn run_session(
         link: link.kind,
         input,
         pointer_deltas: true,
+        peer_os: crate::conn::peer_os(&peer),
     });
     shared.request_keyframe(&slot);
     if req.input && !input {

@@ -42,6 +42,7 @@ final class H264Encoder {
                 lowLatencyHardware = preferHardware && lowLatency && index == 0
                 break
             }
+            Annex.log(.warn, "[encode] encoder setup \(index + 1) of \(attempts.count) refused \(width)×\(height) (OSStatus \(status))")
         }
         guard status == noErr, let session = created else {
             throw AnnexError(message: "Could not create H.264 encoder (OSStatus \(status))")
@@ -75,7 +76,10 @@ final class H264Encoder {
         }
         // The property is not reported by low-latency sessions, hence the flag above.
         usingHardware = lowLatencyHardware || (copied == noErr && (hw as? Bool) == true)
-        VTCompressionSessionPrepareToEncodeFrames(session)
+        let prepared = VTCompressionSessionPrepareToEncodeFrames(session)
+        Annex.log(.info, "[encode] H.264 \(width)×\(height) at \(fps) fps, \(bitrate / 1000) kbit/s, "
+                  + "\(usingHardware ? "hardware" : "software")\(lowLatencyHardware ? " low-latency" : "")"
+                  + (prepared == noErr ? "" : ", prepare failed (OSStatus \(prepared))"))
     }
 
     deinit { invalidate() }
@@ -157,7 +161,7 @@ final class H264Encoder {
         let first = !everEncoded && !reportedFirstError
         reportedFirstError = true
         lock.unlock()
-        if first { Annex.log("encoder: frame failed to encode (OSStatus \(status))", error: true) }
+        if first { Annex.log(.warn, "[encode] frame failed to encode (OSStatus \(status))") }
         if report { onFailure?(status) }
     }
 }

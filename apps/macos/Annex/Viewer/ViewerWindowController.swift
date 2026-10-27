@@ -23,6 +23,14 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private static let windowedStyle: NSWindow.StyleMask = [.titled, .closable, .resizable, .miniaturizable]
 
     var onClose: (() -> Void)?
+    /// The window became the one taking this Mac's keyboard.
+    var onFocus: (() -> Void)?
+    /// Files dropped on the picture.
+    var onFiles: (([URL]) -> Void)? {
+        get { videoView.onFiles }
+        set { videoView.onFiles = newValue }
+    }
+    var isFocused: Bool { window?.isKeyWindow == true }
 
     /// `title` names the other computer (or the code, until it's known).
     init(title: String) {
@@ -72,7 +80,10 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         return accessory
     }
 
-    @objc private func disconnect() { window?.performClose(nil) }
+    @objc private func disconnect() {
+        Annex.log(.info, "[viewer] Disconnect pressed")
+        window?.performClose(nil)
+    }
 
     /// What the window shows ("Viewing Name"), and how it's reached ("Over the internet").
     func setPeer(_ title: String, detail: String) {
@@ -91,6 +102,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     func show(fullScreen: Bool) {
         // Become a regular app first: switching while the borderless window is up hides it.
         if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
+        Annex.log(.debug, "[viewer] showing the window\(fullScreen ? ", full screen" : "")")
         if fullScreen { setCovering(true) }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
@@ -101,6 +113,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     /// In and out of full screen (the green button, ⌃⌘F and View → Enter Full Screen come here).
     func setCovering(_ on: Bool) {
         guard let window, on != covering else { return }
+        Annex.log(.info, "[viewer] \(on ? "full screen" : "windowed")")
         covering = on
         if on {
             windowedFrame = window.frame
@@ -156,11 +169,18 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     /// Extend to a host that understands pointer movement: send this Mac's mouse movement, so the
     /// host's pointer can leave this screen for its own, like a real monitor.
     func setRelativePointer(_ on: Bool) {
+        if on != videoView.relative { Annex.log(.debug, "[input] pointer sends \(on ? "movement" : "positions")") }
         videoView.relative = on
+    }
+
+    /// Scroll the other way on the host, for Windows and Linux, which don't scroll like a Mac.
+    func setReverseScroll(_ on: Bool) {
+        videoView.reverseScroll = on
     }
 
     /// The host allowed (or revoked) control by this Mac's mouse and keyboard.
     func setControlling(_ on: Bool, hostName: String) {
+        Annex.log(.info, "[input] \(on ? "controlling" : "view only:") \(hostName)")
         videoView.controlling = on
         if on {
             videoView.showHUD("Controlling \(hostName)", detail: "Press ⌃⌥⇧Q to disconnect")
@@ -173,11 +193,12 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     func enqueue(_ data: Data, frameID: UInt32, keyframe: Bool) {
         queue.async { [self] in
             framesReceived += 1
-            if waitingForKeyframe && !keyframe { return }
+            Annex.log(.trace, "[viewer] frame \(frameID), \(data.count) bytes\(keyframe ? ", keyframe" : "")")
+            if waitingForKeyframe && !keyframe { return Annex.log(.trace, "[viewer] frame \(frameID) skipped: waiting for a keyframe") }
             guard let sample = builder.sampleBuffer(from: data) else {
                 if !loggedBadFrame {
                     loggedBadFrame = true
-                    Annex.log("viewer: frame \(frameID) (\(data.count) bytes, key \(keyframe)) could not be read as H.264", error: true)
+                    Annex.log(.warn, "[viewer] frame \(frameID) (\(data.count) bytes, key \(keyframe)) could not be read as H.264")
                 }
                 viewer?.requestKeyframe()
                 return
@@ -185,12 +206,12 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             waitingForKeyframe = false
             if !loggedFirstFrame {
                 loggedFirstFrame = true
-                Annex.log("viewer: first picture after \(framesReceived) frames received")
+                Annex.log(.info, "[viewer] first picture after \(framesReceived) frames received")
             }
             let renderer = videoView.displayLayer.sampleBufferRenderer
             if renderer.status == .failed || renderer.requiresFlushToResumeDecoding {
-                Annex.log("viewer: decoder needs a reset (\(renderer.error?.localizedDescription ?? "no error given")); "
-                          + "asking for a keyframe", error: renderer.status == .failed)
+                Annex.log(renderer.status == .failed ? .warn : .debug,
+                          "[viewer] decoder needs a reset (\(renderer.error?.localizedDescription ?? "no error given")); asking for a keyframe")
                 renderer.flush()
                 waitingForKeyframe = true
                 viewer?.requestKeyframe()
@@ -203,14 +224,17 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidBecomeKey(_ notification: Notification) {
+        Annex.log(.debug, "[viewer] window focused")
         videoView.updatePointerLock()
         updatePresentation()
+        onFocus?()
     }
 
     func windowWillClose(_ notification: Notification) {
         queue.async { [self] in
-            if !loggedFirstFrame { Annex.log("viewer: closed without a picture; \(framesReceived) frames received", error: true) }
+            if !loggedFirstFrame { Annex.log(.warn, "[viewer] closed without a picture; \(framesReceived) frames received") }
         }
+        Annex.log(.info, "[viewer] window closed")
         videoView.releaseHeldInput()
         videoView.relative = false  // frees this Mac's pointer
         covering = false
@@ -219,6 +243,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        Annex.log(.debug, "[viewer] window lost focus: releasing held keys and buttons")
         // Keys released while another window has focus would otherwise stay down on the host.
         videoView.releaseHeldInput()
         videoView.updatePointerLock()
@@ -255,6 +280,8 @@ final class VideoView: NSView {
             updatePointerLock()
         }
     }
+    /// Flip scroll direction (see ViewerWindowController.setReverseScroll).
+    var reverseScroll = false
     /// Send mouse movement instead of positions (see ViewerWindowController.setRelativePointer).
     var relative = false {
         didSet { updatePointerLock() }
@@ -267,6 +294,7 @@ final class VideoView: NSView {
     func updatePointerLock() {
         let lock = controlling && relative && window?.isKeyWindow == true
         guard lock != pointerLocked else { return }
+        Annex.log(.debug, "[input] this Mac's pointer \(lock ? "held and hidden" : "free")")
         pointerLocked = lock
         CGAssociateMouseAndMouseCursorPosition(lock ? 0 : 1)
         if lock { NSCursor.hide() } else { NSCursor.unhide() }
@@ -276,7 +304,10 @@ final class VideoView: NSView {
         guard let e = event.cgEvent else { return }
         let dx = Int32(e.getIntegerValueField(.mouseEventDeltaX))
         let dy = Int32(e.getIntegerValueField(.mouseEventDeltaY))
-        if dx != 0 || dy != 0 { viewer?.sendMouseDelta(dx: dx, dy: dy) }
+        if dx != 0 || dy != 0 {
+            Annex.log(.trace, "[input] mouse movement")
+            viewer?.sendMouseDelta(dx: dx, dy: dy)
+        }
     }
 
     private func pointerMoved(_ event: NSEvent) {
@@ -290,9 +321,11 @@ final class VideoView: NSView {
     private let hud = HUDView()
     private var hudTimer: Timer?
     private var scrollRest = CGPoint.zero
+    var onFiles: (([URL]) -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = NSColor.black.cgColor
         layer = displayLayer
@@ -341,6 +374,7 @@ final class VideoView: NSView {
         let x = min(max((p.x - r.minX) / (r.width - 1), 0), 1)
         // View coordinates grow upwards; the stream's grow downwards.
         let y = min(max(1 - (p.y - r.minY) / (r.height - 1), 0), 1)
+        Annex.log(.trace, "[input] mouse move")
         viewer?.sendMouseMove(x: x, y: y)
     }
 
@@ -348,6 +382,7 @@ final class VideoView: NSView {
         guard controlling else { return }
         if !relative { sendPosition(event) }
         if down { heldButtons.insert(b) } else { heldButtons.remove(b) }
+        Annex.log(.trace, "[input] mouse button \(b) \(down ? "down" : "up")")
         viewer?.sendMouseButton(b, down: down)
     }
 
@@ -365,13 +400,36 @@ final class VideoView: NSView {
     override func scrollWheel(with event: NSEvent) {
         guard controlling else { return super.scrollWheel(with: event) }
         // Precise (trackpad) deltas are pixels; wheel deltas are lines of roughly 10 pixels.
-        let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
+        // Only natural scrolling is reversed; with it off, this Mac already scrolls like the PC.
+        let flip = reverseScroll && event.isDirectionInvertedFromDevice
+        let scale: CGFloat = (event.hasPreciseScrollingDeltas ? 1 : 10) * (flip ? -1 : 1)
         scrollRest.x += event.scrollingDeltaX * scale
         scrollRest.y += event.scrollingDeltaY * scale
         let dx = scrollRest.x.rounded(.towardZero), dy = scrollRest.y.rounded(.towardZero)
         scrollRest.x -= dx
         scrollRest.y -= dy
-        if dx != 0 || dy != 0 { viewer?.sendScroll(dx: Int32(dx), dy: Int32(dy)) }
+        if dx != 0 || dy != 0 {
+            Annex.log(.trace, "[scroll] \(Int(dx)), \(Int(dy)) px\(flip ? ", reversed" : "")")
+            viewer?.sendScroll(dx: Int32(dx), dy: Int32(dy))
+        }
+    }
+
+    // MARK: Files
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        controlling && onFiles != nil ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                         options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        guard controlling, !urls.isEmpty else {
+            Annex.log(.debug, "[drop] \(urls.count) item(s) dropped on the viewer, not taken (\(controlling ? "no files" : "not controlling"))")
+            return false
+        }
+        Annex.log(.info, "[drop] \(urls.count) item(s) dropped on the viewer window")
+        onFiles?(urls)
+        return true
     }
 
     // MARK: Keyboard
@@ -384,6 +442,8 @@ final class VideoView: NSView {
 
     private func key(_ code: UInt16, down: Bool) {
         if down { heldKeys.insert(code) } else { heldKeys.remove(code) }
+        // Never which key.
+        Annex.log(.trace, "[input] key event")
         viewer?.sendKey(macKeyCode: code, down: down)
     }
 
@@ -393,6 +453,7 @@ final class VideoView: NSView {
             // Repeats are forwarded too: injected keys don't auto-repeat on the host.
             key(event.keyCode, down: true)
         } else if event.keyCode == 53 { // Esc
+            Annex.log(.info, "[viewer] Esc pressed (view only): disconnecting")
             window?.performClose(nil)
         } else {
             super.keyDown(with: event)
@@ -439,11 +500,15 @@ final class VideoView: NSView {
     }
 
     private func leave() {
+        Annex.log(.info, "[viewer] leave shortcut pressed: disconnecting")
         releaseHeldInput()
         onLeave?()
     }
 
     func releaseHeldInput() {
+        if !heldKeys.isEmpty || !heldButtons.isEmpty {
+            Annex.log(.debug, "[input] releasing \(heldKeys.count) held key(s) and \(heldButtons.count) button(s) on the host")
+        }
         for k in heldKeys { viewer?.sendKey(macKeyCode: k, down: false) }
         for b in heldButtons { viewer?.sendMouseButton(b, down: false) }
         heldKeys.removeAll()

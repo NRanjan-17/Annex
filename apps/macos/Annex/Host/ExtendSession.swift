@@ -57,6 +57,7 @@ final class ExtendSession {
     init(sessionID: UInt64, host: HostHandle, viewer: DisplayInfo, viewerFingerprint: String, viewerName: String,
          preferHardware: Bool, scale: Int = 0) throws {
         guard AnnexVirtualDisplay.isSupported() else {
+            Annex.log(.warn, "[display] virtual displays aren't supported on this macOS")
             throw AnnexError(message: "Virtual displays aren't supported on this version of macOS.")
         }
         self.sessionID = sessionID
@@ -74,6 +75,7 @@ final class ExtendSession {
             serial: Self.serial(for: viewerFingerprint), sizeInMillimeters: plan.millimeters,
             maxPixelsWide: UInt32(plan.maxPixels.0), maxPixelsHigh: UInt32(plan.maxPixels.1), terminationHandler: nil)
         else {
+            Annex.log(.error, "[display] macOS refused to create a virtual display for \(viewerName)")
             throw AnnexError(message: "Could not create the virtual display.")
         }
         display = d
@@ -82,10 +84,11 @@ final class ExtendSession {
             plan.rates.map { AnnexVirtualDisplayMode(width: UInt32(size.0), height: UInt32(size.1), refreshRate: Double($0)) }
         }
         guard d.apply(modes, hiDPI: true) else {
+            Annex.log(.error, "[display] macOS rejected \(modes.count) modes for virtual display \(d.displayID)")
             d.invalidate()
             throw AnnexError(message: "macOS rejected the virtual display's modes.")
         }
-        Annex.log("extend: virtual display \(d.displayID) for a \(viewer.widthPx)×\(viewer.heightPx) screen at "
+        Annex.log(.info, "[display] virtual display \(d.displayID) created for \(viewerName): a \(viewer.widthPx)×\(viewer.heightPx) screen at "
                   + "\(viewer.scalePercent) %, \(plan.modes.count) sizes × rates \(plan.rates)")
         DisplayReconfiguration.shared.observe(display: d.displayID, owner: self)
         restartCapture()
@@ -108,7 +111,9 @@ final class ExtendSession {
         let id = display.displayID
         guard let current = CGDisplayCopyDisplayMode(id) else { return }  // no mode yet: retried later
         scaleToApply = nil
-        guard Self.mirrorSource(of: id) == nil else { return }
+        guard Self.mirrorSource(of: id) == nil else {
+            return Annex.log(.info, "[display] scaling left alone: display \(id) mirrors another screen")
+        }
         let step = Self.resolvedScale(scale, viewerScalePercent: viewerScalePercent)
         let points = ((viewerPixels.0 * 100 / step) & ~1, (viewerPixels.1 * 100 / step) & ~1)
         let pixelWidth = step > 100 ? points.0 * 2 : points.0
@@ -117,16 +122,19 @@ final class ExtendSession {
             .filter { $0.width == points.0 && $0.height == points.1 && $0.pixelWidth == pixelWidth }
         let rate = Self.rate(of: current, fallback: fps)
         guard let mode = modes.first(where: { Self.rate(of: $0, fallback: 0) == rate }) ?? modes.first else {
-            Annex.log("extend: no \(points.0)×\(points.1) mode for \(step) %", error: true)
+            Annex.log(.warn, "[display] no \(points.0)×\(points.1) mode for \(step) %")
             return
         }
         guard mode.width != current.width || mode.pixelWidth != current.pixelWidth
                 || Self.rate(of: mode, fallback: 0) != rate else { return }
         var config: CGDisplayConfigRef?
-        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        guard CGBeginDisplayConfiguration(&config) == .success else {
+            return Annex.log(.warn, "[display] couldn't start changing display \(id)'s scaling")
+        }
         CGConfigureDisplayWithDisplayMode(config, id, mode, nil)
         let result = CGCompleteDisplayConfiguration(config, .permanently)
-        Annex.log("extend: scaling \(step) % (\(points.0)×\(points.1) points), \(result == .success ? "set" : "failed: \(result.rawValue)")")
+        Annex.log(result == .success ? .info : .warn,
+                  "[display] scaling \(step) % (\(points.0)×\(points.1) points), \(result == .success ? "set" : "failed: \(result.rawValue)")")
     }
 
     /// The step a choice means for this viewer: "Sharpest" (0) is 100 %, or 200 % on a screen
@@ -218,6 +226,7 @@ final class ExtendSession {
 
     /// Adaptive bitrate from the viewer's reports.
     func setBitrateScale(_ percent: Int) {
+        Annex.log(.debug, "[encode] \(viewerName): \(percent) % bitrate")
         bitrateScale = percent
         if baseBitrate > 0 { encoder?.setBitrate(baseBitrate * percent / 100) }
     }
@@ -231,6 +240,7 @@ final class ExtendSession {
     func stop() {
         guard !stopped else { return }
         stopped = true
+        Annex.log(.info, "[display] removing virtual display \(display.displayID) of \(viewerName)")
         generation += 1
         DisplayReconfiguration.shared.forget(display: display.displayID)
         capturer.onFrame = nil
@@ -267,7 +277,7 @@ final class ExtendSession {
                                    fps: Self.rate(of: mode, fallback: fps))
         if startedWithoutMode || size != pixelSize || Self.rate(of: mode, fallback: fps) != fps
             || captureSource != capturedDisplay {
-            Annex.log("extend: display now \(mode.pixelWidth)×\(mode.pixelHeight) pixels at \(Int(mode.refreshRate.rounded())) Hz; restarting capture")
+            Annex.log(.info, "[display] display now \(mode.pixelWidth)×\(mode.pixelHeight) pixels at \(Int(mode.refreshRate.rounded())) Hz; restarting capture")
             restartCapture()
         }
     }
@@ -284,7 +294,7 @@ final class ExtendSession {
         let id = captureSource
         capturedDisplay = id
         if id != display.displayID {
-            Annex.log("extend: the Annex display mirrors display \(id) (System Settings → Displays); capturing that")
+            Annex.log(.info, "[display] the Annex display mirrors display \(id) (System Settings → Displays); capturing that")
         }
         let mode = CGDisplayCopyDisplayMode(display.displayID)
         fps = Self.rate(of: mode, fallback: fps)
@@ -305,7 +315,7 @@ final class ExtendSession {
         encoder?.invalidate()
         encoder = nil
         host.setStream(session: sessionID, width: size.0, height: size.1, fps: fps)
-        Annex.log("extend: display mode \(mode?.width ?? 0)×\(mode?.height ?? 0) points, "
+        Annex.log(.info, "[capture] display mode \(mode?.width ?? 0)×\(mode?.height ?? 0) points, "
                   + "\(mode?.pixelWidth ?? 0)×\(mode?.pixelHeight ?? 0) pixels; streaming \(size.0)×\(size.1) at \(fps) fps")
         let (fps, capturer) = (self.fps, self.capturer)
         let preferHardware = preferHardware && encoderTier < 2
@@ -325,15 +335,19 @@ final class ExtendSession {
     private func encoderReady(_ result: Result<H264Encoder, Error>, generation gen: Int, size: (Int, Int),
                               capturer: ScreenCapturer, displayID: CGDirectDisplayID) async {
         guard gen == generation, !stopped else {
+            Annex.log(.debug, "[encode] \(viewerName): encoder ready after a restart or stop; dropping it")
             if case .success(let e) = result { e.invalidate() }
             return
         }
         let enc: H264Encoder
         switch result {
         case .success(let e): enc = e
-        case .failure(let e): onError?(e.localizedDescription); return
+        case .failure(let e):
+            Annex.log(.warn, "[encode] \(viewerName): couldn't create the encoder: \(e.localizedDescription)")
+            onError?(e.localizedDescription)
+            return
         }
-        Annex.log("extend: encoder ready (\(enc.usingHardware ? "hardware" : "software"))")
+        Annex.log(.info, "[encode] \(viewerName): encoder ready (\(enc.usingHardware ? "hardware" : "software"), tier \(encoderTier))")
         encodedFrames.value = 0
         droppedFrames.value = 0
         hardwareEncoder = enc.usingHardware
@@ -342,7 +356,9 @@ final class ExtendSession {
         let (encodedFrames, droppedFrames) = (self.encodedFrames, self.droppedFrames)
         enc.onEncoded = { data, key, ts in
             encodedFrames.update { $0 = ($0 ?? 0) + 1 }
-            if host.submit(data, session: session, captureMicros: ts, keyframe: key) != .sent {
+            let r = host.submit(data, session: session, captureMicros: ts, keyframe: key)
+            Annex.log(.trace, "[encode] session \(session) frame \(data.count) bytes\(key ? ", keyframe" : ""): \(r)")
+            if r != .sent {
                 droppedFrames.update { $0 = ($0 ?? 0) + 1 }
             }
         }
@@ -359,7 +375,7 @@ final class ExtendSession {
             enc?.encode(pb, captureMicros: Annex.nowMicros())
         }
         await capturer.stop()
-        guard Self.captureEnabled else { return }
+        guard Self.captureEnabled else { return Annex.log(.debug, "[capture] capture off (tests)") }
         // Reset before capture starts: the first frame can arrive before start returns.
         lastFrame.value = nil
         // A brand-new display can take a moment to show up in ScreenCaptureKit.
@@ -367,10 +383,11 @@ final class ExtendSession {
             guard gen == generation, !stopped else { return }
             do {
                 try await capturer.start(displayID: displayID, width: size.0, height: size.1, fps: fps)
-                Annex.log("extend: capture started")
+                Annex.log(.info, "[capture] \(viewerName): capture of display \(displayID) started (try \(attempt + 1))")
                 expectFirstFrame(generation: gen)
                 return
             } catch {
+                Annex.log(attempt == 19 ? .warn : .trace, "[capture] \(viewerName): capture try \(attempt + 1) of 20 failed: \(error.localizedDescription)")
                 if attempt == 19 { onError?("Capturing the virtual display failed: \(error.localizedDescription)") }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
@@ -388,22 +405,24 @@ extension ExtendSession {
             let encoded = self.encodedFrames.value ?? 0
             let dropped = self.droppedFrames.value ?? 0
             guard self.lastFrame.value != nil else {
+                Annex.log(.warn, "[capture] \(self.viewerName): no frame from the virtual display in 6 s")
                 self.onError?("The extended display sent no picture. Check Screen Recording for Annex in System Settings.")
                 return
             }
             if encoded > 0 {
-                Annex.log("extend: picture arriving, \(encoded) frames encoded in the first 6 s, \(dropped) not sent")
+                Annex.log(.info, "[encode] \(self.viewerName): picture arriving, \(encoded) frames encoded in the first 6 s, \(dropped) not sent")
                 return
             }
             // Frames were captured but the encoder turned none into video: the viewer would stay
             // black. Try the next encoder before giving up.
             guard self.preferHardware, self.encoderTier < 2 else {
+                Annex.log(.warn, "[encode] \(self.viewerName): frames captured but none encoded, no encoder left to try")
                 self.onError?("The video encoder produced no picture for the extended display.")
                 return
             }
             self.encoderTier += 1
-            Annex.log("extend: frames captured but none encoded; retrying with the "
-                      + (self.encoderTier == 1 ? "plain hardware" : "software") + " encoder", error: true)
+            Annex.log(.warn, "[encode] \(self.viewerName): frames captured but none encoded; retrying with the "
+                      + (self.encoderTier == 1 ? "plain hardware" : "software") + " encoder")
             self.restartCapture()
         }
     }

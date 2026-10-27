@@ -100,7 +100,10 @@ private final class Splice {
         for c in [a, b] {
             c.stateUpdateHandler = { [weak self] state in
                 switch state {
-                case .failed, .cancelled: self?.end()
+                case .failed(let e):
+                    Annex.log(.debug, "[network] peer-to-peer flow to \(c.endpoint) failed: \(e)")
+                    self?.end()
+                case .cancelled: self?.end()
                 default: break
                 }
             }
@@ -113,6 +116,7 @@ private final class Splice {
     func end() {
         guard !ended else { return }
         ended = true
+        Annex.log(.debug, "[network] peer-to-peer flow \(a.endpoint) ended")
         a.cancel()
         b.cancel()
         onEnd?()
@@ -123,6 +127,7 @@ private final class Splice {
             guard let self, !self.ended else { return }
             if let data, !data.isEmpty {
                 self.lastActivity = Date()
+                Annex.log(.trace, "[network] peer-to-peer relay \(data.count) bytes to \(to.endpoint)")
                 to.send(content: data, completion: .idempotent)
             }
             if error != nil { self.end(); return }
@@ -189,13 +194,13 @@ final class PeerToPeerAdvertiser {
         applyVisibility()
         let core = NWEndpoint.hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: corePort)!)
         listener.newConnectionHandler = { [splices] inbound in
-            Annex.log("p2p: viewer flow from \(inbound.endpoint)")
+            Annex.log(.info, "[network] peer-to-peer: viewer flow from \(inbound.endpoint)")
             splices.add(Splice(inbound, NWConnection(to: core, using: .udp)))
         }
         listener.stateUpdateHandler = { state in
             switch state {
-            case .ready: Annex.log("p2p: advertising on peer-to-peer Wi-Fi")
-            case .failed(let e), .waiting(let e): Annex.log("p2p: advertising not running: \(e)", error: true)
+            case .ready: Annex.log(.info, "[network] peer-to-peer: advertising, relaying to the core on port \(corePort)")
+            case .failed(let e), .waiting(let e): Annex.log(.warn, "[network] peer-to-peer: advertising not running: \(e)")
             default: break
             }
         }
@@ -233,7 +238,7 @@ final class PeerToPeerAdvertiser {
             listener.service = NWListener.Service(name: "Annex \(tag.prefix(8))", type: PeerToPeer.serviceType, domain: nil,
                                                   txtRecord: PeerToPeer.pairedTXT(tag: tag, extend: extend))
         }
-        Annex.log("p2p: visible to \(visibility)")
+        Annex.log(.info, "[network] peer-to-peer: visible to \(visibility)")
     }
 
     /// The relay's UDP port once it's listening (for tests; viewers find it through Bonjour).
@@ -268,11 +273,12 @@ final class PeerToPeerBrowser {
                 guard case .bonjour(let txt) = r.metadata else { return nil }
                 return PeerToPeer.host(txt: txt.dictionary, endpoint: r.endpoint, known: paired, now: now)
             }
+            Annex.log(.debug, "[network] peer-to-peer: \(hosts.count) Mac(s) recognised of \(results.count) found")
             onChange(hosts)
         }
         browser.stateUpdateHandler = { state in
             switch state {
-            case .failed(let e), .waiting(let e): Annex.log("p2p: looking for Macs not running: \(e)", error: true)
+            case .failed(let e), .waiting(let e): Annex.log(.warn, "[network] peer-to-peer: looking for Macs not running: \(e)")
             default: break
             }
         }
@@ -296,6 +302,7 @@ final class PeerToPeerTunnel {
         listener = try NWListener(using: local)
         splices = SpliceSet(queue: queue)
         listener.newConnectionHandler = { [splices] fromCore in
+            Annex.log(.debug, "[network] peer-to-peer: core flow out to \(host)")
             splices.add(Splice(fromCore, NWConnection(to: host, using: PeerToPeer.parameters())))
         }
         var answered = false
@@ -311,13 +318,16 @@ final class PeerToPeerTunnel {
             case .ready:
                 answer(listener?.port.map { "127.0.0.1:\($0.rawValue)" })
             case .failed(let e):
-                Annex.log("p2p: local relay port failed: \(e)", error: true)
+                Annex.log(.warn, "[network] peer-to-peer: local relay port failed: \(e)")
                 answer(nil)
             default: break
             }
         }
         listener.start(queue: queue)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { answer(nil) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            if !answered { Annex.log(.warn, "[network] peer-to-peer: local relay port not ready after 2 s") }
+            answer(nil)
+        }
     }
 
     func stop() {

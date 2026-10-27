@@ -5,7 +5,8 @@
 #
 # Build on the oldest supported system (Ubuntu 22.04: glibc 2.35, GTK 4.6, GStreamer 1.20) so the
 # binary runs on everything newer. Needs: dpkg-deb, rpmbuild (package `rpm`), the GTK and
-# GStreamer development packages (docs/LINUX.md, "Building").
+# GStreamer development packages, and meson, ninja-build, libwayland-dev and wayland-protocols for
+# gtk4-layer-shell (docs/LINUX.md, "Building").
 set -euo pipefail
 VERSION="$1"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,6 +37,21 @@ BIN="$ROOT/apps/linux/target/release/annex"
 TREE="$WORK/tree"
 install -Dm755 "$BIN" "$TREE/usr/bin/annex"
 strip "$TREE/usr/bin/annex"
+
+# gtk4-layer-shell (MIT) puts the drop island at the top of the screen on wlroots desktops and KDE.
+# It goes inside Annex, in /usr/lib/annex, because Ubuntu 22.04 doesn't package it; Annex loads it
+# itself (src/layer.rs). Pinned to the commit of its v1.3.0 tag.
+LAYER_SHELL_COMMIT=1c963c51514581c41b9bdae08cdf69171265cdda
+LS="$WORK/gtk4-layer-shell"
+git init -q "$LS"
+git -C "$LS" fetch -q --depth 1 https://github.com/wmww/gtk4-layer-shell "$LAYER_SHELL_COMMIT"
+git -C "$LS" checkout -q FETCH_HEAD
+meson setup "$LS/build" "$LS" --buildtype=release -Dexamples=false -Ddocs=false -Dtests=false \
+  -Dsmoke-tests=false -Dintrospection=false -Dvapi=false >/dev/null
+ninja -C "$LS/build" >/dev/null
+install -Dm644 "$(readlink -f "$LS/build/src/libgtk4-layer-shell.so.0")" "$TREE/usr/lib/annex/libgtk4-layer-shell.so.0"
+strip --strip-unneeded "$TREE/usr/lib/annex/libgtk4-layer-shell.so.0"
+install -Dm644 "$LS/LICENSE" "$TREE/usr/share/doc/annex/gtk4-layer-shell.LICENSE"
 install -Dm644 "$ROOT/packaging/linux/dev.getannex.Annex.desktop" "$TREE/usr/share/applications/dev.getannex.Annex.desktop"
 for size in 16 24 32 48 64 128 256 512; do
   install -Dm644 "$ROOT/assets/icon-$size.png" "$TREE/usr/share/icons/hicolor/${size}x${size}/apps/annex.png"
@@ -57,7 +73,7 @@ Version: $PKG_VERSION
 Architecture: $DEB_ARCH
 Maintainer: Annex contributors <https://github.com/NRanjan-17/Annex/issues>
 Installed-Size: $SIZE_KB
-Depends: libc6 (>= 2.35), libgtk-4-1 (>= 4.6), libgstreamer1.0-0 (>= 1.20), libgstreamer-plugins-base1.0-0 (>= 1.20), gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, gstreamer1.0-pipewire, libxkbcommon0
+Depends: libc6 (>= 2.35), libgtk-4-1 (>= 4.6), libgstreamer1.0-0 (>= 1.20), libgstreamer-plugins-base1.0-0 (>= 1.20), gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, gstreamer1.0-pipewire, libxkbcommon0, wl-clipboard
 Recommends: gstreamer1.0-plugins-ugly, wlr-randr
 Suggests: gstreamer1.0-vaapi
 Section: net
@@ -81,7 +97,7 @@ Release: 1
 Summary: Show another computer's screen, share this one, or extend it
 License: MIT
 URL: https://github.com/NRanjan-17/Annex
-Requires: gtk4 >= 4.6, gstreamer1 >= 1.20, gstreamer1-plugins-base >= 1.20, gstreamer1-plugins-good, pipewire-gstreamer, libxkbcommon
+Requires: gtk4 >= 4.6, gstreamer1 >= 1.20, gstreamer1-plugins-base >= 1.20, gstreamer1-plugins-good, pipewire-gstreamer, libxkbcommon, wl-clipboard
 Recommends: gstreamer1-plugins-bad-free, gstreamer1-plugin-openh264, wlr-randr
 Suggests: gstreamer1-plugin-libav
 AutoReqProv: no
@@ -96,9 +112,11 @@ cp -a $TREE/. %{buildroot}/
 
 %files
 /usr/bin/annex
+/usr/lib/annex/libgtk4-layer-shell.so.0
 /usr/share/applications/dev.getannex.Annex.desktop
 /usr/share/icons/hicolor/*/apps/annex.png
 /usr/share/doc/annex/copyright
+/usr/share/doc/annex/gtk4-layer-shell.LICENSE
 EOF
 rpmbuild --quiet -bb --target "$RPM_ARCH" --define "_topdir $WORK/rpm" --define "_build_id_links none" \
   "$WORK/rpm/SPECS/annex.spec"

@@ -56,7 +56,8 @@ public abstract record CoreEvent
     public sealed record PairingFinished(ulong RequestId, bool Success, string PeerName) : CoreEvent;
     /// <summary><c>SessionId</c> is 0 on the viewer side; <c>Mode</c> is "mirror" or "extend".</summary>
     public sealed record SessionStarted(ulong SessionId, string Mode, string PeerName, string Fingerprint, StreamConfig Stream,
-        DisplayInfo? ViewerDisplay = null, string? Transport = null, string? Link = null, bool Input = false) : CoreEvent
+        DisplayInfo? ViewerDisplay = null, string? Transport = null, string? Link = null, bool Input = false,
+        string? PeerOs = null) : CoreEvent
     {
         /// <summary>e.g. "QUIC · direct cable".</summary>
         public string ConnectionDescription => string.Join(" · ", new[]
@@ -91,6 +92,14 @@ public abstract record CoreEvent
     public sealed record InternetRelay(bool Relayed, bool Limited) : CoreEvent;
     /// <summary>Host: the code is done ("used", "expired", "stopped", or an error).</summary>
     public sealed record InternetCodeEnded(string Reason) : CoreEvent;
+    /// <summary>The other computer copied text ("text/plain;charset=utf-8") or a picture ("image/png").</summary>
+    public sealed record ClipboardReceived(ulong SessionId, string Mime, byte[] Data) : CoreEvent;
+    /// <summary>A file started going either way. <c>Incoming</c>: from the other computer to this one.</summary>
+    public sealed record TransferStarted(ulong SessionId, ulong Id, bool Incoming, string Name, ulong Size) : CoreEvent;
+    public sealed record TransferProgress(ulong SessionId, ulong Id, bool Incoming, ulong Done) : CoreEvent;
+    /// <summary><c>Path</c>: where a received file was saved; <c>Problem</c>: why it didn't arrive.</summary>
+    public sealed record TransferEnded(ulong SessionId, ulong Id, bool Incoming, bool Ok, string? Path = null,
+        [property: JsonPropertyName("error")] string? Problem = null) : CoreEvent;
     public sealed record Unknown(string Type) : CoreEvent;
 
     public static CoreEvent Parse(string json)
@@ -103,6 +112,7 @@ public abstract record CoreEvent
         }
         catch (JsonException)
         {
+            AnnexLog.Warn($"[app] couldn't read an event from the core ({json.Length} bytes)");
             return new Unknown("invalid");
         }
         try
@@ -134,11 +144,16 @@ public abstract record CoreEvent
                 "internet_joined" => Get<InternetJoined>(json),
                 "internet_relay" => Get<InternetRelay>(json),
                 "internet_code_ended" => Get<InternetCodeEnded>(json),
+                "clipboard_received" => Get<ClipboardReceived>(json),
+                "transfer_started" => Get<TransferStarted>(json),
+                "transfer_progress" => Get<TransferProgress>(json),
+                "transfer_ended" => Get<TransferEnded>(json),
                 _ => new Unknown(type),
             };
         }
-        catch (JsonException)
+        catch (JsonException e)
         {
+            AnnexLog.Warn($"[app] couldn't read a \"{type}\" event from the core: {e.Message}");
             return new Unknown(type);
         }
     }
@@ -171,6 +186,10 @@ internal sealed record InstanceDto(string Instance);
 [JsonSerializable(typeof(CoreEvent.InternetJoined))]
 [JsonSerializable(typeof(CoreEvent.InternetRelay))]
 [JsonSerializable(typeof(CoreEvent.InternetCodeEnded))]
+[JsonSerializable(typeof(CoreEvent.ClipboardReceived))]
+[JsonSerializable(typeof(CoreEvent.TransferStarted))]
+[JsonSerializable(typeof(CoreEvent.TransferProgress))]
+[JsonSerializable(typeof(CoreEvent.TransferEnded))]
 [JsonSerializable(typeof(ExtendStatus))]
 [JsonSerializable(typeof(GpuInfo[]))]
 [JsonSerializable(typeof(UpdateInfo))]

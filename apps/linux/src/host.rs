@@ -69,6 +69,8 @@ struct ExtendSession {
 struct State {
     session: Session,
     prefer_hardware: bool,
+    /// Settings → Extended display scaling (0: the viewer's own scale).
+    extend_scale: u32,
     stream: StreamConfig,
     rt: tokio::runtime::Handle,
     tx: async_channel::Sender<Msg>,
@@ -135,10 +137,21 @@ impl Host {
         // queue up and the delay jumps).
         let fps = if encode::hardware(prefer_hardware) { display.refresh_hz.clamp(30, 60) } else { 30 };
         let stream = StreamConfig { codec: Codec::H264, width, height, fps };
+        tracing::info!(
+            screen_w = sw,
+            screen_h = sh,
+            width,
+            height,
+            fps,
+            hardware = encode::hardware(prefer_hardware),
+            encoder = encode::describe(prefer_hardware),
+            "sharing: stream"
+        );
 
         let state = Arc::new(State {
             session,
             prefer_hardware,
+            extend_scale: m.settings.extend_scale,
             stream: stream.clone(),
             rt: m.rt.handle().clone(),
             tx: m.sender(),
@@ -154,6 +167,7 @@ impl Host {
         let events: EventSink = {
             let (state, tx) = (state.clone(), m.sender());
             Arc::new(move |e: Event| {
+                annex_session::log_event(&e);
                 state.on_event(&e);
                 // Input and encoder hints are handled here; the window needs the rest.
                 if !matches!(e, Event::Input { .. } | Event::KeyframeRequested { .. } | Event::BitrateHint { .. }) {
@@ -165,11 +179,15 @@ impl Host {
         // Annex's port if it's free, else any (the CLI may hold it).
         let port = annex_session::DEFAULT_PORT;
         let port = if std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() { port } else { 0 };
+        if port == 0 {
+            tracing::info!("sharing: port {} is taken; using any free port", annex_session::DEFAULT_PORT);
+        }
         let cfg = HostConfig { port, stream, extend, udp: None };
         let handle = match m.rt.block_on(annex_session::start_host(m.core.clone(), cfg, events)) {
             Ok(h) => h,
             Err(e) => return Err(format!("Couldn't start sharing: {e}")),
         };
+        tracing::info!(port = handle.port(), extend, "sharing: listening");
         let handle = Arc::new(handle);
         let _ = state.host.set(Arc::downgrade(&handle));
         let advert = m.advertise_host(handle.port(), extend);
@@ -185,9 +203,11 @@ impl Host {
         }
         self.state.stop_all();
         let handle = self.handle.clone();
-        rt.block_on(async move {
-            let _ = tokio::time::timeout(Duration::from_secs(1), handle.stop()).await;
-        });
+        let stopped = rt.block_on(async move { tokio::time::timeout(Duration::from_secs(1), handle.stop()).await });
+        if stopped.is_err() {
+            tracing::warn!("sharing: the goodbye to viewers took over a second; stopped anyway");
+        }
+        tracing::info!("sharing: stopped");
         self.advert.take()
     }
 
@@ -202,6 +222,7 @@ impl Host {
         let handle = self.handle.clone();
         let tx = self.state.tx.clone();
         let events: EventSink = Arc::new(move |e| {
+            annex_session::log_event(&e);
             let _ = tx.send_blocking(Msg::Host(e));
         });
         self.code = Some(rt.spawn(annex_session::share_code(handle, name, servers, own_relay, events)));
@@ -209,12 +230,23 @@ impl Host {
 
     fn stop_code_task(&mut self) {
         if let Some(c) = self.code.take() {
+            tracing::debug!("sharing: the earlier code's task is stopped");
             c.abort();
         }
     }
 
     pub fn stop_code(&mut self) {
         self.stop_code_task();
+    }
+
+    /// Sends a file to a viewer; progress comes as transfer events.
+    pub fn send_file(&self, session_id: u64, path: &std::path::Path) -> Result<u64, String> {
+        self.handle.send_file(session_id, path)
+    }
+
+    /// Puts what was copied here on a viewer's clipboard.
+    pub fn send_clipboard(&self, session_id: u64, mime: &str, data: Vec<u8>) -> bool {
+        self.handle.send_clipboard(session_id, mime, data)
     }
 }
 
@@ -234,10 +266,12 @@ impl State {
     fn open_screen(self: &Arc<Self>, token: Option<String>) {
         match self.session {
             Session::Gnome => {
+                tracing::info!(target: "annex::permissions", "sharing: asking GNOME (Mutter) for the screen");
                 let me = self.clone();
                 self.rt.spawn(async move {
                     match crate::gnome::start(false).await {
                         Ok(g) => {
+                            tracing::info!(target: "annex::capture", node = g.node, "sharing: GNOME shares the screen; input through Mutter");
                             let size = (me.stream.width as i32, me.stream.height as i32);
                             *me.injector.lock().unwrap() =
                                 Some(Injector::Portal(crate::inject::Portal::new(g.input.clone(), size)));
@@ -248,10 +282,25 @@ impl State {
                 });
             }
             Session::Kde | Session::OtherWayland => {
+                tracing::info!(
+                    target: "annex::permissions",
+                    saved_permission = token.is_some(),
+                    "sharing: asking the desktop's portal for the screen"
+                );
                 let me = self.clone();
                 self.rt.spawn(async move {
                     match crate::portal::start(token, false).await {
                         Ok(p) => {
+                            tracing::info!(
+                                target: "annex::permissions",
+                                node = p.node,
+                                size = ?p.size,
+                                input = p.input.is_some(),
+                                "sharing: the portal shares the screen"
+                            );
+                            if p.input.is_none() {
+                                tracing::warn!(target: "annex::input", "sharing: the portal gave no mouse and keyboard control");
+                            }
                             if let Some(t) = &p.token {
                                 let _ = me.tx.send(Msg::ScreenToken(t.clone())).await;
                             }
@@ -267,9 +316,13 @@ impl State {
                 });
             }
             Session::Wlroots(_) => match first_output() {
-                Some((output, _)) => {
+                Some((output, size)) => {
+                    tracing::info!(target: "annex::capture", output, ?size, "sharing: screencopy of the first output");
                     match crate::inject::Wlr::new(Some(&output)) {
-                        Ok(w) => *self.injector.lock().unwrap() = Some(Injector::Wlr(Box::new(w))),
+                        Ok(w) => {
+                            tracing::info!(target: "annex::input", "sharing: input through the virtual pointer and keyboard");
+                            *self.injector.lock().unwrap() = Some(Injector::Wlr(Box::new(w)))
+                        }
                         Err(e) => tracing::warn!("no mouse and keyboard control: {e}"),
                     }
                     *self.screen.lock().unwrap() = Some(Screen::Wlr { output });
@@ -277,8 +330,12 @@ impl State {
                 None => self.fail("No screen found to share.".into()),
             },
             Session::X11 => {
+                tracing::info!(target: "annex::capture", "sharing: ximagesrc (XShm)");
                 match crate::inject::X11::new(None) {
-                    Ok(x) => *self.injector.lock().unwrap() = Some(Injector::X11(Box::new(x))),
+                    Ok(x) => {
+                        tracing::info!(target: "annex::input", "sharing: input through XTest");
+                        *self.injector.lock().unwrap() = Some(Injector::X11(Box::new(x)))
+                    }
                     Err(e) => tracing::warn!("no mouse and keyboard control: {e}"),
                 }
                 *self.screen.lock().unwrap() = Some(Screen::X11);
@@ -305,8 +362,16 @@ impl State {
     fn start_mirror(self: &Arc<Self>) {
         // The desktop may still be asking the user.
         let deadline = Instant::now() + Duration::from_secs(120);
+        if self.screen.lock().unwrap().is_none() {
+            tracing::info!(target: "annex::permissions", "sharing: a viewer is waiting for the desktop's permission");
+        }
         while self.screen.lock().unwrap().is_none() {
-            if self.screen_failed.load(Ordering::Acquire) || Instant::now() > deadline {
+            if self.screen_failed.load(Ordering::Acquire) {
+                tracing::info!(target: "annex::capture", "sharing: no picture for the viewer, the screen couldn't be shared");
+                return;
+            }
+            if Instant::now() > deadline {
+                tracing::warn!(target: "annex::permissions", "sharing: the desktop didn't answer in 2 minutes; no picture");
                 return;
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -314,11 +379,13 @@ impl State {
         let mut slot = self.mirror.lock().unwrap();
         if let Some(p) = slot.as_ref() {
             // Another mirror viewer joined: one capture feeds everyone; just resync.
+            tracing::info!(target: "annex::capture", "sharing: another viewer joined the running capture");
             p.pipeline().request_keyframe();
             return;
         }
         // The last viewer may have left before this thread got here.
         if self.mirror_sessions.lock().unwrap().is_empty() {
+            tracing::debug!(target: "annex::capture", "sharing: the viewer left before the capture started");
             return;
         }
         let StreamConfig { width, height, fps, .. } = self.stream;
@@ -331,6 +398,7 @@ impl State {
             }
             None => return,
         };
+        tracing::info!(target: "annex::capture", width, height, fps, "sharing: starting the capture");
         match self.run(source, width, height, fps, self.output(None)) {
             Ok(r) => *slot = Some(r),
             Err(e) => {
@@ -378,8 +446,23 @@ impl State {
         Ok(Running { _pipeline: pipeline, stop })
     }
 
+    /// The extended display's scale: the setting, or else the viewer's own (a Retina Mac asks
+    /// for 2704×1756 pixels at 200 %; at 1.0 everything, the pointer too, is half size). Follows
+    /// the stream if it was made smaller than the viewer's screen.
+    fn extend_scale(&self, display: &DisplayInfo, stream_w: u32) -> f64 {
+        let percent = match self.extend_scale {
+            0 => display.scale_percent,
+            p => p,
+        };
+        let shrink = f64::from(stream_w) / f64::from(display.width_px.max(stream_w));
+        (f64::from(percent.clamp(100, 300)) / 100.0 * shrink).max(1.0)
+    }
+
     fn start_extend(self: &Arc<Self>, id: u64, display: DisplayInfo) {
-        let Some(host) = self.host() else { return };
+        let Some(host) = self.host() else {
+            tracing::debug!(target: "annex::display", id, "extend: sharing stopped first");
+            return;
+        };
         let hz = if display.refresh_hz == 0 { 60 } else { display.refresh_hz.clamp(24, 120) };
         // The display runs at the viewer's rate; the software encoders stream it at 30 fps.
         let rate = if encode::hardware(self.prefer_hardware) { hz } else { hz.min(30) };
@@ -387,13 +470,29 @@ impl State {
         let (w, h) = (w & !1, h & !1);
         let (stop, running, injector) = {
             let ext = self.extends.lock().unwrap();
-            let Some(s) = ext.get(&id) else { return };
+            let Some(s) = ext.get(&id) else {
+                tracing::debug!(target: "annex::display", id, "extend: the session ended first");
+                return;
+            };
             (s.stop.clone(), s.running.clone(), s.injector.clone())
         };
         let fail = |e: String| {
-            tracing::error!("extend session {id} failed: {e}");
+            tracing::error!(target: "annex::display", "extend session {id} failed: {e}");
             host.end_session(id);
         };
+        let (viewer_w, viewer_h, scale) = (display.width_px, display.height_px, display.scale_percent);
+        tracing::info!(
+            target: "annex::display",
+            id,
+            w,
+            h,
+            hz,
+            rate,
+            viewer_w,
+            viewer_h,
+            scale,
+            "extend: adding a display"
+        );
 
         let source = match self.session {
             Session::Gnome => match self.rt.block_on(crate::gnome::start(true)) {
@@ -426,8 +525,9 @@ impl State {
                 }
                 Err(e) => return fail(e),
             },
-            Session::Wlroots(kind) => match crate::extend::add(kind, w, h, hz) {
+            Session::Wlroots(kind) => match crate::extend::add(kind, w, h, hz, self.extend_scale(&display, w)) {
                 Ok(d) => {
+                    tracing::info!(target: "annex::display", id, output = d.output, "extend: the display is up");
                     match crate::inject::Wlr::new(Some(&d.output)) {
                         Ok(i) => *injector.lock().unwrap() = Some(Injector::Wlr(Box::new(i))),
                         Err(e) => tracing::warn!("extend: no mouse and keyboard: {e}"),
@@ -437,6 +537,7 @@ impl State {
                         Some(s) => s.display = Some(d),
                         // Ended while the display came up.
                         None => {
+                            tracing::info!(target: "annex::display", id, "extend: ended while the display came up; removing it");
                             d.remove();
                             return;
                         }
@@ -483,6 +584,7 @@ impl State {
                     .and_then(|wl| wl.output(name).map(|o| (o.size.0.max(2) as u32, o.size.1.max(2) as u32)));
                 match now {
                     Some(s) if s != size => {
+                        tracing::info!(target: "annex::display", id, from = ?size, to = ?s, "extend: the display was resized; restarting the capture");
                         running.lock().unwrap().take();
                         size = s;
                         break;
@@ -498,6 +600,7 @@ impl State {
 
     fn end_extend(&self, id: u64) {
         let Some(s) = self.extends.lock().unwrap().remove(&id) else { return };
+        tracing::info!(target: "annex::display", id, "extend: removing the display");
         s.stop.store(true, Ordering::Release);
         s.running.lock().unwrap().take();
         if let Some(d) = &s.display {
@@ -508,6 +611,7 @@ impl State {
     }
 
     fn stop_all(&self) {
+        tracing::debug!(target: "annex::capture", "sharing: stopping every capture");
         self.mirror.lock().unwrap().take();
         let ids: Vec<u64> = self.extends.lock().unwrap().keys().copied().collect();
         for id in ids {
@@ -544,6 +648,7 @@ impl State {
                 if self.mirror_sessions.lock().unwrap().remove(session_id) {
                     self.mirror_scales.lock().unwrap().remove(session_id);
                     if self.mirror_sessions.lock().unwrap().is_empty() {
+                        tracing::info!(target: "annex::capture", "sharing: the last viewer left; capture stopped");
                         self.mirror.lock().unwrap().take();
                     }
                 } else {
@@ -566,6 +671,7 @@ impl State {
                             scales.insert(*session_id, *scale_percent);
                             scales.values().copied().min().unwrap_or(100)
                         };
+                        tracing::debug!(target: "annex::encode", scale = lowest, "sharing: the shared encoder follows the slowest viewer");
                         if let Some(r) = self.mirror.lock().unwrap().as_ref() {
                             r.pipeline().set_bitrate_scale(lowest);
                         }
