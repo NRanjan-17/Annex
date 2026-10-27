@@ -54,6 +54,8 @@ window.annex-island-window { background: transparent; }
 .annex-island button { background: rgba(255, 255, 255, 0.15); color: white; border: none; box-shadow: none;
   border-radius: 12px; padding: 2px 12px; min-height: 0; }
 .annex-island button:hover { background: rgba(255, 255, 255, 0.25); }
+.annex-island button.round { padding: 0; min-width: 24px; min-height: 24px; border-radius: 12px; }
+.annex-island button.round image { -gtk-icon-size: 12px; }
 ";
 
 /// X11: the window, big enough for the island at its largest (four transfers) and its glow.
@@ -70,14 +72,36 @@ enum Phase {
     Transfers,
 }
 
+/// One file going or coming. `viewer`: in the session this computer views (else one it shares);
+/// the two number their sessions apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TransferKey {
+    pub viewer: bool,
+    pub session: u64,
+    pub id: u64,
+    pub incoming: bool,
+}
+
 struct Item {
-    key: (u64, u64, bool),
+    key: TransferKey,
     name: String,
     size: u64,
     done: u64,
     ok: Option<bool>,
     path: Option<String>,
     error: Option<String>,
+    /// Sending is paused (outgoing only).
+    paused: bool,
+    /// Unsent (outgoing) or stopped (incoming) from the island.
+    cancelled: bool,
+}
+
+/// What a row shows that changes with progress, to update it without rebuilding the row (its
+/// buttons would lose a click in progress).
+struct RowParts {
+    key: TransferKey,
+    status: gtk::Label,
+    bar: Option<gtk::ProgressBar>,
 }
 
 #[derive(Default)]
@@ -96,6 +120,7 @@ struct Inner {
     content: gtk::Box,
     phase: std::cell::Cell<Phase>,
     state: RefCell<State>,
+    rows: RefCell<Vec<RowParts>>,
     tx: async_channel::Sender<Msg>,
     /// X11 only: places the window, since there's no layer shell.
     placer: Option<crate::x11_drag::Placer>,
@@ -167,6 +192,7 @@ impl DropTray {
             content,
             phase: std::cell::Cell::new(Phase::Hidden),
             state: RefCell::new(State::default()),
+            rows: RefCell::new(Vec::new()),
             tx,
             placer,
         });
@@ -269,13 +295,22 @@ impl DropTray {
         i.update_visible();
     }
 
-    pub fn started(&self, session: u64, id: u64, incoming: bool, name: String, size: u64) {
+    pub fn started(&self, key: TransferKey, name: String, size: u64) {
         let i = &self.0;
         {
             let mut s = i.state.borrow_mut();
-            let key = (session, id, incoming);
             s.items.retain(|x| x.key != key);
-            s.items.push(Item { key, name, size, done: 0, ok: None, path: None, error: None });
+            s.items.push(Item {
+                key,
+                name,
+                size,
+                done: 0,
+                ok: None,
+                path: None,
+                error: None,
+                paused: false,
+                cancelled: false,
+            });
             while s.items.len() > 4 {
                 let Some(old) = s.items.iter().position(|x| x.ok.is_some()) else { break };
                 s.items.remove(old);
@@ -284,31 +319,67 @@ impl DropTray {
         i.set_phase(Phase::Transfers, "a transfer started");
     }
 
-    pub fn progress(&self, session: u64, id: u64, incoming: bool, done: u64) {
+    pub fn progress(&self, key: TransferKey, done: u64) {
         let i = &self.0;
-        if let Some(x) = i.state.borrow_mut().items.iter_mut().find(|x| x.key == (session, id, incoming)) {
+        if let Some(x) = i.state.borrow_mut().items.iter_mut().find(|x| x.key == key) {
             x.done = done;
         }
         if i.phase.get() == Phase::Transfers {
-            i.render();
+            i.refresh(key);
         }
     }
 
-    pub fn ended(&self, session: u64, id: u64, incoming: bool, ok: bool, path: Option<String>, error: Option<String>) {
+    pub fn ended(&self, key: TransferKey, ok: bool, path: Option<String>, error: Option<String>) {
         let i = &self.0;
         {
             let mut s = i.state.borrow_mut();
-            let Some(x) = s.items.iter_mut().find(|x| x.key == (session, id, incoming)) else { return };
-            x.ok = Some(ok);
-            x.path = path;
-            x.error = error;
-            if ok {
-                x.done = x.size;
+            let Some(x) = s.items.iter_mut().find(|x| x.key == key) else {
+                tracing::debug!(?key, "drop: a transfer ended that isn't in the island");
+                return;
+            };
+            // Unsent or stopped here: it already shows so, whatever the core says.
+            if !x.cancelled {
+                x.ok = Some(ok);
+                x.error = error;
+                if ok {
+                    x.done = x.size;
+                }
             }
+            x.path = path;
+            x.paused = false;
         }
         i.render();
         if i.all_done() {
             i.hide_later(5000);
+        }
+    }
+
+    /// The core took a pause or resume (see [`Msg::PauseTransfer`]).
+    pub fn set_paused(&self, key: TransferKey, paused: bool) {
+        let i = &self.0;
+        {
+            let mut s = i.state.borrow_mut();
+            let Some(x) = s.items.iter_mut().find(|x| x.key == key && x.ok.is_none()) else { return };
+            x.paused = paused;
+            // A paused file keeps the island open: a pending hide doesn't run.
+            s.generation += 1;
+        }
+        i.render();
+    }
+
+    /// Unsent or stopped: shows so now, without waiting for the core's end of it.
+    pub fn cancelled(&self, key: TransferKey) {
+        let i = &self.0;
+        {
+            let mut s = i.state.borrow_mut();
+            let Some(x) = s.items.iter_mut().find(|x| x.key == key && x.ok.is_none()) else { return };
+            x.cancelled = true;
+            x.paused = false;
+            x.ok = Some(false);
+        }
+        i.render();
+        if i.all_done() {
+            i.hide_later(3000);
         }
     }
 }
@@ -428,7 +499,7 @@ impl Inner {
         let me = self.clone();
         glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
             let s = me.state.borrow();
-            if s.generation != generation || s.hovering {
+            if s.generation != generation || s.hovering || s.items.iter().any(|x| x.paused) {
                 return;
             }
             drop(s);
@@ -436,10 +507,32 @@ impl Inner {
         });
     }
 
+    /// Updates one row's status and bar in place; rebuilds all of them if it isn't shown yet.
+    fn refresh(&self, key: TransferKey) {
+        let shown = {
+            let s = self.state.borrow();
+            let rows = self.rows.borrow();
+            match (s.items.iter().find(|x| x.key == key), rows.iter().find(|r| r.key == key)) {
+                (Some(x), Some(r)) => {
+                    r.status.set_text(&status_text(x, &s.peer));
+                    if let Some(bar) = &r.bar {
+                        bar.set_fraction(fraction(x));
+                    }
+                    true
+                }
+                _ => false,
+            }
+        };
+        if !shown {
+            self.render();
+        }
+    }
+
     fn render(&self) {
         while let Some(c) = self.content.first_child() {
             self.content.remove(&c);
         }
+        self.rows.borrow_mut().clear();
         // Hidden: only the strip, without the content's padding.
         self.content.set_visible(!matches!(self.phase.get(), Phase::Hidden | Phase::Glowing));
         let s = self.state.borrow();
@@ -458,20 +551,50 @@ impl Inner {
                 self.content.set_valign(gtk::Align::Center);
             }
             Phase::Transfers => {
+                let mut rows = self.rows.borrow_mut();
                 for x in &s.items {
-                    self.content.append(&row(x, &s.peer));
+                    let (row, parts) = row(x, &s.peer, &self.tx);
+                    self.content.append(&row);
+                    rows.push(parts);
                 }
             }
         }
     }
 }
 
-fn row(x: &Item, peer: &str) -> gtk::Box {
-    let incoming = x.key.2;
+fn fraction(x: &Item) -> f64 {
+    if x.size == 0 { 1.0 } else { (x.done as f64 / x.size as f64).min(1.0) }
+}
+
+fn status_text(x: &Item, peer: &str) -> String {
+    let incoming = x.key.incoming;
+    let total = glib::format_size(x.size);
+    match x.ok {
+        Some(true) if incoming => format!("Received from {peer} · {total}"),
+        Some(true) => format!("Sent to {peer} · {total}"),
+        Some(false) if x.cancelled => (if incoming { "Stopped" } else { "Unsent" }).into(),
+        Some(false) => x.error.clone().unwrap_or_else(|| "Didn't arrive".into()),
+        None if x.paused => format!("Paused · {} of {total}", glib::format_size(x.done)),
+        None => format!("{} {} of {total}", if incoming { "Receiving" } else { "Sending" }, glib::format_size(x.done)),
+    }
+}
+
+/// A small round icon button, styled like "Show".
+fn round_button(icon: &str, tip: &str) -> gtk::Button {
+    let b = gtk::Button::from_icon_name(icon);
+    b.add_css_class("round");
+    b.set_tooltip_text(Some(tip));
+    b.set_valign(gtk::Align::Center);
+    b
+}
+
+fn row(x: &Item, peer: &str, tx: &async_channel::Sender<Msg>) -> (gtk::Box, RowParts) {
+    let incoming = x.key.incoming;
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let badge = gtk::Label::new(Some(match x.ok {
         Some(true) => "✓",
         Some(false) => "✕",
+        None if x.paused => "\u{23F8}\u{FE0E}",
         None if incoming => "↓",
         None => "↑",
     }));
@@ -487,24 +610,44 @@ fn row(x: &Item, peer: &str) -> gtk::Box {
     name.set_xalign(0.0);
     name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
     text.append(&name);
-    let total = glib::format_size(x.size);
-    let status = match x.ok {
-        Some(true) if incoming => format!("Received from {peer} · {total}"),
-        Some(true) => format!("Sent to {peer} · {total}"),
-        Some(false) => x.error.clone().unwrap_or_else(|| "Didn't arrive".into()),
-        None => format!("{} {} of {total}", if incoming { "Receiving" } else { "Sending" }, glib::format_size(x.done)),
-    };
-    let status = gtk::Label::new(Some(&status));
+    let status = gtk::Label::new(Some(&status_text(x, peer)));
     status.add_css_class("dim");
     status.set_xalign(0.0);
     status.set_ellipsize(gtk::pango::EllipsizeMode::End);
     text.append(&status);
-    if x.ok.is_none() {
+    let bar = x.ok.is_none().then(|| {
         let bar = gtk::ProgressBar::new();
-        bar.set_fraction(if x.size == 0 { 1.0 } else { (x.done as f64 / x.size as f64).min(1.0) });
+        bar.set_fraction(fraction(x));
+        // Paused: dimmed, like the Mac's ring.
+        bar.set_opacity(if x.paused { 0.35 } else { 1.0 });
         text.append(&bar);
-    }
+        bar
+    });
     row.append(&text);
+    if x.ok.is_none() {
+        let key = x.key;
+        if !incoming {
+            let pause = !x.paused;
+            let b = if pause {
+                round_button("media-playback-pause-symbolic", "Pause")
+            } else {
+                round_button("media-playback-start-symbolic", "Resume")
+            };
+            let tx = tx.clone();
+            b.connect_clicked(move |_| {
+                tracing::info!(?key, "drop: {}", if pause { "pause" } else { "resume" });
+                let _ = tx.send_blocking(Msg::PauseTransfer(key, pause));
+            });
+            row.append(&b);
+        }
+        let b = round_button("window-close-symbolic", if incoming { "Stop" } else { "Unsend" });
+        let tx = tx.clone();
+        b.connect_clicked(move |_| {
+            tracing::info!(?key, "drop: {}", if incoming { "stop" } else { "unsend" });
+            let _ = tx.send_blocking(Msg::CancelTransfer(key));
+        });
+        row.append(&b);
+    }
     if let (true, Some(true), Some(path)) = (incoming, x.ok, &x.path) {
         let show = gtk::Button::with_label("Show");
         show.set_valign(gtk::Align::Center);
@@ -519,7 +662,7 @@ fn row(x: &Item, peer: &str) -> gtk::Box {
         });
         row.append(&show);
     }
-    row
+    (row, RowParts { key: x.key, status, bar })
 }
 
 /// A file, or every file inside a folder (hidden ones skipped).

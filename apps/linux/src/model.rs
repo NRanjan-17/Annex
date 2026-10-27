@@ -15,6 +15,7 @@ use annex_session::{
     Quality, TrustPolicy, ViewerConfig, ViewerHandle,
 };
 
+use crate::drop_tray::TransferKey;
 use crate::host::Host;
 use crate::settings::{self, Settings};
 
@@ -41,6 +42,10 @@ pub enum Msg {
     },
     /// Files dropped on the island or the viewer window, to send.
     DropFiles(Vec<std::path::PathBuf>),
+    /// The island's Pause (true) or Resume (false) on a file being sent.
+    PauseTransfer(TransferKey, bool),
+    /// The island's Unsend on a file being sent, or Stop on one arriving.
+    CancelTransfer(TransferKey),
     /// wl-paste stopped (no clipboard access for other programs here): use GTK's clipboard.
     ClipboardWatchEnded,
     /// The sharing pipeline stopped by itself (the screen-sharing permission was refused, the
@@ -198,6 +203,8 @@ pub struct Model {
     pub host_error: Option<String>,
     pub host_sessions: Vec<HostSession>,
     pub internet: Option<InternetShare>,
+    /// The port sharing listens on (for the addresses on the Share page).
+    pub host_port: Option<u16>,
 
     // Updates.
     pub update: UpdateState,
@@ -272,6 +279,7 @@ impl Model {
             host_error: None,
             host_sessions: Vec::new(),
             internet: None,
+            host_port: None,
             update: UpdateState::Idle,
             update_dismissed: None,
             update_checked_at: None,
@@ -400,6 +408,7 @@ impl Model {
 
     /// A host starts advertising this computer as sharing; its record replaces the presence one.
     pub fn advertise_host(&mut self, port: u16, extend: bool) -> Option<Advertisement> {
+        self.host_port = Some(port);
         let presence = self.presence.advert.take();
         self.presence.hosting = true;
         let name = self.core.device_name();
@@ -421,6 +430,7 @@ impl Model {
     }
 
     pub fn end_hosting(&mut self, host_advert: Option<Advertisement>) {
+        self.host_port = None;
         self.presence.hosting = false;
         self.replace_presence(host_advert);
     }
@@ -720,7 +730,7 @@ impl Model {
                 return;
             }
             e @ (Event::TransferStarted { .. } | Event::TransferProgress { .. } | Event::TransferEnded { .. }) => {
-                self.transfer(e);
+                self.transfer(e, true);
                 return;
             }
             _ => {}
@@ -864,7 +874,7 @@ impl Model {
                 return;
             }
             e @ (Event::TransferStarted { .. } | Event::TransferProgress { .. } | Event::TransferEnded { .. }) => {
-                self.transfer(e);
+                self.transfer(e, false);
                 return;
             }
             Event::Error { message } => {
@@ -918,6 +928,8 @@ impl Model {
             }
             Msg::Copied { mime, data } => self.copied(mime, data),
             Msg::DropFiles(files) => self.send_files(files),
+            Msg::PauseTransfer(key, paused) => self.pause_transfer(key, paused),
+            Msg::CancelTransfer(key) => self.cancel_transfer(key),
             Msg::ClipboardNow { mime, data } => {
                 const T: &str = "annex::clipboard";
                 match &self.viewer {
@@ -1056,21 +1068,23 @@ impl Model {
         }
     }
 
-    fn transfer(&mut self, e: Event) {
+    /// `viewer`: from the session this computer views (else one it shares).
+    fn transfer(&mut self, e: Event, viewer: bool) {
+        let key = |session: u64, id: u64, incoming: bool| TransferKey { viewer, session, id, incoming };
         match e {
             Event::TransferStarted { session_id, id, incoming, name, size } => {
                 if let Some(t) = &self.drop_tray {
-                    t.started(session_id, id, incoming, name, size);
+                    t.started(key(session_id, id, incoming), name, size);
                 }
             }
             Event::TransferProgress { session_id, id, incoming, done } => {
                 if let Some(t) = &self.drop_tray {
-                    t.progress(session_id, id, incoming, done);
+                    t.progress(key(session_id, id, incoming), done);
                 }
             }
             Event::TransferEnded { session_id, id, incoming, ok, path, error } => {
                 if let Some(t) = &self.drop_tray {
-                    t.ended(session_id, id, incoming, ok, path, error);
+                    t.ended(key(session_id, id, incoming), ok, path, error);
                 } else if incoming && ok {
                     // No island here (GNOME, X11): say so where it lands.
                     let name = path
@@ -1084,6 +1098,53 @@ impl Model {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The island's Pause or Resume: only shown paused once the core took it.
+    fn pause_transfer(&mut self, key: TransferKey, paused: bool) {
+        const T: &str = "annex::transfer";
+        let took = if key.incoming {
+            false
+        } else if key.viewer {
+            self.viewer.as_ref().is_some_and(|v| v.handle.pause_transfer(key.id, paused))
+        } else {
+            // TODO(host.rs): `Host` keeps its `HostHandle` private; needs
+            // `Host::pause_transfer(session, id, paused) -> bool` there.
+            tracing::warn!(target: T, ?key, "files: pausing a file sent to a viewer isn't wired yet");
+            false
+        };
+        if !took {
+            tracing::warn!(target: T, ?key, paused, "files: couldn't pause or resume: it isn't being sent");
+            return;
+        }
+        if let Some(t) = &self.drop_tray {
+            t.set_paused(key, paused);
+        }
+    }
+
+    /// The island's Unsend (the other side deletes what arrived) or Stop.
+    fn cancel_transfer(&mut self, key: TransferKey) {
+        const T: &str = "annex::transfer";
+        let done = if key.viewer {
+            match &self.viewer {
+                Some(v) => {
+                    v.handle.cancel_transfer(key.incoming, key.id);
+                    true
+                }
+                None => false,
+            }
+        } else {
+            // TODO(host.rs): needs `Host::cancel_transfer(session, incoming, id)` there.
+            tracing::warn!(target: T, ?key, "files: stopping a transfer with a viewer isn't wired yet");
+            false
+        };
+        if !done {
+            tracing::warn!(target: T, ?key, "files: couldn't stop the transfer: its session is gone");
+            return;
+        }
+        if let Some(t) = &self.drop_tray {
+            t.cancelled(key);
         }
     }
 
@@ -1203,6 +1264,89 @@ pub fn system_name() -> String {
         .or_else(|| std::fs::read_to_string("/proc/sys/kernel/hostname").ok().map(|s| s.trim().to_string()))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Linux computer".into())
+}
+
+/// How another computer reaches this one at a local address.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub enum LocalLink {
+    Network,
+    /// A mesh VPN (Tailscale, ZeroTier).
+    Private,
+    /// 169.254.x.x: a cable straight between the two computers.
+    Cable,
+}
+
+impl LocalLink {
+    pub fn label(self) -> &'static str {
+        match self {
+            LocalLink::Network => "Network",
+            LocalLink::Private => "Private network",
+            LocalLink::Cable => "Cable",
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub struct LocalAddress {
+    pub link: LocalLink,
+    pub interface: String,
+    pub ip: std::net::Ipv4Addr,
+}
+
+/// This computer's IPv4 addresses (easier to type) on interfaces that are up, for telling the
+/// user what to type on the other computer: the local network first, then private networks, then
+/// cables. Loopback and container or VM bridges nobody would type are left out.
+pub fn local_addresses() -> Vec<LocalAddress> {
+    const SKIP: [&str; 10] = ["docker", "br-", "veth", "virbr", "vnet", "lxc", "lxd", "podman", "cni", "flannel"];
+    let mut out = Vec::new();
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `list` with a list freed below with freeifaddrs.
+    if unsafe { libc::getifaddrs(&mut list) } != 0 {
+        return out;
+    }
+    let mut p = list;
+    while !p.is_null() {
+        // SAFETY: a node of the list getifaddrs returned, alive until freeifaddrs.
+        let ifa = unsafe { &*p };
+        p = ifa.ifa_next;
+        let flags = ifa.ifa_flags;
+        if ifa.ifa_addr.is_null()
+            || ifa.ifa_name.is_null()
+            || flags & libc::IFF_UP as libc::c_uint == 0
+            || flags & libc::IFF_LOOPBACK as libc::c_uint != 0
+        {
+            continue;
+        }
+        // SAFETY: checked non-null above.
+        if i32::from(unsafe { (*ifa.ifa_addr).sa_family }) != libc::AF_INET {
+            continue;
+        }
+        // SAFETY: a NUL-terminated name, checked non-null above.
+        let interface = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }.to_string_lossy().into_owned();
+        if SKIP.iter().any(|s| interface.starts_with(s)) {
+            continue;
+        }
+        // SAFETY: an AF_INET address is a sockaddr_in.
+        let sin = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in) };
+        let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+        let [a, b, ..] = ip.octets();
+        let link = if ip.is_link_local() {
+            LocalLink::Cable
+        } else if interface.starts_with("tailscale")
+            || interface.starts_with("zt")
+            || (a == 100 && (64..128).contains(&b))
+        {
+            LocalLink::Private
+        } else {
+            LocalLink::Network
+        };
+        out.push(LocalAddress { link, interface, ip });
+    }
+    // SAFETY: the list from getifaddrs, not used after this.
+    unsafe { libc::freeifaddrs(list) };
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// "34CB B46A 8CDC 86A2 4102": the first 20 hex digits, in groups of four.

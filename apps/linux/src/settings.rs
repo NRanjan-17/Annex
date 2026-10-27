@@ -47,7 +47,13 @@ pub struct Settings {
     /// Everything Annex does goes in the log (every input event, every progress step).
     pub verbose_logging: bool,
     pub check_for_updates: bool,
+    /// Include pre-releases; off goes back to the latest normal release. Until the user flips it
+    /// (`beta_updates_chosen`), it follows what's installed: someone who installed a beta by hand
+    /// gets betas, not an offer to go back.
     pub beta_updates: bool,
+    /// The user has flipped Beta updates. (Older settings files always hold `betaUpdates`, so its
+    /// presence can't say this.)
+    pub beta_updates_chosen: bool,
     /// Empty: Annex's server.
     pub rendezvous_server: String,
     pub relay_url: String,
@@ -70,7 +76,7 @@ impl Default for Settings {
             headless: false,
             quality: 0,
             use_mouse_and_keyboard: true,
-            open_full_screen: false,
+            open_full_screen: true,
             extend_by_default: false,
             share_clipboard: true,
             receive_files: true,
@@ -84,7 +90,8 @@ impl Default for Settings {
             show_technical_details: false,
             verbose_logging: true,
             check_for_updates: true,
-            beta_updates: false,
+            beta_updates: running_beta(),
+            beta_updates_chosen: false,
             rendezvous_server: String::new(),
             relay_url: String::new(),
             relay_username: String::new(),
@@ -106,11 +113,20 @@ impl Settings {
             tracing::warn!("settings: {} couldn't be read ({e}); using the defaults", path().display());
             Settings::default()
         });
-        if !s.verbose_logging_defaulted {
-            s.verbose_logging = true;
-            s.verbose_logging_defaulted = true;
-        }
+        s.after_load(running_beta());
         s
+    }
+
+    /// Fixes up what was read: Beta updates follows the installed build until the user chooses,
+    /// and verbose logging is switched on once for installs from before it was the default.
+    fn after_load(&mut self, running_beta: bool) {
+        if !self.beta_updates_chosen {
+            self.beta_updates = running_beta;
+        }
+        if !self.verbose_logging_defaulted {
+            self.verbose_logging = true;
+            self.verbose_logging_defaulted = true;
+        }
     }
 
     pub fn save(&self) {
@@ -135,7 +151,7 @@ impl Settings {
             "open_at_login={} start_sharing_at_launch={} headless={} quality={} use_mouse_and_keyboard={} \
              open_full_screen={} extend_by_default={} share_clipboard={} receive_files={} drop_at_top={} \
              prefer_hardware_encoder={} share_sound={} hear_sound={} send_mic={} virtual_mic={} show_technical_details={} verbose_logging={} own_server={} own_relay={} \
-             screen_token={} last_seen_version={} check_for_updates={} beta_updates={}",
+             screen_token={} last_seen_version={} check_for_updates={} beta_updates={} beta_updates_chosen={}",
             self.open_at_login,
             self.start_sharing_at_launch,
             self.headless,
@@ -159,6 +175,7 @@ impl Settings {
             self.last_seen_version.as_deref().unwrap_or("none"),
             self.check_for_updates,
             self.beta_updates,
+            self.beta_updates_chosen,
         )
     }
 
@@ -177,6 +194,11 @@ impl Settings {
         let s = self.rendezvous_server.trim();
         if s.is_empty() { ANNEX_SERVER } else { s }
     }
+}
+
+/// This build is a pre-release ("0.9.0-beta.1").
+pub fn running_beta() -> bool {
+    annex_update::whats_new::CURRENT.contains('-')
 }
 
 fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
@@ -251,6 +273,28 @@ mod tests {
         assert!(s.verbose_logging);
         assert!(s.last_seen_version.is_none());
         assert!(s.share_sound && s.hear_sound && !s.send_mic && s.virtual_mic);
+        assert!(s.open_full_screen);
+        assert!(!s.beta_updates_chosen);
+    }
+
+    #[test]
+    fn beta_updates_follow_the_build_until_chosen() {
+        // An older file that never chose: follows what's installed, either way.
+        for running in [true, false] {
+            let mut s: Settings = serde_json::from_str(r#"{"betaUpdates":false}"#).unwrap();
+            s.after_load(running);
+            assert_eq!(s.beta_updates, running);
+            let mut s: Settings = serde_json::from_str(r#"{"betaUpdates":true}"#).unwrap();
+            s.after_load(running);
+            assert_eq!(s.beta_updates, running);
+        }
+        // Chosen: kept, whatever is installed.
+        let mut s: Settings = serde_json::from_str(r#"{"betaUpdates":false,"betaUpdatesChosen":true}"#).unwrap();
+        s.after_load(true);
+        assert!(!s.beta_updates);
+        let mut s: Settings = serde_json::from_str(r#"{"betaUpdates":true,"betaUpdatesChosen":true}"#).unwrap();
+        s.after_load(false);
+        assert!(s.beta_updates);
     }
 
     #[test]

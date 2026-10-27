@@ -60,6 +60,10 @@ struct Ui {
     sessions_section: gtk::Box,
     sessions: gtk::Box,
     code: gtk::Box,
+    /// "On the same network": this computer's name and addresses, while sharing.
+    local_section: gtk::Box,
+    local: gtk::Box,
+    local_footer: gtk::Label,
     // Paired devices
     devices: gtk::Box,
     own_identity: gtk::Label,
@@ -79,6 +83,8 @@ struct Ui {
 
 thread_local! {
     static UI: RefCell<Option<Ui>> = const { RefCell::new(None) };
+    /// The desktop's inhibit cookie while a session keeps this computer awake (0: refused).
+    static KEEP_AWAKE: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
     /// "What's new" waiting for the window (Annex started in the tray).
     static WHATS_NEW: RefCell<Vec<Release>> = const { RefCell::new(Vec::new()) };
 }
@@ -221,6 +227,7 @@ pub fn apply(app: &gtk::Application, model: &Shared) {
         for c in changes {
             match c {
                 Change::Render => {
+                    keep_awake(app, model);
                     render(model);
                     crate::tray::refresh(&model.borrow());
                 }
@@ -249,6 +256,38 @@ pub fn apply(app: &gtk::Application, model: &Shared) {
             }
         }
     }
+}
+
+/// Held while a session runs (viewing, or this computer shown to someone), so neither screen
+/// sleeps: the viewer gets no local input, and the host's screen is what the viewer watches.
+fn keep_awake(app: &gtk::Application, model: &Shared) {
+    let Ok(m) = model.try_borrow() else { return };
+    let active = m.viewer.is_some() || !m.host_sessions.is_empty();
+    drop(m);
+    KEEP_AWAKE.with(|k| match (active, k.get()) {
+        (true, None) => {
+            let cookie = app.inhibit(
+                None::<&gtk::Window>,
+                gtk::ApplicationInhibitFlags::IDLE | gtk::ApplicationInhibitFlags::SUSPEND,
+                Some("An Annex session is running"),
+            );
+            if cookie == 0 {
+                tracing::warn!(target: "annex::session", "session: couldn't keep this computer awake (the desktop refused)");
+            } else {
+                tracing::info!(target: "annex::session", cookie, "session: keeping this computer awake while the session runs");
+            }
+            // Held even when refused, so it isn't asked again on every redraw.
+            k.set(Some(cookie));
+        }
+        (false, Some(cookie)) => {
+            if cookie != 0 {
+                app.uninhibit(cookie);
+            }
+            tracing::info!(target: "annex::session", "session: no session; this computer may sleep again");
+            k.set(None);
+        }
+        _ => {}
+    });
 }
 
 fn with_ui<R>(f: impl FnOnce(&mut Ui) -> R) -> Option<R> {
@@ -484,6 +523,38 @@ fn open_uri(uri: &str) {
     }
 }
 
+/// "Copy", which puts `text` on the clipboard and says "Copied". `what` is for the log (never the
+/// text itself: it may be a code).
+fn copy_button(text: &str, what: &'static str) -> gtk::Button {
+    let b = gtk::Button::with_label("Copy");
+    let text = text.to_string();
+    b.connect_clicked(move |b| {
+        tracing::info!(target: "annex::ui", "ui: Copy pressed ({what})");
+        match gtk::gdk::Display::default() {
+            Some(d) => {
+                d.clipboard().set_text(&text);
+                b.set_label("Copied");
+            }
+            None => tracing::warn!(target: "annex::ui", "ui: no display to copy to"),
+        }
+    });
+    b
+}
+
+/// "Works for m:ss" until `expires`, then "Expired.".
+fn code_time_left(expires: std::time::Instant) -> String {
+    let left = expires.saturating_duration_since(std::time::Instant::now()).as_secs();
+    if left == 0 {
+        "Expired.".into()
+    } else {
+        format!(
+            "Type it on the other computer, in Nearby → Connect by address or code. Works for {}:{:02}.",
+            left / 60,
+            left % 60
+        )
+    }
+}
+
 fn link_button(text: &str, uri: &'static str) -> gtk::Button {
     let b = gtk::Button::with_label(text);
     b.connect_clicked(move |_| open_uri(uri));
@@ -669,10 +740,24 @@ fn build(app: &gtk::Application, model: &Shared) {
     let (sessions_section, sessions) = section(Some("Connected now"), None);
     sessions_section.set_visible(false);
     share.append(&sessions_section);
-    let (code_section, code_group) = section(Some("Over the internet"), None);
+    let (code_section, code_group) = section(
+        Some("Over the internet"),
+        Some(
+            "The server only introduces the two computers. The screen goes straight between them, \
+             encrypted, or through a relay when a network blocks that.",
+        ),
+    );
     let code = cell(8);
     add_row(&code_group, &code);
     share.append(&code_section);
+    let (local_section, local) = section(Some("On the same network"), None);
+    let local_footer = label("", "footnote");
+    local_footer.set_margin_start(4);
+    local_footer.set_selectable(true);
+    local_footer.set_visible(false);
+    local_section.append(&local_footer);
+    local_section.set_visible(false);
+    share.append(&local_section);
     {
         let (app, model) = (app.clone(), model.clone());
         share_switch.connect_state_set(move |_, on| {
@@ -765,6 +850,9 @@ fn build(app: &gtk::Application, model: &Shared) {
             sessions_section,
             sessions,
             code,
+            local_section,
+            local,
+            local_footer,
             devices,
             own_identity,
             about_details: about.details,
@@ -1365,6 +1453,7 @@ fn about_page(app: &gtk::Application, model: &Shared) -> About {
         s.beta_updates,
         Box::new(|m, on| {
             m.settings.beta_updates = on;
+            m.settings.beta_updates_chosen = true;
             m.update_dismissed = None;
             m.check_for_updates();
         }),
@@ -1744,6 +1833,8 @@ fn render_share(ui: &mut Ui, m: &Model, model: &Shared) {
         }
     }
 
+    render_local(ui, m);
+
     let key = format!("{:?}{}", m.internet, m.is_hosting());
     if changed(ui, "code", key) {
         clear(&ui.code);
@@ -1775,12 +1866,34 @@ fn render_share(ui: &mut Ui, m: &Model, model: &Shared) {
                 r.append(&label("Getting a code…", "dim"));
                 ui.code.append(&r);
             }
-            Some(InternetShare::Code { code, .. }) => {
+            Some(InternetShare::Code { code, expires }) => {
+                let r = hbox(16);
+                let text = vbox(6);
+                text.set_hexpand(true);
                 let c = label(code, "code");
                 c.set_selectable(true);
-                ui.code.append(&c);
-                ui.code.append(&label("Type it on the other computer, in Nearby → Connect by address or code.", "dim"));
-                ui.code.append(&button("Stop", |m| m.stop_code()));
+                text.append(&c);
+                let left = label(&code_time_left(*expires), "dim");
+                text.append(&left);
+                r.append(&text);
+                let buttons = vbox(8);
+                buttons.set_valign(gtk::Align::Center);
+                buttons.append(&copy_button(code, "the code"));
+                let stop = button("Stop", |m| m.stop_code());
+                stop.set_halign(gtk::Align::Fill);
+                stop.add_css_class("destructive-action");
+                buttons.append(&stop);
+                r.append(&buttons);
+                ui.code.append(&r);
+                // The countdown, each second, until the cell is replaced.
+                let (weak, expires) = (left.downgrade(), *expires);
+                glib::timeout_add_local(std::time::Duration::from_secs(1), move || {
+                    let Some(left) = weak.upgrade() else { return glib::ControlFlow::Break };
+                    let text = code_time_left(expires);
+                    let expired = text == "Expired.";
+                    left.set_text(&text);
+                    if expired { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+                });
             }
             Some(InternetShare::Joining(name)) => {
                 ui.code.append(&label(&format!("{} is connecting…", m.label(name)), ""))
@@ -1802,6 +1915,58 @@ fn render_share(ui: &mut Ui, m: &Model, model: &Shared) {
                 ui.code.append(&button("Share with a New Code", |m| m.share_code()));
             }
         }
+    }
+}
+
+/// While sharing: pick this computer's name over there, or type one of its addresses.
+fn render_local(ui: &mut Ui, m: &Model) {
+    let hosting = m.is_hosting();
+    ui.local_section.set_visible(hosting);
+    let identity = format!("Identity code: {}", m.fingerprint_display());
+    ui.local_footer.set_visible(hosting && m.settings.show_technical_details);
+    ui.local_footer.set_text(&identity);
+    if !hosting {
+        ui.last.remove("local");
+        return;
+    }
+    let addresses = crate::model::local_addresses();
+    let port = m.host_port.unwrap_or(annex_session::DEFAULT_PORT);
+    let name = m.device_name();
+    let key = format!("{addresses:?}{port}{name}");
+    if !changed(ui, "local", key) {
+        return;
+    }
+    clear(&ui.local);
+    add_row(
+        &ui.local,
+        &row(
+            &format!("Pick “{name}” in Annex on the other computer."),
+            Some("The first time, type the PIN this computer shows. Not listed? Connect by one of these addresses."),
+        ),
+    );
+    if addresses.is_empty() {
+        add_row(
+            &ui.local,
+            &row("This computer isn't on a network.", Some("Connect it to Wi-Fi, Ethernet or a cable.")),
+        );
+    }
+    for a in &addresses {
+        let text = if port == annex_session::DEFAULT_PORT { a.ip.to_string() } else { format!("{}:{port}", a.ip) };
+        let r = hbox(10);
+        r.add_css_class("row");
+        let ip = plain(&text, "mono");
+        ip.add_css_class("row-title");
+        ip.set_selectable(true);
+        ip.set_valign(gtk::Align::Center);
+        r.append(&ip);
+        let kind = plain(a.link.label(), "subtitle");
+        kind.set_valign(gtk::Align::Center);
+        r.append(&kind);
+        r.append(&spacer());
+        let copy = copy_button(&text, "an address");
+        copy.set_valign(gtk::Align::Center);
+        r.append(&copy);
+        add_row(&ui.local, &r);
     }
 }
 
