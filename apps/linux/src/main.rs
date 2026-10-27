@@ -2,6 +2,7 @@
 //! display. GTK 4 for the window, GStreamer for video, the shared Rust core for the rest
 //! (docs/LINUX.md).
 
+mod clipboard;
 mod desktop;
 mod encode;
 mod extend;
@@ -145,6 +146,8 @@ fn start(app: &gtk::Application, opts: Opts) {
     app.add_action(&quit_action);
     app.set_accels_for_action("app.quit", &["<Control>q"]);
 
+    let share_clipboard = model.borrow().settings.share_clipboard;
+    model.borrow_mut().set_clipboard_sharing(share_clipboard);
     if opts.headless && !model.borrow().settings.headless {
         let mut m = model.borrow_mut();
         m.settings.headless = true;

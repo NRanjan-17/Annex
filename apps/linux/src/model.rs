@@ -29,6 +29,11 @@ pub enum Msg {
     Host(Event),
     /// The desktop's permission to share the screen, to skip its dialog next time.
     ScreenToken(String),
+    /// Something was copied on this computer.
+    Copied {
+        mime: String,
+        data: Vec<u8>,
+    },
     /// The sharing pipeline stopped by itself (the screen-sharing permission was refused, the
     /// encoder failed, …).
     HostFailed(String),
@@ -159,6 +164,12 @@ pub struct Model {
     pub host_sessions: Vec<HostSession>,
     pub internet: Option<InternetShare>,
 
+    clipboard: Option<crate::clipboard::Clipboard>,
+    /// Viewer: the video window takes this computer's keyboard.
+    pub viewer_focused: bool,
+    /// Viewer: copied while the video window wasn't in front; sent once it is.
+    clipboard_for_host: Option<(String, Vec<u8>)>,
+
     tx: async_channel::Sender<Msg>,
     /// What the UI should do once it lets go of the model (see [`Model::take_changes`]).
     changes: Vec<Change>,
@@ -187,6 +198,7 @@ impl Model {
             }
         };
         core.set_headless(settings.headless);
+        core.set_downloads(settings.receive_files.then(downloads_dir));
         let model = Rc::new(RefCell::new(Model {
             rt,
             core,
@@ -212,6 +224,9 @@ impl Model {
             host_error: None,
             host_sessions: Vec::new(),
             internet: None,
+            clipboard: None,
+            viewer_focused: false,
+            clipboard_for_host: None,
             tx,
             changes: Vec::new(),
         }));
@@ -542,6 +557,8 @@ impl Model {
         self.viewer_status = None;
         self.viewer_extends = None;
         self.controlling = false;
+        self.viewer_focused = false;
+        self.clipboard_for_host = None;
         self.latency = None;
         self.stream_size = None;
         self.emit(Change::ViewerClose);
@@ -611,6 +628,14 @@ impl Model {
                 };
                 self.disconnect();
                 self.viewer_status = status;
+            }
+            Event::ClipboardReceived { mime, data, .. } => {
+                self.clipboard_received(&mime, &data);
+                return;
+            }
+            Event::TransferEnded { id, incoming, ok, error, .. } => {
+                tracing::info!(id, incoming, ok, error, "transfer ended");
+                return;
             }
             Event::Error { message } => tracing::warn!("viewer: {message}"),
             _ => {}
@@ -737,6 +762,14 @@ impl Model {
                     (r, _) => Some(InternetShare::Ended(Some(friendly_internet_error(r)))),
                 };
             }
+            Event::ClipboardReceived { mime, data, .. } => {
+                self.clipboard_received(&mime, &data);
+                return;
+            }
+            Event::TransferEnded { id, incoming, ok, error, .. } => {
+                tracing::info!(id, incoming, ok, error, "transfer ended");
+                return;
+            }
             Event::Error { message } => {
                 tracing::warn!("host: {message}");
                 self.host_error = Some(message);
@@ -767,11 +800,65 @@ impl Model {
                 self.settings.screen_token = Some(t);
                 self.settings.save();
             }
+            Msg::Copied { mime, data } => self.copied(mime, data),
             Msg::HostFailed(why) => {
                 self.set_hosting(false);
                 self.host_error = Some(why);
                 self.render();
             }
+        }
+    }
+
+    // ---- Clipboard and files ------------------------------------------------------------
+
+    pub fn set_clipboard_sharing(&mut self, on: bool) {
+        if !on {
+            self.clipboard = None;
+            self.clipboard_for_host = None;
+        } else if self.clipboard.is_none() {
+            self.clipboard = crate::clipboard::Clipboard::start(self.tx.clone());
+        }
+    }
+
+    pub fn set_receive_files(&self, on: bool) {
+        self.core.set_downloads(on.then(downloads_dir));
+    }
+
+    /// Copied here: to the host this computer controls (once its window is in front, so what's
+    /// copied in other apps meanwhile stays here unless it's still on the clipboard), and to the
+    /// viewers controlling this computer.
+    fn copied(&mut self, mime: String, data: Vec<u8>) {
+        if self.clipboard.is_none() {
+            return;
+        }
+        if let Some(h) = &self.host {
+            for s in self.host_sessions.iter().filter(|s| s.input) {
+                h.send_clipboard(s.id, &mime, data.clone());
+            }
+        }
+        if let Some(v) = self.viewer.as_ref().filter(|_| self.controlling) {
+            if self.viewer_focused {
+                v.handle.send_clipboard(&mime, data);
+            } else {
+                self.clipboard_for_host = Some((mime, data));
+            }
+        }
+    }
+
+    /// The video window came to the front.
+    pub fn viewer_focus(&mut self, focused: bool) {
+        self.viewer_focused = focused;
+        if focused
+            && self.controlling
+            && let (Some(v), Some((mime, data))) = (&self.viewer, self.clipboard_for_host.take())
+        {
+            v.handle.send_clipboard(&mime, data);
+        }
+    }
+
+    fn clipboard_received(&self, mime: &str, data: &[u8]) {
+        if let Some(c) = &self.clipboard {
+            c.apply(mime, data);
         }
     }
 
@@ -850,6 +937,12 @@ fn friendly_internet_error(r: &str) -> String {
     } else {
         format!("Sharing with a code stopped: {r}")
     }
+}
+
+/// Where files from the other computer go.
+fn downloads_dir() -> std::path::PathBuf {
+    gtk::glib::user_special_dir(gtk::glib::UserDirectory::Downloads)
+        .unwrap_or_else(|| gtk::glib::home_dir().join("Downloads"))
 }
 
 #[cfg(test)]

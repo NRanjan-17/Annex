@@ -409,6 +409,24 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         Box::new(|m, on| m.settings.use_mouse_and_keyboard = on),
     );
     toggle(&b, "Open in full screen", s.open_full_screen, Box::new(|m, on| m.settings.open_full_screen = on));
+    toggle(
+        &b,
+        "Share the clipboard",
+        s.share_clipboard,
+        Box::new(|m, on| {
+            m.settings.share_clipboard = on;
+            m.set_clipboard_sharing(on);
+        }),
+    );
+    toggle(
+        &b,
+        "Receive files into Downloads",
+        s.receive_files,
+        Box::new(|m, on| {
+            m.settings.receive_files = on;
+            m.set_receive_files(on);
+        }),
+    );
     let row = hbox(12);
     row.append(&label("Picture", ""));
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);

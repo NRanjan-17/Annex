@@ -24,6 +24,10 @@ pub struct Settings {
     pub use_mouse_and_keyboard: bool,
     pub open_full_screen: bool,
     pub extend_by_default: bool,
+    /// Copy on one computer, paste on the other, while one controls the other.
+    pub share_clipboard: bool,
+    /// Take files the other computer sends, into Downloads.
+    pub receive_files: bool,
     /// Sharing: use the graphics chip's video encoder when there is one.
     pub prefer_hardware_encoder: bool,
     pub show_technical_details: bool,
@@ -49,6 +53,8 @@ impl Default for Settings {
             use_mouse_and_keyboard: true,
             open_full_screen: false,
             extend_by_default: false,
+            share_clipboard: true,
+            receive_files: true,
             prefer_hardware_encoder: true,
             show_technical_details: false,
             check_for_updates: true,
