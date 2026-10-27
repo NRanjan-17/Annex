@@ -676,6 +676,7 @@ async fn run_session(
         link: link.kind,
         input,
         pointer_deltas: true,
+        peer_os: crate::conn::peer_os(&peer),
     });
     shared.request_keyframe(&slot);
     if req.input && !input {

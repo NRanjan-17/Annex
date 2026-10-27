@@ -102,9 +102,14 @@ pub(crate) fn hello(core: &crate::Core, roles: Vec<annex_proto::Role>, knows_pee
         device_id: core.fingerprint().to_string(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         roles,
-        caps: caps.iter().map(|c| c.to_string()).collect(),
+        caps: caps.iter().map(|c| c.to_string()).chain([format!("os/{}", std::env::consts::OS)]).collect(),
         knows_peer,
     })
+}
+
+/// The peer's operating system ("macos", "windows", "linux"), from its `os/…` cap.
+pub(crate) fn peer_os(hello: &annex_proto::Hello) -> Option<String> {
+    hello.caps.iter().find_map(|c| c.strip_prefix("os/")).map(str::to_string)
 }
 
 /// Validates the peer's Hello against the TLS-authenticated fingerprint.

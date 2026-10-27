@@ -88,6 +88,9 @@ pub enum Event {
         /// The host understands pointer movement ([`annex_proto::InputEvent::MouseDelta`],
         /// protocol 1.2), so the viewer may send that instead of positions.
         pointer_deltas: bool,
+        /// The other computer's system ("macos", "windows", "linux"); absent from older versions.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        peer_os: Option<String>,
     },
     /// Input was allowed or revoked during a session (both sides).
     InputAllowed {

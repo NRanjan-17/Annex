@@ -334,6 +334,7 @@ async fn run(
         link,
         input,
         pointer_deltas,
+        peer_os: crate::conn::peer_os(&peer),
     });
     if let Some(conn) = &quic
         && peer.caps.iter().any(|c| c == crate::transfer::CAP)
