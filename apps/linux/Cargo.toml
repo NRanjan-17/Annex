@@ -25,6 +25,8 @@ futures-util = { version = "0.3", default-features = false }
 libc = "0.2"
 # GTK 4.6 and GStreamer 1.20 are the oldest supported (Ubuntu 22.04, JetPack 6, Debian 12, RHEL 9).
 gtk = { package = "gtk4", version = "0.10", features = ["v4_6"] }
+# X11: the drop island's window (gtk4-x11 ships with GTK 4 itself).
+gdk4-x11 = "0.10"
 gst = { package = "gstreamer", version = "0.24", features = ["v1_20"] }
 gst-app = { package = "gstreamer-app", version = "0.24", features = ["v1_20"] }
 gst-video = { package = "gstreamer-video", version = "0.24", features = ["v1_20"] }
@@ -41,7 +43,7 @@ wayland-client = "0.31"
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 # X11: XTest for the mouse and keyboard.
-x11rb = { version = "0.13", features = ["xtest"] }
+x11rb = { version = "0.13", features = ["xtest", "xfixes", "shape"] }
 xkbcommon = { version = "0.8", default-features = false }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 

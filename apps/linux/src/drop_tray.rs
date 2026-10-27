@@ -1,10 +1,11 @@
 //! The drop island: a black shape hanging from the top centre of the screen, like the Mac's notch.
 //! While another computer is connected, dragging files to the top edge pops it open, and dropping
-//! sends them; files going and coming show in it. Needs the layer shell ([`crate::layer`]); without
-//! it, files are dropped on the viewer window and arrivals show as notifications.
+//! sends them; files going and coming show in it. Needs the layer shell ([`crate::layer`]) or X11
+//! ([`crate::x11_drag`]); without them (GNOME), files are dropped on the viewer window and
+//! arrivals show as notifications.
 //!
-//! Wayland doesn't let an app watch the pointer, so a 3-pixel strip at the top centre waits for
-//! the drag instead of the island glowing as soon as one starts.
+//! Wayland doesn't let an app watch the pointer, so there a 3-pixel strip at the top centre waits
+//! for the drag; on X11 the island glows as soon as files are picked up.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ use crate::model::Msg;
 
 const CSS: &str = "
 window.annex-island-window { background: transparent; }
+.annex-island-window.solid .annex-island { margin: 0; box-shadow: none; }
 .annex-island {
   background: black; border-radius: 0 0 20px 20px; border: 0 solid transparent;
   min-width: 300px; min-height: 3px; margin: 0; opacity: 0.01;
@@ -42,7 +44,7 @@ window.annex-island-window { background: transparent; }
   75% { border-color: #ffffff #d6d6d6 #ffffff #9e9e9e; }
   100% { border-color: #9e9e9e #ffffff #d6d6d6 #ffffff; }
 }
-.annex-island label { color: white; }
+.annex-island label, .annex-island image { color: white; }
 .annex-island .title { font-weight: 600; }
 .annex-island .dim { color: rgba(255, 255, 255, 0.6); font-size: 0.9em; }
 .annex-island .badge { font-weight: 700; min-width: 28px; }
@@ -53,6 +55,10 @@ window.annex-island-window { background: transparent; }
   border-radius: 12px; padding: 2px 12px; min-height: 0; }
 .annex-island button:hover { background: rgba(255, 255, 255, 0.25); }
 ";
+
+/// X11: the window, big enough for the island at its largest (four transfers) and its glow.
+const WINDOW_WIDTH: i32 = 440;
+const WINDOW_HEIGHT: i32 = 300;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Phase {
@@ -91,14 +97,20 @@ struct Inner {
     phase: std::cell::Cell<Phase>,
     state: RefCell<State>,
     tx: async_channel::Sender<Msg>,
+    /// X11 only: places the window, since there's no layer shell.
+    placer: Option<crate::x11_drag::Placer>,
 }
 
 pub struct DropTray(Rc<Inner>);
 
 impl DropTray {
-    /// None where the layer shell isn't available.
+    /// None where neither the layer shell nor X11 is available.
     pub fn new(tx: async_channel::Sender<Msg>) -> Option<DropTray> {
-        let shell = crate::layer::get()?;
+        let shell = crate::layer::get();
+        let x11 = shell.is_none() && crate::desktop::session() == crate::desktop::Session::X11;
+        if shell.is_none() && !x11 {
+            return None;
+        }
         let display = gdk::Display::default()?;
         let css = gtk::CssProvider::new();
         css.load_from_data(CSS);
@@ -106,7 +118,16 @@ impl DropTray {
 
         let window = gtk::Window::builder().decorated(false).resizable(false).title("Annex").build();
         window.add_css_class("annex-island-window");
-        shell.top_centre(&window);
+        if !display.is_composited() {
+            window.add_css_class("solid");
+        }
+        let placer = match shell {
+            Some(shell) => {
+                shell.top_centre(&window);
+                None
+            }
+            None => Some(crate::x11_drag::Placer::new(&window)?),
+        };
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.set_halign(gtk::Align::Center);
         let island = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -119,6 +140,10 @@ impl DropTray {
         content.set_margin_end(18);
         island.append(&content);
         root.append(&island);
+        if placer.is_some() {
+            // X11: a window of fixed size, cut to the island's shape as it grows and shrinks.
+            root.set_size_request(WINDOW_WIDTH, WINDOW_HEIGHT);
+        }
         window.set_child(Some(&root));
 
         let inner = Rc::new(Inner {
@@ -128,15 +153,31 @@ impl DropTray {
             phase: std::cell::Cell::new(Phase::Hidden),
             state: RefCell::new(State::default()),
             tx,
+            placer,
         });
+        if inner.placer.is_some() {
+            let i = inner.clone();
+            inner.island.add_tick_callback(move |island, _| {
+                i.reshape(island);
+                glib::ControlFlow::Continue
+            });
+            let (drags, rx) = async_channel::unbounded();
+            crate::x11_drag::watch(drags);
+            let i = inner.clone();
+            crate::x11_drag::on_drag(rx, move |d| i.dragged(d));
+        }
 
         let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
         {
             let i = inner.clone();
             drop.connect_enter(move |_, _, _| {
-                if i.phase.get() == Phase::Hidden {
-                    i.set_phase(Phase::Glowing);
-                    i.open_later(300);
+                match i.phase.get() {
+                    Phase::Hidden => {
+                        i.set_phase(Phase::Glowing);
+                        i.open_later(300);
+                    }
+                    Phase::Glowing => i.set_phase(Phase::Open),
+                    _ => {}
                 }
                 gdk::DragAction::COPY
             });
@@ -144,7 +185,8 @@ impl DropTray {
         {
             let i = inner.clone();
             drop.connect_leave(move |_| {
-                if matches!(i.phase.get(), Phase::Glowing | Phase::Open) {
+                // On X11 the drag watcher decides.
+                if i.placer.is_none() && matches!(i.phase.get(), Phase::Glowing | Phase::Open) {
                     i.hide_later(700);
                 }
             });
@@ -271,11 +313,67 @@ impl Inner {
         self.update_visible();
     }
 
-    /// The strip stays while files can be sent; the island shows while it has something to say.
+    /// The strip stays while files can be sent (Wayland only; X11 sees drags without it); the
+    /// island shows while it has something to say.
     fn update_visible(&self) {
-        let show = self.state.borrow().can_send || self.phase.get() != Phase::Hidden;
+        let strip = self.placer.is_none() && self.state.borrow().can_send;
+        let show = strip || self.phase.get() != Phase::Hidden;
         if show != self.window.is_visible() {
             self.window.set_visible(show);
+            if show {
+                self.place();
+            }
+        }
+    }
+
+    /// X11: only the island (and its glow, where windows can be see-through) shows and takes clicks.
+    fn reshape(&self, island: &gtk::Box) {
+        let (Some(p), Some(b)) = (&self.placer, island.compute_bounds(&self.window)) else { return };
+        let pad = if self.window.has_css_class("solid") { 0.0 } else { 26.0 };
+        p.shape(
+            &self.window,
+            (b.x() - pad) as i32,
+            b.y() as i32,
+            (b.width() + 2.0 * pad) as i32,
+            (b.height() + pad) as i32,
+        );
+    }
+
+    fn place(&self) {
+        if let Some(p) = &self.placer {
+            p.place(&self.window, WINDOW_WIDTH);
+        }
+    }
+
+    /// X11: glow when files are picked up, open near the top, go when they're let go.
+    fn dragged(self: &Rc<Self>, d: crate::x11_drag::Drag) {
+        use crate::x11_drag::{Drag, Placer};
+        match d {
+            Drag::Started => {
+                if self.state.borrow().can_send && self.phase.get() == Phase::Hidden {
+                    self.set_phase(Phase::Glowing);
+                }
+            }
+            Drag::Moved(x, y) => {
+                let phase = self.phase.get();
+                if !matches!(phase, Phase::Glowing | Phase::Open) {
+                    return;
+                }
+                let Some((cx, cy)) = Placer::top_centre(&self.window) else { return };
+                let scale = f64::from(self.window.scale_factor());
+                let near = f64::from(x - cx).hypot(f64::from(y - cy)) < 160.0 * scale;
+                if near && phase == Phase::Glowing {
+                    self.set_phase(Phase::Open);
+                } else if !near && phase == Phase::Open {
+                    self.set_phase(Phase::Glowing);
+                }
+            }
+            // A drop on the island arrives just after the button goes up.
+            Drag::Ended => {
+                if matches!(self.phase.get(), Phase::Glowing | Phase::Open) {
+                    self.hide_later(350);
+                }
+            }
         }
     }
 

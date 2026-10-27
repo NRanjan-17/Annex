@@ -20,6 +20,7 @@ mod tray;
 mod ui;
 mod viewer;
 mod wl;
+mod x11_drag;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
