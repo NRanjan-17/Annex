@@ -70,6 +70,6 @@ mod tests {
         assert!(since(Some(&newest), &newest).is_empty(), "not twice");
         assert_eq!(since(Some("0.3.0"), &newest)[0].version, newest);
         assert_eq!(since(Some("v0.3.0"), &newest)[0].version, newest);
-        assert!(since(Some("0.3.0"), "0.3.1").iter().all(|r| r.version != newest), "not a later version's notes");
+        assert!(since(Some("0.2.0"), "0.3.0").iter().all(|r| r.version != newest), "not a later version's notes");
     }
 }
