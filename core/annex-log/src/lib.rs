@@ -129,7 +129,14 @@ pub fn save_recording(why: &str) -> Option<PathBuf> {
     let path = dir.join(format!("annex-{}-{why}.log", file_time(SystemTime::now())));
     let lines: Vec<String> = lock(&RECORDER).iter().cloned().collect();
     let mut f = open_private(&path, false)?;
-    let _ = writeln!(f, "Annex {} on {} ({}): the last {} log lines.\n", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH, lines.len());
+    let _ = writeln!(
+        f,
+        "Annex {} on {} ({}): the last {} log lines.\n",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        lines.len()
+    );
     for line in &lines {
         let _ = f.write_all(line.as_bytes());
     }

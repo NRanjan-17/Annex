@@ -79,6 +79,7 @@ async fn share(
     };
     let addrs = host.internet_candidates(resolve_stun(&servers.stun).await?).await?;
     let waiting = rendezvous::host(&servers.rendezvous, name, &addrs, own_relay.is_some()).await?;
+    tracing::info!(addrs = ?addrs, own_relay = own_relay.is_some(), "code ready; waiting for a viewer");
     events(Event::InternetCode { code: waiting.code(), expires_in: waiting.expires_in().as_secs() as u32 });
     let mut matched = waiting.wait().await?;
     let peer = matched.peer.clone();
@@ -87,7 +88,11 @@ async fn share(
     host.punch(peer.addrs.clone());
 
     // The viewer asks for the relay only if the direct connection fails.
-    let Some(login) = matched.relay_request().await? else { return Ok("used") };
+    let Some(login) = matched.relay_request().await? else {
+        tracing::debug!("code used: the viewer didn't ask for the relay");
+        return Ok("used");
+    };
+    tracing::info!(our_relay = login.is_some(), own_relay = own_relay.is_some(), "the viewer asked for the relay");
     let relay = match (own_relay, login) {
         (Some(own), _) => Some((own, false)),
         (None, Some(login)) => login.server().await.ok().map(|s| (s, true)),
@@ -106,6 +111,7 @@ async fn share(
         }
         None => None,
     };
+    tracing::info!(relayed = ?relayed, "answered the relay request");
     events(Event::InternetRelay { relayed: relayed.is_some(), limited: relay.is_some_and(|(_, l)| l) });
     matched.answer_relay(relayed).await?;
     Ok("used")

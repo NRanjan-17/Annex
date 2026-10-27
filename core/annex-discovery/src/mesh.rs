@@ -141,6 +141,9 @@ pub fn probe(ips: &[IpAddr], port: u16, wait: Duration) -> Vec<(IpAddr, Presence
 pub fn mesh_peers() -> Vec<IpAddr> {
     let mut out = Vec::new();
     for (names, args, parse) in SOURCES {
+        if !client_running(names[0]) {
+            continue;
+        }
         let Some(json) = names.iter().find_map(|n| run(n, args)) else { continue };
         out.extend(parse(&json));
     }
@@ -217,6 +220,24 @@ pub fn parse_netbird(json: &str) -> Vec<IpAddr> {
 fn maybe_desktop(os: &str) -> bool {
     let os = os.to_ascii_lowercase();
     os.is_empty() || os == "macos" || os == "windows" || os == "linux"
+}
+
+/// Whether asking `client` for its status leaves the computer as it was. On a Mac, Tailscale's
+/// command (`/usr/local/bin/tailscale` too) is the Tailscale app itself: run while the app isn't
+/// running, it opens the app. So ask only while the app (or Homebrew's `tailscaled`) runs.
+fn client_running(client: &str) -> bool {
+    if !cfg!(target_os = "macos") || client != "tailscale" {
+        return true;
+    }
+    ["Tailscale", "tailscaled"].iter().any(|name| {
+        Command::new("pgrep")
+            .args(["-xq", name])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
 }
 
 /// Runs a mesh client's status command, if it's installed, for at most 3 seconds.
