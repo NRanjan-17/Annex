@@ -215,6 +215,30 @@ fn null_and_bad_arguments() {
     }
 }
 
+#[test]
+fn mirror_picture_through_c_abi() {
+    let (mut w, mut h, mut f) = (0u32, 0u32, 0u32);
+    unsafe {
+        // About 1 Mbit/s for 1440p60: the smaller picture.
+        assert!(annex_mirror_picture(1_000_000, false, 2560, 1440, 60, &mut w, &mut h, &mut f));
+        assert_eq!((w, h, f), (1280, 720, 30));
+        // Recovered: the full picture.
+        assert!(!annex_mirror_picture(8_000_000, true, 2560, 1440, 60, &mut w, &mut h, &mut f));
+        assert_eq!((w, h, f), (2560, 1440, 60));
+        // Null out parameters are fine.
+        assert!(annex_mirror_picture(
+            1_000_000,
+            true,
+            2560,
+            1440,
+            60,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut()
+        ));
+    }
+}
+
 /// Every exported function must be declared in include/annex.h (and vice versa).
 #[test]
 fn header_declares_every_export() {

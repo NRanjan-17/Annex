@@ -134,6 +134,13 @@ int32_t annex_host_submit_session_frame(const AnnexHost *host, uint64_t session_
 /* Changes one session's stream (e.g. its virtual display's resolution changed). */
 int32_t annex_host_set_session_stream(const AnnexHost *host, uint64_t session_id, const char *codec,
                                       uint32_t width, uint32_t height, uint32_t fps);
+/* Adaptive bitrate's smaller picture, for a mirror host. width x height at fps is the full
+ * stream, effective_bps the encoder's target now (normal bitrate x the bitrate_hint scale),
+ * reduced whether it sends the smaller picture now. Writes the picture to encode (full or
+ * smaller: each side halved, at most 30 fps) to the non-null out parameters and returns whether
+ * it is the smaller one. Keep the bitrate as it is. */
+bool annex_mirror_picture(uint64_t effective_bps, bool reduced, uint32_t width, uint32_t height, uint32_t fps,
+                          uint32_t *out_width, uint32_t *out_height, uint32_t *out_fps);
 /* Ends one session; its viewer is told "host_ended_session". */
 void annex_host_end_session(const AnnexHost *host, uint64_t session_id);
 /* Clipboard and files (sessions where both sides run 0.4+ over QUIC). mime: "text/plain;charset=utf-8"

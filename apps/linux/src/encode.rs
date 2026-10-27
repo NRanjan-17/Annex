@@ -1,7 +1,7 @@
 //! Screen → H.264 with GStreamer. Annex ships no codec: it uses the encoders the system has,
 //! the graphics chip's first (docs/LINUX.md, "Video").
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gst::prelude::*;
 
@@ -100,6 +100,10 @@ pub struct Config {
     pub fps: u32,
     pub bitrate: u32,
     pub prefer_hardware: bool,
+    /// Encode at most this many frames a second (adaptive bitrate's smaller picture), for
+    /// sources that send as fast as the screen changes. A skipped last change still shows:
+    /// pipewiresrc repeats its last frame every half second (keepalive-time).
+    pub max_fps: Option<u32>,
 }
 
 /// A running capture → encode pipeline. Dropping it stops it.
@@ -148,6 +152,26 @@ impl Pipeline {
             .map_err(|_| "not a pipeline")?;
         let encoder = pipeline.by_name("enc").ok_or("no encoder")?;
         configure(&encoder, &kind, cfg.bitrate, fps);
+        if let Some(max) = cfg.max_fps
+            && let Some(pad) = encoder.static_pad("sink")
+        {
+            // A little under the frame time, so a screen at exactly twice the rate isn't cut to
+            // a third by timing jitter.
+            let gap = gst::ClockTime::from_nseconds(900_000_000 / u64::from(max.max(1)));
+            let last = Mutex::new(None::<gst::ClockTime>);
+            pad.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
+                let Some(pts) = info.buffer().and_then(|b| b.pts()) else { return gst::PadProbeReturn::Ok };
+                let mut last = last.lock().unwrap();
+                if let Some(l) = *last
+                    && pts >= l
+                    && pts < l.saturating_add(gap)
+                {
+                    return gst::PadProbeReturn::Drop;
+                }
+                *last = Some(pts);
+                gst::PadProbeReturn::Ok
+            });
+        }
         let sink = pipeline.by_name("out").ok_or("no appsink")?;
         let appsink = sink.clone().downcast::<gst_app::AppSink>().map_err(|_| "not an appsink")?;
 
@@ -195,6 +219,7 @@ impl Pipeline {
             w,
             h,
             fps,
+            max_fps = ?cfg.max_fps,
             bitrate = cfg.bitrate,
             "sharing: encoding"
         );

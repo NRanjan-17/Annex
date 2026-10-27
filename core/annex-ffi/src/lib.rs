@@ -880,6 +880,39 @@ pub unsafe extern "C" fn annex_host_set_session_stream(
     })
 }
 
+/// Adaptive bitrate's smaller picture, for a mirror host: `width`×`height` at `fps` is the full
+/// stream, `effective_bps` the encoder's target now and `reduced` whether it sends the smaller
+/// picture now. Writes the picture to encode (full or smaller) to the non-null out parameters and
+/// returns whether it is the smaller one. The bitrate stays as it is.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn annex_mirror_picture(
+    effective_bps: u64,
+    reduced: bool,
+    width: u32,
+    height: u32,
+    fps: u32,
+    out_width: *mut u32,
+    out_height: *mut u32,
+    out_fps: *mut u32,
+) -> bool {
+    let full = StreamConfig { codec: Codec::H264, width, height, fps };
+    let (smaller, picture) = annex_session::rate::mirror_picture(&full, effective_bps, reduced);
+    // SAFETY: the caller passes null or a writable u32 for each.
+    unsafe {
+        if let Some(w) = out_width.as_mut() {
+            *w = picture.width;
+        }
+        if let Some(h) = out_height.as_mut() {
+            *h = picture.height;
+        }
+        if let Some(f) = out_fps.as_mut() {
+            *f = picture.fps;
+        }
+    }
+    smaller
+}
+
 /// Ends one session (its viewer gets `host_ended_session`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn annex_host_end_session(host: *const AnnexHost, session_id: u64) {
@@ -1181,6 +1214,8 @@ mod win_host {
         mirror_sessions: Mutex<HashSet<u64>>,
         /// Latest adaptive-bitrate hint per mirror session; the shared encoder follows the lowest.
         mirror_scales: Mutex<HashMap<u64, u32>>,
+        /// The mirror pipeline sends adaptive bitrate's smaller picture (guarded with `mirror`).
+        mirror_reduced: Mutex<bool>,
         driver: Option<Arc<VirtualDisplayDriver>>,
         extends: Mutex<HashMap<u64, ExtendSession>>,
         injector: Mutex<Injector>,
@@ -1197,27 +1232,154 @@ mod win_host {
             self.host.get().and_then(|w| w.upgrade())
         }
 
-        fn start_mirror(self: &Arc<Self>) {
+        fn start_mirror(self: &Arc<Self>, session_id: u64) {
             let mut slot = self.mirror.lock().unwrap();
             if let Some(p) = slot.as_ref() {
-                // Another mirror viewer joined: one capture feeds everyone; just resync.
+                // Another mirror viewer joined: one capture feeds everyone; just resync. It was
+                // told the full size: tell it the smaller picture's if that's what goes out.
                 p.request_keyframe();
+                let reduced = *self.mirror_reduced.lock().unwrap();
+                if reduced && let Some(host) = self.host() {
+                    let (_, picture) = self.mirror_picture(self.lowest_mirror_scale(), true);
+                    host.set_session_stream(session_id, picture);
+                }
                 return;
             }
             // The last viewer may have left before this thread got here.
             if self.mirror_sessions.lock().unwrap().is_empty() {
                 return;
             }
-            let Some(host) = self.host.get().cloned() else { return };
+            // On a link that's already slow, start with the smaller picture.
+            let lowest = self.lowest_mirror_scale();
+            let (reduced, picture) = self.mirror_picture(lowest, false);
+            *self.mirror_reduced.lock().unwrap() = reduced;
+            if reduced {
+                self.log_picture(true, lowest, &picture);
+                self.announce_mirror_picture(&picture);
+            }
+            match self.start_mirror_pipeline(&picture, lowest) {
+                Ok(p) => *slot = Some(p),
+                Err(e) => tracing::error!("screen capture failed to start: {e}"),
+            }
+        }
+
+        /// The full mirror stream, as sessions start with it.
+        fn full_mirror_stream(&self) -> StreamConfig {
+            let c = &self.mirror_cfg;
+            StreamConfig { codec: Codec::H264, width: c.width, height: c.height, fps: c.fps }
+        }
+
+        fn lowest_mirror_scale(&self) -> u32 {
+            self.mirror_scales.lock().unwrap().values().copied().min().unwrap_or(100)
+        }
+
+        /// What the mirror pipeline should send at `scale` % of its normal bitrate, given whether
+        /// it sends the smaller picture now: (smaller, picture).
+        fn mirror_picture(&self, scale: u32, reduced: bool) -> (bool, StreamConfig) {
+            let bps = u64::from(self.mirror_cfg.bitrate) * u64::from(scale) / 100;
+            annex_session::rate::mirror_picture(&self.full_mirror_stream(), bps, reduced)
+        }
+
+        fn log_picture(&self, reduced: bool, scale: u32, picture: &StreamConfig) {
+            let bitrate = u64::from(self.mirror_cfg.bitrate) * u64::from(scale) / 100;
+            tracing::info!(
+                "sharing: smaller picture {} bitrate={bitrate} size={}x{} fps={}",
+                if reduced { "on" } else { "off" },
+                picture.width,
+                picture.height,
+                picture.fps
+            );
+        }
+
+        /// Tells every mirror viewer the picture's size (their decoders follow the keyframe by
+        /// themselves; this is for their stats and pointer).
+        fn announce_mirror_picture(&self, picture: &StreamConfig) {
+            let Some(host) = self.host() else { return };
+            for id in self.mirror_sessions.lock().unwrap().iter() {
+                host.set_session_stream(*id, picture.clone());
+            }
+        }
+
+        /// A mirror pipeline sending `picture` (the full stream or the smaller one) at the full
+        /// stream's bitrate, scaled to `scale` %.
+        fn start_mirror_pipeline(
+            &self,
+            picture: &StreamConfig,
+            scale: u32,
+        ) -> Result<HostPipeline, annex_media_win::MediaError> {
+            let host =
+                self.host.get().cloned().ok_or_else(|| annex_media_win::MediaError::Other("sharing stopped".into()))?;
             // Weak: the host owns this pipeline (via the event sink), not the other way round.
             let output = Arc::new(move |f: EncodedFrame| {
                 if let Some(h) = host.upgrade() {
                     h.submit_frame(&f.data, f.capture_us, f.keyframe);
                 }
             });
-            match HostPipeline::start(self.mirror_cfg.clone(), clock(), output) {
-                Ok(p) => *slot = Some(p),
-                Err(e) => tracing::error!("screen capture failed to start: {e}"),
+            let full = &self.mirror_cfg;
+            let cfg = HostPipelineConfig {
+                width: picture.width,
+                height: picture.height,
+                fps: picture.fps,
+                max_fps: (picture.fps < full.fps).then_some(picture.fps),
+                ..full.clone()
+            };
+            let p = HostPipeline::start(cfg, clock(), output)?;
+            if scale != 100 {
+                p.set_bitrate_scale(scale);
+            }
+            Ok(p)
+        }
+
+        /// The shared encoder's bitrate changed (a hint, or the slowest viewer left): switch to
+        /// the smaller picture or back if it crossed the line. The rebuild runs on its own thread
+        /// (capture setup touches COM/WinRT).
+        fn update_mirror_picture(self: &Arc<Self>) {
+            let reduced = *self.mirror_reduced.lock().unwrap();
+            let (want, _) = self.mirror_picture(self.lowest_mirror_scale(), reduced);
+            if want != reduced && self.mirror.lock().unwrap().is_some() {
+                let me = self.clone();
+                std::thread::spawn(move || me.resize_mirror());
+            }
+        }
+
+        fn resize_mirror(&self) {
+            let mut slot = self.mirror.lock().unwrap();
+            // Stopped meanwhile: the next capture starts at the right size by itself.
+            if slot.is_none() {
+                return;
+            }
+            let lowest = self.lowest_mirror_scale();
+            let (reduced, picture) = {
+                let mut now = self.mirror_reduced.lock().unwrap();
+                let (want, picture) = self.mirror_picture(lowest, *now);
+                // Another thread did it, or the bitrate went back.
+                if want == *now {
+                    return;
+                }
+                *now = want;
+                (want, picture)
+            };
+            self.log_picture(reduced, lowest, &picture);
+            // The old pipeline stops before capturing at the new size, as for Extend resizes.
+            slot.take();
+            match self.start_mirror_pipeline(&picture, lowest) {
+                Ok(p) => {
+                    *slot = Some(p);
+                    self.announce_mirror_picture(&picture);
+                }
+                Err(e) => {
+                    tracing::error!("screen capture failed to restart at {}x{}: {e}", picture.width, picture.height);
+                    // The full picture worked before: back to it.
+                    *self.mirror_reduced.lock().unwrap() = false;
+                    let full = self.full_mirror_stream();
+                    match self.start_mirror_pipeline(&full, lowest) {
+                        Ok(p) => {
+                            *slot = Some(p);
+                            self.announce_mirror_picture(&full);
+                        }
+                        Err(e) => tracing::error!("screen capture failed to start: {e}"),
+                    }
+                }
             }
         }
 
@@ -1319,6 +1481,7 @@ mod win_host {
                     bitrate: bitrate(w, h, hz),
                     prefer_hardware,
                     gpu,
+                    max_fps: None,
                 };
                 match HostPipeline::start(cfg, clock(), output) {
                     Ok(p) => {
@@ -1366,7 +1529,8 @@ mod win_host {
                     self.mirror_sessions.lock().unwrap().insert(*session_id);
                     // Capture setup touches COM/WinRT; keep it off the async runtime threads.
                     let me = self.clone();
-                    std::thread::spawn(move || me.start_mirror());
+                    let id = *session_id;
+                    std::thread::spawn(move || me.start_mirror(id));
                 }
                 Event::SessionStarted { session_id, mode: Mode::Extend, viewer_display, fingerprint, .. } => {
                     // Registered now, before SessionEnded can run end_extend.
@@ -1402,6 +1566,14 @@ mod win_host {
                         self.mirror_scales.lock().unwrap().remove(session_id);
                         if self.mirror_sessions.lock().unwrap().is_empty() {
                             self.mirror.lock().unwrap().take();
+                            *self.mirror_reduced.lock().unwrap() = false;
+                        } else {
+                            // The slowest viewer may have left: the encoder follows the next one.
+                            let lowest = self.lowest_mirror_scale();
+                            if let Some(p) = self.mirror.lock().unwrap().as_ref() {
+                                p.set_bitrate_scale(lowest);
+                            }
+                            self.update_mirror_picture();
                         }
                     } else {
                         let me = self.clone();
@@ -1426,6 +1598,7 @@ mod win_host {
                             if let Some(p) = self.mirror.lock().unwrap().as_ref() {
                                 p.set_bitrate_scale(lowest);
                             }
+                            self.update_mirror_picture();
                         }
                     }
                 }
@@ -1485,12 +1658,14 @@ mod win_host {
                 bitrate: bitrate(width, height, fps),
                 prefer_hardware,
                 gpu,
+                max_fps: None,
             },
             prefer_hardware,
             host: OnceLock::new(),
             mirror: Mutex::new(None),
             mirror_sessions: Mutex::new(HashSet::new()),
             mirror_scales: Mutex::new(HashMap::new()),
+            mirror_reduced: Mutex::new(false),
             extends: Mutex::new(HashMap::new()),
             driver,
             injector: Mutex::new(Injector::default()),

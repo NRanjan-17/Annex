@@ -82,6 +82,8 @@ struct State {
     mirror_sessions: Mutex<HashSet<u64>>,
     /// Latest adaptive-bitrate hint per mirror session; the shared encoder follows the lowest.
     mirror_scales: Mutex<HashMap<u64, u32>>,
+    /// The mirror capture sends adaptive bitrate's smaller picture (guarded with `mirror`).
+    mirror_reduced: Mutex<bool>,
     injector: Mutex<Option<Injector>>,
     extends: Mutex<HashMap<u64, ExtendSession>>,
 }
@@ -161,6 +163,7 @@ impl Host {
             mirror: Mutex::new(None),
             mirror_sessions: Mutex::new(HashSet::new()),
             mirror_scales: Mutex::new(HashMap::new()),
+            mirror_reduced: Mutex::new(false),
             injector: Mutex::new(None),
             extends: Mutex::new(HashMap::new()),
         });
@@ -359,7 +362,7 @@ impl State {
         })
     }
 
-    fn start_mirror(self: &Arc<Self>) {
+    fn start_mirror(self: &Arc<Self>, session_id: u64) {
         // The desktop may still be asking the user.
         let deadline = Instant::now() + Duration::from_secs(120);
         if self.screen.lock().unwrap().is_none() {
@@ -378,9 +381,15 @@ impl State {
         }
         let mut slot = self.mirror.lock().unwrap();
         if let Some(p) = slot.as_ref() {
-            // Another mirror viewer joined: one capture feeds everyone; just resync.
+            // Another mirror viewer joined: one capture feeds everyone; just resync. It was told
+            // the full size: tell it the smaller picture's if that's what goes out.
             tracing::info!(target: "annex::capture", "sharing: another viewer joined the running capture");
             p.pipeline().request_keyframe();
+            let reduced = *self.mirror_reduced.lock().unwrap();
+            if reduced && let Some(host) = self.host() {
+                let (_, picture) = self.mirror_picture(self.lowest_mirror_scale(), true);
+                host.set_session_stream(session_id, picture);
+            }
             return;
         }
         // The last viewer may have left before this thread got here.
@@ -388,18 +397,19 @@ impl State {
             tracing::debug!(target: "annex::capture", "sharing: the viewer left before the capture started");
             return;
         }
-        let StreamConfig { width, height, fps, .. } = self.stream;
-        let source = match self.screen.lock().unwrap().as_ref() {
-            Some(Screen::Portal(p)) => Source::Gst(p.source()),
-            Some(Screen::Gnome(g)) => Source::Gst(g.source(None)),
-            Some(Screen::Wlr { output }) => Source::Screencopy(output.clone()),
-            Some(Screen::X11) => {
-                Source::Gst(format!("ximagesrc use-damage=false show-pointer=true ! video/x-raw,framerate={fps}/1"))
-            }
-            None => return,
-        };
-        tracing::info!(target: "annex::capture", width, height, fps, "sharing: starting the capture");
-        match self.run(source, width, height, fps, self.output(None)) {
+        // Sharing stopped meanwhile.
+        if self.screen.lock().unwrap().is_none() {
+            return;
+        }
+        // On a link that's already slow, start with the smaller picture.
+        let lowest = self.lowest_mirror_scale();
+        let (reduced, picture) = self.mirror_picture(lowest, false);
+        *self.mirror_reduced.lock().unwrap() = reduced;
+        if reduced {
+            self.log_picture(true, lowest, &picture);
+            self.announce_mirror_picture(&picture);
+        }
+        match self.start_mirror_capture(&picture, lowest) {
             Ok(r) => *slot = Some(r),
             Err(e) => {
                 drop(slot);
@@ -408,16 +418,128 @@ impl State {
         }
     }
 
-    fn run(
-        &self,
-        source: Source,
-        width: u32,
-        height: u32,
-        fps: u32,
-        output: encode::Output,
-    ) -> Result<Running, String> {
+    /// The mirror capture, sending `picture` (the full stream or adaptive bitrate's smaller one)
+    /// at the full stream's bitrate, scaled to `scale` %.
+    fn start_mirror_capture(&self, picture: &StreamConfig, scale: u32) -> Result<Running, String> {
+        let StreamConfig { width, height, fps, .. } = *picture;
+        let source = match self.screen.lock().unwrap().as_ref() {
+            Some(Screen::Portal(p)) => Source::Gst(p.source()),
+            Some(Screen::Gnome(g)) => Source::Gst(g.source(None)),
+            Some(Screen::Wlr { output }) => Source::Screencopy(output.clone()),
+            Some(Screen::X11) => {
+                Source::Gst(format!("ximagesrc use-damage=false show-pointer=true ! video/x-raw,framerate={fps}/1"))
+            }
+            None => return Err("the screen isn't shared".into()),
+        };
+        tracing::info!(target: "annex::capture", width, height, fps, "sharing: starting the capture");
+        let full = &self.stream;
+        let shape = Shape {
+            width,
+            height,
+            fps,
+            bitrate: encode::bitrate(full.width, full.height, full.fps),
+            max_fps: (fps < full.fps).then_some(fps),
+        };
+        let r = self.run(source, shape, self.output(None))?;
+        if scale != 100 {
+            r.pipeline().set_bitrate_scale(scale);
+        }
+        Ok(r)
+    }
+
+    fn lowest_mirror_scale(&self) -> u32 {
+        self.mirror_scales.lock().unwrap().values().copied().min().unwrap_or(100)
+    }
+
+    /// What the mirror capture should send at `scale` % of its normal bitrate, given whether it
+    /// sends the smaller picture now: (smaller, picture).
+    fn mirror_picture(&self, scale: u32, reduced: bool) -> (bool, StreamConfig) {
+        let full = &self.stream;
+        let bps = u64::from(encode::bitrate(full.width, full.height, full.fps)) * u64::from(scale) / 100;
+        annex_session::rate::mirror_picture(full, bps, reduced)
+    }
+
+    fn log_picture(&self, reduced: bool, scale: u32, picture: &StreamConfig) {
+        let full = &self.stream;
+        let bitrate = u64::from(encode::bitrate(full.width, full.height, full.fps)) * u64::from(scale) / 100;
+        tracing::info!(
+            target: "annex::encode",
+            "sharing: smaller picture {} bitrate={bitrate} size={}x{} fps={}",
+            if reduced { "on" } else { "off" },
+            picture.width,
+            picture.height,
+            picture.fps
+        );
+    }
+
+    /// Tells every mirror viewer the picture's size (their decoders follow the keyframe by
+    /// themselves; this is for their stats and pointer).
+    fn announce_mirror_picture(&self, picture: &StreamConfig) {
+        let Some(host) = self.host() else { return };
+        for id in self.mirror_sessions.lock().unwrap().iter() {
+            host.set_session_stream(*id, picture.clone());
+        }
+    }
+
+    /// The shared encoder's bitrate changed (a hint, or the slowest viewer left): switch to the
+    /// smaller picture or back if it crossed the line. The capture restarts on its own thread.
+    fn update_mirror_picture(self: &Arc<Self>) {
+        let reduced = *self.mirror_reduced.lock().unwrap();
+        let (want, _) = self.mirror_picture(self.lowest_mirror_scale(), reduced);
+        if want != reduced && self.mirror.lock().unwrap().is_some() {
+            let me = self.clone();
+            std::thread::spawn(move || me.resize_mirror());
+        }
+    }
+
+    fn resize_mirror(&self) {
+        let mut slot = self.mirror.lock().unwrap();
+        // Stopped meanwhile: the next capture starts at the right size by itself.
+        if slot.is_none() {
+            return;
+        }
+        let lowest = self.lowest_mirror_scale();
+        let (reduced, picture) = {
+            let mut now = self.mirror_reduced.lock().unwrap();
+            let (want, picture) = self.mirror_picture(lowest, *now);
+            // Another thread did it, or the bitrate went back.
+            if want == *now {
+                return;
+            }
+            *now = want;
+            (want, picture)
+        };
+        self.log_picture(reduced, lowest, &picture);
+        // The whole capture restarts at the new size (encoders don't all take a new size
+        // mid-stream); the new encoder starts with a keyframe.
+        slot.take();
+        match self.start_mirror_capture(&picture, lowest) {
+            Ok(r) => {
+                *slot = Some(r);
+                self.announce_mirror_picture(&picture);
+            }
+            Err(e) => {
+                tracing::error!(target: "annex::capture", "sharing: capture didn't restart at {}x{}: {e}", picture.width, picture.height);
+                // The full picture worked before: back to it.
+                *self.mirror_reduced.lock().unwrap() = false;
+                let full = self.stream.clone();
+                match self.start_mirror_capture(&full, lowest) {
+                    Ok(r) => {
+                        *slot = Some(r);
+                        self.announce_mirror_picture(&full);
+                    }
+                    Err(e) => {
+                        drop(slot);
+                        self.fail(format!("Screen capture didn't start: {e}"));
+                    }
+                }
+            }
+        }
+    }
+
+    fn run(&self, source: Source, shape: Shape, output: encode::Output) -> Result<Running, String> {
         let stop = Arc::new(AtomicBool::new(false));
-        let bitrate = encode::bitrate(width, height, fps);
+        let Shape { width, height, fps, bitrate, max_fps } = shape;
         let cfg = |source: String| encode::Config {
             source,
             width,
@@ -425,6 +547,7 @@ impl State {
             fps,
             bitrate,
             prefer_hardware: self.prefer_hardware,
+            max_fps,
         };
         let pipeline = match source {
             Source::Gst(s) => Pipeline::start(cfg(s), output)?,
@@ -565,7 +688,9 @@ impl State {
                 id,
                 StreamConfig { codec: Codec::H264, width: sw & !1, height: sh & !1, fps: rate },
             );
-            match self.run(source.clone(), sw, sh, rate, self.output(Some(id))) {
+            let shape =
+                Shape { width: sw, height: sh, fps: rate, bitrate: encode::bitrate(sw, sh, rate), max_fps: None };
+            match self.run(source.clone(), shape, self.output(Some(id))) {
                 Ok(r) => {
                     tracing::info!(id, sw, sh, "extend: capturing the new display");
                     *running.lock().unwrap() = Some(r);
@@ -625,8 +750,8 @@ impl State {
         match e {
             Event::SessionStarted { session_id, mode: Mode::Mirror, .. } => {
                 self.mirror_sessions.lock().unwrap().insert(*session_id);
-                let me = self.clone();
-                std::thread::spawn(move || me.start_mirror());
+                let (me, id) = (self.clone(), *session_id);
+                std::thread::spawn(move || me.start_mirror(id));
             }
             Event::SessionStarted { session_id, mode: Mode::Extend, viewer_display, .. } => {
                 // Registered now, before SessionEnded can run end_extend.
@@ -650,6 +775,14 @@ impl State {
                     if self.mirror_sessions.lock().unwrap().is_empty() {
                         tracing::info!(target: "annex::capture", "sharing: the last viewer left; capture stopped");
                         self.mirror.lock().unwrap().take();
+                        *self.mirror_reduced.lock().unwrap() = false;
+                    } else {
+                        // The slowest viewer may have left: the encoder follows the next one.
+                        let lowest = self.lowest_mirror_scale();
+                        if let Some(r) = self.mirror.lock().unwrap().as_ref() {
+                            r.pipeline().set_bitrate_scale(lowest);
+                        }
+                        self.update_mirror_picture();
                     }
                 } else {
                     let me = self.clone();
@@ -675,6 +808,7 @@ impl State {
                         if let Some(r) = self.mirror.lock().unwrap().as_ref() {
                             r.pipeline().set_bitrate_scale(lowest);
                         }
+                        self.update_mirror_picture();
                     }
                 }
             }
@@ -711,6 +845,17 @@ impl State {
             _ => {}
         }
     }
+}
+
+/// What a capture encodes, and the bitrate it normally runs at.
+#[derive(Clone, Copy)]
+struct Shape {
+    width: u32,
+    height: u32,
+    fps: u32,
+    bitrate: u32,
+    /// Skip frames beyond this rate (sources that send as fast as the screen changes).
+    max_fps: Option<u32>,
 }
 
 #[derive(Clone)]

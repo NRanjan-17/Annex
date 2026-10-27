@@ -54,6 +54,17 @@ enum Annex {
     /// Whether a viewer's microphone can become "Annex Microphone" here (Linux only for now).
     static var virtualMicrophoneSupported: Bool { annex_virtual_microphone_supported() }
 
+    /// Adaptive bitrate's smaller picture for a mirror stream of `width`×`height` at `fps`: what to
+    /// encode at `effectiveBps` (the encoder's target now), given whether it sends the smaller
+    /// picture now. The core decides, so every host switches at the same bitrates.
+    static func mirrorPicture(effectiveBps: Int, reduced: Bool, width: Int, height: Int,
+                              fps: Int) -> (reduced: Bool, width: Int, height: Int, fps: Int) {
+        var w: UInt32 = 0, h: UInt32 = 0, f: UInt32 = 0
+        let r = annex_mirror_picture(UInt64(max(0, effectiveBps)), reduced, UInt32(width), UInt32(height), UInt32(fps),
+                                     &w, &h, &f)
+        return (r, Int(w), Int(h), Int(f))
+    }
+
     /// macOS virtual key code for a HID usage from an `input` event.
     static func macKeyCode(hid: UInt16) -> CGKeyCode? {
         let c = annex_key_native_from_hid(hid)

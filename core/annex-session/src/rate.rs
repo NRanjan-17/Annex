@@ -74,6 +74,46 @@ pub fn relay_ceiling(mode: Mode, s: &StreamConfig) -> u32 {
     (percent as u32).clamp(1, quality_ceiling(Quality::Fast))
 }
 
+/// Below this many bits a second a full-size mirror picture smears text, so the host sends a
+/// smaller one ([`mirror_picture`]).
+pub const SMALLER_PICTURE_BELOW_BPS: u64 = 2_500_000;
+/// The full picture comes back above this. The gap keeps a link near one line from switching
+/// back and forth (each switch costs a keyframe).
+pub const FULL_PICTURE_ABOVE_BPS: u64 = 4_500_000;
+/// The smaller picture is never under 960×540's worth of pixels. A stream that small already
+/// has a low nominal bitrate (Quality Fast keeps 720p30 at 2.2 Mbit/s on a perfect link), so
+/// halving it would only blur it.
+const MIN_SMALLER_PIXELS: u64 = 960 * 540;
+/// The smaller picture's frame rate cap.
+const SMALLER_PICTURE_FPS: u32 = 30;
+
+/// Whether the host should send the smaller picture at `effective_bps` (the encoder's current
+/// target: its normal bitrate × the scale), with hysteresis around [`SMALLER_PICTURE_BELOW_BPS`]
+/// and [`FULL_PICTURE_ABOVE_BPS`]. `currently_reduced` is what it sends now.
+pub fn reduced_picture(effective_bps: u64, currently_reduced: bool) -> bool {
+    if currently_reduced { effective_bps <= FULL_PICTURE_ABOVE_BPS } else { effective_bps < SMALLER_PICTURE_BELOW_BPS }
+}
+
+/// The smaller picture for a stream: each side halved (rounded down to even) and at most 30
+/// fps. None if the stream is already too small to halve.
+pub fn reduced_stream(full: &StreamConfig) -> Option<StreamConfig> {
+    let (w, h) = ((full.width / 2) & !1, (full.height / 2) & !1);
+    if u64::from(w) * u64::from(h) < MIN_SMALLER_PIXELS {
+        return None;
+    }
+    Some(StreamConfig { codec: full.codec, width: w, height: h, fps: full.fps.min(SMALLER_PICTURE_FPS) })
+}
+
+/// What a mirror host should encode: (smaller, picture). `full` is the session's stream,
+/// `effective_bps` the encoder's current target and `currently_reduced` whether it sends the
+/// smaller picture now. The hosts keep the bitrate as it is; only the picture changes.
+pub fn mirror_picture(full: &StreamConfig, effective_bps: u64, currently_reduced: bool) -> (bool, StreamConfig) {
+    match reduced_stream(full) {
+        Some(small) if reduced_picture(effective_bps, currently_reduced) => (true, small),
+        _ => (false, full.clone()),
+    }
+}
+
 /// What changed after a report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateDecision {
@@ -263,6 +303,55 @@ mod tests {
         let mut c = RateController::default();
         let d = c.on_report(&report(u32::MAX, 0, u32::MAX, u32::MAX, u32::MAX));
         assert!(d.scale_changed, "half the datagrams rebuilt is heavy loss");
+    }
+
+    fn stream(width: u32, height: u32, fps: u32) -> StreamConfig {
+        StreamConfig { codec: annex_proto::Codec::H264, width, height, fps }
+    }
+
+    #[test]
+    fn smaller_picture_has_hysteresis() {
+        assert!(!reduced_picture(SMALLER_PICTURE_BELOW_BPS, false));
+        assert!(reduced_picture(SMALLER_PICTURE_BELOW_BPS - 1, false));
+        // Between the lines nothing changes, either way.
+        assert!(!reduced_picture(3_500_000, false));
+        assert!(reduced_picture(3_500_000, true));
+        assert!(reduced_picture(FULL_PICTURE_ABOVE_BPS, true));
+        assert!(!reduced_picture(FULL_PICTURE_ABOVE_BPS + 1, true));
+    }
+
+    #[test]
+    fn smaller_picture_halves_each_side_and_caps_fps() {
+        assert_eq!(reduced_stream(&stream(2560, 1440, 60)), Some(stream(1280, 720, 30)));
+        assert_eq!(reduced_stream(&stream(1920, 1080, 30)), Some(stream(960, 540, 30)));
+        // Odd halves round down to even.
+        assert_eq!(reduced_stream(&stream(2940, 1910, 60)), Some(stream(1470, 954, 30)));
+        // Portrait screens too.
+        assert_eq!(reduced_stream(&stream(1080, 1920, 60)), Some(stream(540, 960, 30)));
+    }
+
+    #[test]
+    fn small_streams_stay_whole() {
+        // 720p30 at Quality Fast sits at 2.2 Mbit/s (the 4 Mbit/s floor × 55 %) on a perfect
+        // link: never halve that.
+        let s = stream(1280, 720, 30);
+        let fast = nominal_bps(Mode::Mirror, &s) * u64::from(quality_ceiling(Quality::Fast)) / 100;
+        assert!(fast < SMALLER_PICTURE_BELOW_BPS);
+        assert_eq!(reduced_stream(&s), None);
+        assert_eq!(mirror_picture(&s, fast, false), (false, s.clone()));
+        assert_eq!(mirror_picture(&s, 0, true), (false, s));
+    }
+
+    #[test]
+    fn mirror_picture_follows_the_bitrate() {
+        let full = stream(2560, 1440, 60);
+        let small = stream(1280, 720, 30);
+        // 4 % of 1440p60 (the floor) is about 0.9 Mbit/s: smaller.
+        let floor = nominal_bps(Mode::Mirror, &full) * u64::from(MIN_SCALE) / 100;
+        assert_eq!(mirror_picture(&full, floor, false), (true, small.clone()));
+        assert_eq!(mirror_picture(&full, 4_000_000, true), (true, small));
+        assert_eq!(mirror_picture(&full, 5_000_000, true), (false, full.clone()));
+        assert_eq!(mirror_picture(&full, 3_000_000, false), (false, full));
     }
 
     #[test]
