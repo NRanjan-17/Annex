@@ -4,11 +4,13 @@
 
 mod clipboard;
 mod desktop;
+mod drop_tray;
 mod encode;
 mod extend;
 mod gnome;
 mod host;
 mod inject;
+mod layer;
 mod log;
 mod model;
 mod portal;
@@ -68,6 +70,9 @@ fn main() -> glib::ExitCode {
             }
         }
     }
+
+    // Before GTK and libwayland load.
+    layer::preload();
 
     if let Err(e) = gst::init() {
         eprintln!("Annex needs GStreamer 1.20 or later: {e}");
@@ -148,6 +153,7 @@ fn start(app: &gtk::Application, opts: Opts) {
 
     let share_clipboard = model.borrow().settings.share_clipboard;
     model.borrow_mut().set_clipboard_sharing(share_clipboard);
+    model.borrow_mut().start_drop_tray();
     if opts.headless && !model.borrow().settings.headless {
         let mut m = model.borrow_mut();
         m.settings.headless = true;

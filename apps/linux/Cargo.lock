@@ -61,6 +61,7 @@ dependencies = [
  "gstreamer-video",
  "gtk4",
  "ksni",
+ "libc",
  "serde",
  "serde_json",
  "tokio",

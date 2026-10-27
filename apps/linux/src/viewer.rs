@@ -321,6 +321,19 @@ fn add_input(
     }
     window.add_controller(key);
 
+    // Files dropped on the picture go to the other computer (while controlling it).
+    {
+        let drop = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        let (tx, ctl) = (model.try_borrow().map(|m| m.sender()).ok(), controlling.clone());
+        drop.connect_drop(move |_, value, _, _| {
+            let (Some(tx), true, Ok(list)) = (&tx, ctl(), value.get::<gdk::FileList>()) else { return false };
+            let files: Vec<_> =
+                list.files().iter().filter_map(|f| f.path()).flat_map(|p| crate::drop_tray::files_in(&p)).collect();
+            !files.is_empty() && tx.send_blocking(crate::model::Msg::DropFiles(files)).is_ok()
+        });
+        picture.add_controller(drop);
+    }
+
     // Leaving the window lets go of every key, so none stays held on the other computer.
     {
         let (h, down) = (handle.clone(), keys_down.clone());

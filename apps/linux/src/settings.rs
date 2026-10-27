@@ -28,6 +28,8 @@ pub struct Settings {
     pub share_clipboard: bool,
     /// Take files the other computer sends, into Downloads.
     pub receive_files: bool,
+    /// Drag files to the top of the screen to send them (wlroots desktops and KDE).
+    pub drop_at_top: bool,
     /// Sharing: use the graphics chip's video encoder when there is one.
     pub prefer_hardware_encoder: bool,
     pub show_technical_details: bool,
@@ -55,6 +57,7 @@ impl Default for Settings {
             extend_by_default: false,
             share_clipboard: true,
             receive_files: true,
+            drop_at_top: true,
             prefer_hardware_encoder: true,
             show_technical_details: false,
             check_for_updates: true,

@@ -39,6 +39,8 @@ pub enum Msg {
         mime: String,
         data: Vec<u8>,
     },
+    /// Files dropped on the island or the viewer window, to send.
+    DropFiles(Vec<std::path::PathBuf>),
     /// wl-paste stopped (no clipboard access for other programs here): use GTK's clipboard.
     ClipboardWatchEnded,
     /// The sharing pipeline stopped by itself (the screen-sharing permission was refused, the
@@ -172,6 +174,7 @@ pub struct Model {
     pub internet: Option<InternetShare>,
 
     clipboard: Option<crate::clipboard::Clipboard>,
+    drop_tray: Option<crate::drop_tray::DropTray>,
     /// Viewer: the video window takes this computer's keyboard.
     pub viewer_focused: bool,
     /// Viewer: something was copied while the video window wasn't in front.
@@ -232,6 +235,7 @@ impl Model {
             host_sessions: Vec::new(),
             internet: None,
             clipboard: None,
+            drop_tray: None,
             viewer_focused: false,
             copied_while_away: false,
             tx,
@@ -640,8 +644,8 @@ impl Model {
                 self.clipboard_received(&mime, &data);
                 return;
             }
-            Event::TransferEnded { id, incoming, ok, error, .. } => {
-                tracing::info!(id, incoming, ok, error, "transfer ended");
+            e @ (Event::TransferStarted { .. } | Event::TransferProgress { .. } | Event::TransferEnded { .. }) => {
+                self.transfer(e);
                 return;
             }
             Event::Error { message } => tracing::warn!("viewer: {message}"),
@@ -773,8 +777,8 @@ impl Model {
                 self.clipboard_received(&mime, &data);
                 return;
             }
-            Event::TransferEnded { id, incoming, ok, error, .. } => {
-                tracing::info!(id, incoming, ok, error, "transfer ended");
+            e @ (Event::TransferStarted { .. } | Event::TransferProgress { .. } | Event::TransferEnded { .. }) => {
+                self.transfer(e);
                 return;
             }
             Event::Error { message } => {
@@ -787,6 +791,11 @@ impl Model {
     }
 
     pub fn handle(&mut self, msg: Msg) {
+        self.handle_msg(msg);
+        self.update_drop_target();
+    }
+
+    fn handle_msg(&mut self, msg: Msg) {
         match msg {
             Msg::Discovery(DiscoveryEvent::PeerFound(p)) => {
                 self.peers.insert(p.instance.clone(), p);
@@ -808,6 +817,7 @@ impl Model {
                 self.settings.save();
             }
             Msg::Copied { mime, data } => self.copied(mime, data),
+            Msg::DropFiles(files) => self.send_files(files),
             Msg::ClipboardNow { mime, data } => {
                 if let Some(v) = self.viewer.as_ref().filter(|_| self.controlling && self.clipboard.is_some()) {
                     v.handle.send_clipboard(&mime, data);
@@ -828,6 +838,74 @@ impl Model {
     }
 
     // ---- Clipboard and files ------------------------------------------------------------
+
+    pub fn start_drop_tray(&mut self) {
+        self.drop_tray = crate::drop_tray::DropTray::new(self.tx.clone());
+        tracing::info!(island = self.drop_tray.is_some(), "drop files");
+    }
+
+    /// Who dropped files go to: the host this computer controls, else a viewer controlling it.
+    fn update_drop_target(&self) {
+        let Some(tray) = &self.drop_tray else { return };
+        let peer = if !self.settings.drop_at_top {
+            None
+        } else if self.viewer.is_some() && self.controlling {
+            Some(self.label(&self.viewer_peer))
+        } else if self.host.is_some() {
+            self.host_sessions.iter().find(|s| s.input).map(|s| self.label(&s.name))
+        } else {
+            None
+        };
+        tray.set_target(peer);
+    }
+
+    fn send_files(&mut self, files: Vec<std::path::PathBuf>) {
+        for f in files {
+            let result = if let Some(v) = self.viewer.as_ref().filter(|_| self.controlling) {
+                v.handle.send_file(&f).map(drop)
+            } else if let Some(h) = &self.host {
+                self.host_sessions.iter().filter(|s| s.input).try_for_each(|s| h.send_file(s.id, &f).map(drop))
+            } else {
+                Err("Nothing is connected.".into())
+            };
+            if let Err(e) = result {
+                let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.emit(Change::Notify { title: format!("Couldn't send {name}"), body: e });
+            }
+        }
+    }
+
+    fn transfer(&mut self, e: Event) {
+        match e {
+            Event::TransferStarted { session_id, id, incoming, name, size } => {
+                if let Some(t) = &self.drop_tray {
+                    t.started(session_id, id, incoming, name, size);
+                }
+            }
+            Event::TransferProgress { session_id, id, incoming, done } => {
+                if let Some(t) = &self.drop_tray {
+                    t.progress(session_id, id, incoming, done);
+                }
+            }
+            Event::TransferEnded { session_id, id, incoming, ok, path, error } => {
+                tracing::info!(id, incoming, ok, error, "transfer ended");
+                if let Some(t) = &self.drop_tray {
+                    t.ended(session_id, id, incoming, ok, path, error);
+                } else if incoming && ok {
+                    // No island here (GNOME, X11): say so where it lands.
+                    let name = path
+                        .as_deref()
+                        .and_then(|p| std::path::Path::new(p).file_name())
+                        .map(|n| n.to_string_lossy().into_owned());
+                    self.emit(Change::Notify {
+                        title: format!("Received {}", name.unwrap_or_else(|| "a file".into())),
+                        body: "It's in Downloads.".into(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
 
     pub fn set_clipboard_sharing(&mut self, on: bool) {
         if !on {

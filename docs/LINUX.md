@@ -170,7 +170,7 @@ sudo dnf install ./Annex-<version>-linux-x86_64.rpm
 tar xf Annex-<version>-linux-x86_64.tar.gz
 ```
 
-apt, dnf and zypper also install what Annex needs (GStreamer, wl-clipboard for the clipboard on Wayland).
+apt, dnf and zypper also install what Annex needs (GStreamer, wl-clipboard for the clipboard on Wayland). The packages carry gtk4-layer-shell (MIT) in `/usr/lib/annex`, for the drop island at the top of the screen on wlroots desktops and KDE; Annex restarts itself once with it preloaded there, as that library requires.
 
 ### Uninstall
 

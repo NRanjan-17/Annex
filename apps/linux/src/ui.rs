@@ -418,6 +418,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
             m.set_clipboard_sharing(on);
         }),
     );
+    toggle(&b, "Drop files at the top of the screen", s.drop_at_top, Box::new(|m, on| m.settings.drop_at_top = on));
     toggle(
         &b,
         "Receive files into Downloads",

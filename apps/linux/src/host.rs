@@ -217,6 +217,11 @@ impl Host {
         self.stop_code_task();
     }
 
+    /// Sends a file to a viewer; progress comes as transfer events.
+    pub fn send_file(&self, session_id: u64, path: &std::path::Path) -> Result<u64, String> {
+        self.handle.send_file(session_id, path)
+    }
+
     /// Puts what was copied here on a viewer's clipboard.
     pub fn send_clipboard(&self, session_id: u64, mime: &str, data: Vec<u8>) -> bool {
         self.handle.send_clipboard(session_id, mime, data)
