@@ -601,6 +601,17 @@ pub unsafe extern "C" fn annex_core_set_allow_input(
     })
 }
 
+/// Headless (nobody at this screen): pairing PINs are also written to `<data>/pairing-pin.txt`,
+/// and paired devices may use the mouse and keyboard without being allowed one by one.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_set_headless(core: *const AnnexCore, on: bool) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        c.core.set_headless(on);
+        Ok(0)
+    })
+}
+
 /// This platform's key code (macOS virtual key code, Windows scancode with 0xE0xx for extended
 /// keys, Linux evdev code) for a HID usage from an `input` event, or -1 if it has no such key.
 #[unsafe(no_mangle)]

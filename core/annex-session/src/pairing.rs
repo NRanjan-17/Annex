@@ -105,6 +105,47 @@ where
     result
 }
 
+/// A headless computer's PIN, in a file only this user can read, for as long as pairing runs.
+/// Holds the path and what was written, so a pairing that ends doesn't delete a newer one's PIN.
+struct PinFile(Option<(std::path::PathBuf, String)>);
+
+impl PinFile {
+    fn show(core: &crate::Core, pin: &str, peer_name: &str) -> Self {
+        let Some(path) = core.pin_file().filter(|_| core.headless()) else { return PinFile(None) };
+        let text = format!("{pin}\n\nType this PIN on {peer_name} to pair. It works once, for the next 2 minutes.\n");
+        match write_private(&path, &text) {
+            Ok(()) => {
+                tracing::info!(peer = peer_name, file = %path.display(), "pairing PIN written for a headless computer");
+                PinFile(Some((path, text)))
+            }
+            Err(e) => {
+                tracing::warn!(file = %path.display(), "couldn't write the pairing PIN: {e}");
+                PinFile(None)
+            }
+        }
+    }
+}
+
+impl Drop for PinFile {
+    fn drop(&mut self) {
+        if let Some((path, text)) = &self.0
+            && std::fs::read_to_string(path).is_ok_and(|now| &now == text)
+        {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let _ = std::fs::remove_file(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(text.as_bytes())
+}
+
 pub(crate) async fn pair_as_host<R, W>(
     cx: PairContext<'_>,
     reader: &mut Reader<R>,
@@ -128,6 +169,7 @@ where
         peer_name: cx.peer_name.to_string(),
         fingerprint_display: display_fingerprint(cx.peer_fp),
     });
+    let _pin_file = PinFile::show(cx.core, &pin_for_display(&pin), cx.peer_name);
     // Set when the host's user cancels: that isn't the peer's failure.
     let mut cancelled_here = false;
     let result = async {

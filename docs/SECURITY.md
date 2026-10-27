@@ -14,13 +14,14 @@ on the network can read or alter the stream.**
 | Replay protection | Fresh ECDHE per connection; no resumption, tickets or 0-RTT; TLS record sequence numbers |
 | Forward secrecy | Ephemeral key exchange per session |
 | Revocation | Remove a device in the app (or `annex peers remove <id>`); its next connection needs approval again |
+| Headless mode | Off by default. When on (Settings → No one at this screen), the pairing PIN is also written to `pairing-pin.txt` in the data folder (owner-only, deleted when pairing ends) for someone logged in over SSH, so anyone who can read this user's files can pair; and paired devices may use the mouse and keyboard without being allowed one by one. Unpaired devices never get input |
 | No cloud | No accounts, servers, relays or telemetry. The only internet traffic is the update check (GitHub's releases list, once a day and again when you install an update; can be turned off) |
 | Updates | Installed only if the release's `SHA256SUMS.txt` carries a valid Ed25519 signature (made in CI with a key kept in the protected `release` environment; public key in `core/annex-update`) and the download's SHA-256 is listed in it. Unsigned releases are never offered |
 
 Tests: `core/annex-crypto/src/pairing.rs` covers right/wrong PIN, MITM across two TLS
 sessions and substituted identities. `core/annex-session/tests/loopback.rs` covers pairing
-success/failure/cancel/lockout, revocation, tampered and replayed records, pin mismatch and
-busy handling. `core/annex-proto/tests/fuzz.rs` fuzzes every decoder.
+success/failure/cancel/lockout, the headless PIN file and input rule, revocation, tampered
+and replayed records, pin mismatch and busy handling. `core/annex-proto/tests/fuzz.rs` fuzzes every decoder.
 
 ## Known limitations
 

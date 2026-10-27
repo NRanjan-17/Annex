@@ -15,6 +15,9 @@ pub struct Settings {
     pub device_name: Option<String>,
     pub open_at_login: bool,
     pub start_sharing_at_launch: bool,
+    /// Nobody at this screen (reached over SSH): pairing PINs also go to `pairing-pin.txt` in the
+    /// data folder, and paired devices may control it without asking. `annex --headless` turns it on.
+    pub headless: bool,
     /// 0 Best, 1 Balanced, 2 Fast (the core's `Quality`).
     pub quality: u32,
     /// Viewing: control the other computer with this one's mouse and keyboard.
@@ -42,6 +45,7 @@ impl Default for Settings {
             device_name: None,
             open_at_login: false,
             start_sharing_at_launch: false,
+            headless: false,
             quality: 0,
             use_mouse_and_keyboard: true,
             open_full_screen: false,

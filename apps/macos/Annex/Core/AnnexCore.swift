@@ -150,6 +150,12 @@ final class CoreClient {
         try check(annex_core_set_allow_input(raw, fingerprint, allow)) == 1
     }
 
+    /// Headless (nobody at this screen): pairing PINs also go to `pairing-pin.txt` in the data
+    /// folder, and paired devices may use the mouse and keyboard without being allowed one by one.
+    func setHeadless(_ on: Bool) {
+        _ = annex_core_set_headless(raw, on)
+    }
+
     /// Answers a `pairingPinRequired` event with what the user typed.
     @discardableResult
     func submitPin(requestID: UInt64, pin: String) -> Bool {

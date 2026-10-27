@@ -207,6 +207,7 @@ final class AppModel: ObservableObject {
             let core = try CoreClient(dataDirectory: Self.dataDirectory, deviceName: name)
             Annex.setLogEnabled(settings.saveLog)
             self.core = core
+            settings.$headless.sink { [weak core] on in core?.setHeadless(on) }.store(in: &cancellables)
             deviceName = core.deviceName
             // Show up under Nearby on other computers as soon as Annex is open.
             core.setPresence(true)

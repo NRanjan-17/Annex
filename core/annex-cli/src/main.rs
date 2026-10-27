@@ -5,7 +5,7 @@
 //! annex peers [remove <fingerprint>]  list or revoke trusted devices
 //! annex discover [--seconds N]        list hosts on the LAN
 //! annex host [--port P] [--replay file.h264 | --synthetic] [--fps N] [--extend] [--no-advertise] [--internet]
-//! annex viewer <address | --code K7P-4QX> [--extend] [--dump file.h264] [--expect <fingerprint>] [--seconds N]
+//! annex viewer <address | --code K7P-4QX> [--extend] [--control] [--dump file.h264] [--expect <fingerprint>] [--seconds N]
 //! ```
 //! Internet connections (`--internet`, `--code`) need `--rendezvous wss://…` (or `ANNEX_RENDEZVOUS`)
 //! and use `--stun host:port` (default stun.cloudflare.com:3478). If a direct connection isn't
@@ -384,7 +384,8 @@ async fn viewer(o: &mut Opts) {
         codecs: vec![Codec::H264, Codec::Raw],
         expected_fingerprint: expected,
         mode,
-        input: false,
+        // Asks for the mouse and keyboard (the CLI sends none; it shows whether the host allows it).
+        input: o.flag("--control"),
         quality: annex_session::Quality::Best,
         latency_csv,
         internet: None,

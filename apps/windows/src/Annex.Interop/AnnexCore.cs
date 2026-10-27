@@ -139,6 +139,10 @@ public sealed class CoreClient : IDisposable
     public bool SetAllowInput(string fingerprint, bool allow) =>
         NativeMethods.Check(NativeMethods.annex_core_set_allow_input(Raw, fingerprint, allow)) == 1;
 
+    /// <summary>Headless (nobody at this screen): pairing PINs also go to <c>pairing-pin.txt</c> in the data
+    /// folder, and paired devices may use the mouse and keyboard without being allowed one by one.</summary>
+    public void SetHeadless(bool on) => NativeMethods.Check(NativeMethods.annex_core_set_headless(Raw, on));
+
     /// <summary>Answers a <see cref="CoreEvent.PairingPinRequired"/> with the PIN the user typed.</summary>
     public bool SubmitPin(ulong requestId, string pin) => NativeMethods.annex_core_submit_pin(Raw, requestId, pin) == 1;
 

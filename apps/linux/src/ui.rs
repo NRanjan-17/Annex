@@ -385,6 +385,21 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.start_sharing_at_launch,
         Box::new(|m, on| m.settings.start_sharing_at_launch = on),
     );
+    toggle(
+        &b,
+        "No one at this screen",
+        s.headless,
+        Box::new(|m, on| {
+            m.settings.headless = on;
+            m.core.set_headless(on);
+        }),
+    );
+    let note = label(
+        "For a computer reached over SSH: pairing PINs also go to pairing-pin.txt in Annex's data folder, and paired devices can control it without asking.",
+        "dim",
+    );
+    note.set_wrap(true);
+    b.append(&note);
 
     b.append(&label("Viewing", "section"));
     toggle(
@@ -708,7 +723,11 @@ fn render_share(ui: &mut Ui, m: &Model, model: &Shared) {
 }
 
 fn render_devices(ui: &mut Ui, m: &Model, model: &Shared) {
-    let key = format!("{:?}", m.trusted.iter().map(|t| (&t.fingerprint, &t.name, t.allow_input)).collect::<Vec<_>>());
+    let key = format!(
+        "{:?} {}",
+        m.trusted.iter().map(|t| (&t.fingerprint, &t.name, t.allow_input)).collect::<Vec<_>>(),
+        m.settings.headless
+    );
     if !changed(ui, "devices", key) {
         return;
     }
@@ -726,7 +745,12 @@ fn render_devices(ui: &mut Ui, m: &Model, model: &Shared) {
         text.append(&label(&crate::model::display_fingerprint(&t.fingerprint), "dim"));
         card.append(&text);
         let input = gtk::CheckButton::with_label("Mouse and keyboard");
-        input.set_active(t.allow_input);
+        // Headless lets every paired device control this computer.
+        input.set_active(t.allow_input || m.settings.headless);
+        input.set_sensitive(!m.settings.headless);
+        if m.settings.headless {
+            input.set_tooltip_text(Some("Allowed while No one at this screen is on"));
+        }
         input.set_valign(gtk::Align::Center);
         let (app, model2, fp) = (app_of(ui), model.clone(), t.fingerprint.clone());
         input.connect_toggled(move |c| {

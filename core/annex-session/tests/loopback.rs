@@ -221,6 +221,50 @@ async fn pin_pairing_succeeds_and_is_remembered() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn headless_host_writes_the_pin_to_a_file_and_lets_paired_devices_control_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let host_core = Core::open_with(dir.path(), "Host", TrustPolicy::Pair, KeyStorage::File).unwrap();
+    let viewer_core = Core::ephemeral("Viewer", TrustPolicy::Pair).unwrap();
+    let pin_file = host_core.pin_file().unwrap();
+
+    // Not headless: no file.
+    assert_eq!(pair_attempt(&host_core, &viewer_core, Some("000000")).await.0, "not_paired");
+    assert!(!pin_file.exists());
+
+    host_core.set_headless(true);
+    let (hev, mut hrx) = channel_sink();
+    let host = start_host(host_core.clone(), host_cfg(), hev).await.unwrap();
+    let (vev, mut vrx) = channel_sink();
+    let viewer = connect_viewer(viewer_core.clone(), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
+    let Event::PairingPinRequired { request_id, .. } =
+        wait_for(&mut vrx, |e| matches!(e, Event::PairingPinRequired { .. })).await
+    else {
+        unreachable!()
+    };
+    // Typed from the file, as someone logged in over SSH would.
+    let text = std::fs::read_to_string(&pin_file).unwrap();
+    assert!(text.contains("Viewer"), "{text}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&pin_file).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    assert!(viewer_core.submit_pin(request_id, text.lines().next().unwrap()));
+    wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+    assert!(!pin_file.exists(), "the PIN goes once pairing ends");
+
+    // Paired devices may control a headless computer without being allowed one by one.
+    let fp = viewer_core.fingerprint();
+    assert!(!host_core.trusted_peers().iter().any(|p| p.allow_input));
+    assert!(host_core.allows_input(fp));
+    assert!(!host_core.allows_input("not-paired"));
+    host_core.set_headless(false);
+    assert!(!host_core.allows_input(fp));
+    viewer.disconnect().await;
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn wrong_pin_fails_and_nothing_is_trusted() {
     let host_core = Core::ephemeral("Host", TrustPolicy::Pair).unwrap();
     let viewer_core = Core::ephemeral("Viewer", TrustPolicy::Pair).unwrap();

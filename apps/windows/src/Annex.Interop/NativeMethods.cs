@@ -64,6 +64,9 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_core_set_allow_input(nint core, string fingerprint, [MarshalAs(UnmanagedType.U1)] bool allow);
 
+    [LibraryImport(Lib)]
+    public static partial int annex_core_set_headless(nint core, [MarshalAs(UnmanagedType.U1)] bool on);
+
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_core_submit_pin(nint core, ulong requestId, string pin);
 

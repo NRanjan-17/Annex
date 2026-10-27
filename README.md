@@ -180,6 +180,37 @@ Annex has no servers, so over the internet it runs on a private network such as 
 ZeroTier: install it on both computers, then *Connect by address* with the other computer's VPN
 address. Details: [docs/REMOTE.md](docs/REMOTE.md).
 
+### A computer with no one at its screen
+
+A Raspberry Pi, a Jetson or a Mac mini you reach only over SSH can share its screen too. Annex
+shares a **desktop**, so the computer must log in to its desktop by itself (auto-login); without a
+logged-in desktop there's nothing to share. Raspberry Pi OS does this out of the box, even with no
+monitor attached.
+
+1. Turn on **No one at this screen** in Settings, or over SSH:
+
+   | | Command |
+   |---|---|
+   | Linux | `annex --headless --share` (once; the setting stays on) |
+   | Mac | `defaults write com.nranjan-17.annex headless -bool true` |
+   | Windows | `"Headless": true` in `%LOCALAPPDATA%\Annex\settings.json` |
+
+   Change it while Annex is closed (quit it first), or it won't notice. On Linux,
+   `"headless": true` in `~/.config/annex/settings.json` works too.
+
+2. Turn on **Open at login** and **Start sharing when Annex opens**, so it starts by itself.
+3. The first time another computer connects, read the PIN over SSH and type it there:
+
+   | | PIN file |
+   |---|---|
+   | Linux | `cat ~/.local/share/annex/pairing-pin.txt` |
+   | Mac | `cat ~/Library/Application\ Support/Annex/pairing-pin.txt` |
+   | Windows | `type %LOCALAPPDATA%\Annex\pairing-pin.txt` |
+
+The file exists only while pairing (2 minutes) and only your user can read it. Paired computers
+can then use the mouse and keyboard without anyone clicking **Allow**. On a Mac, grant **Screen
+Recording** once in person or over Screen Sharing; macOS doesn't allow that over SSH.
+
 ### Extend on Windows
 
 Windows has no built-in way for an app to add a display, so when a **Windows PC is sharing**,
