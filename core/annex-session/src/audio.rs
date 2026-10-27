@@ -214,7 +214,11 @@ pub(crate) fn start(core: Arc<Core>, conn: quinn::Connection, id: u64, host: boo
 }
 
 async fn run(core: Arc<Core>, conn: quinn::Connection, id: u64, host: bool, mut incoming: Incoming) {
-    let (expect, play_as) = if host { (AudioKind::Microphone, "the viewer's microphone") } else { (AudioKind::Sound, "the other computer's sound") };
+    let (expect, play_as) = if host {
+        (AudioKind::Microphone, "the viewer's microphone")
+    } else {
+        (AudioKind::Sound, "the other computer's sound")
+    };
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut sharing = false;
     let mut mic: Option<Capture> = None;

@@ -971,7 +971,12 @@ pub unsafe extern "C" fn annex_host_send_file(
 /// # Safety
 /// `host` must be valid or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn annex_host_pause_transfer(host: *const AnnexHost, session_id: u64, id: u64, paused: bool) -> i32 {
+pub unsafe extern "C" fn annex_host_pause_transfer(
+    host: *const AnnexHost,
+    session_id: u64,
+    id: u64,
+    paused: bool,
+) -> i32 {
     unsafe { host.as_ref() }.is_some_and(|h| h.handle.pause_transfer(session_id, id, paused)) as i32
 }
 

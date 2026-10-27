@@ -1183,7 +1183,8 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
 
     // Sound
     let (sound_section, g) = section(Some("Sound"), None);
-    let sound: [(&str, &str, bool, fn(&mut crate::settings::Settings, bool)); 3] = [
+    type Switch = (&'static str, &'static str, bool, fn(&mut crate::settings::Settings, bool));
+    let sound: [Switch; 3] = [
         ("Share this computer's sound", "People viewing this computer hear what it plays.", s.share_sound, |s, on| {
             s.share_sound = on
         }),

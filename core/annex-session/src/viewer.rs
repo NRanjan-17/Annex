@@ -298,8 +298,7 @@ async fn run(
     let mut reader = Reader::new(reader);
     let mut writer = Writer::new(writer);
     let knows = core.knows(&fp);
-    let caps: &[&str] =
-        if quic.is_some() { &["h264", crate::transfer::CAP, crate::audio::CAP] } else { &["h264"] };
+    let caps: &[&str] = if quic.is_some() { &["h264", crate::transfer::CAP, crate::audio::CAP] } else { &["h264"] };
     writer.send_control(&hello(&core, vec![Role::Viewer], knows, caps)).await?;
     let peer = match timeout(HANDSHAKE_TIMEOUT, reader.next_control()).await?? {
         Control::SessionReject { reason } => return Err(SessionError::Rejected(reason)),
