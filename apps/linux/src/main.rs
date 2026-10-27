@@ -185,6 +185,19 @@ fn start(app: &gtk::Application, opts: Opts, used_before: bool) {
         tracing::info!(target: "annex::host", from_option = opts.share, "sharing: on at launch");
         ui::act(app, &model, |m| m.set_hosting(true));
     }
+    // Updates: now, then once a day, while Settings → Check for updates is on.
+    if model.borrow().settings.check_for_updates {
+        ui::act(app, &model, |m| m.check_for_updates());
+    }
+    {
+        let (app, model) = (app.clone(), model.clone());
+        glib::timeout_add_seconds_local(24 * 60 * 60, move || {
+            if model.borrow().settings.check_for_updates {
+                ui::act(&app, &model, |m| m.check_for_updates());
+            }
+            glib::ControlFlow::Continue
+        });
+    }
     // Shown with the window: now, or when it first opens from the tray.
     ui::whats_new_at_launch(&model, used_before);
     // Without a tray there is no other way back to Annex, so the window always opens then.

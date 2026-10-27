@@ -46,6 +46,8 @@ pub enum Msg {
     /// The sharing pipeline stopped by itself (the screen-sharing permission was refused, the
     /// encoder failed, …).
     HostFailed(String),
+    /// GitHub's releases list (its JSON), or why it couldn't be fetched.
+    UpdateChecked(Result<String, String>),
 }
 
 /// What the UI should do, besides redrawing.
@@ -117,6 +119,30 @@ pub enum InternetShare {
     Ended(Option<String>),
 }
 
+/// Checking GitHub for a newer release. Linux only says so and opens the release page: the
+/// package manager installs it (.deb or .rpm).
+#[derive(Clone, PartialEq, Debug)]
+pub enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(annex_update::Update),
+    Failed(String),
+}
+
+impl UpdateState {
+    /// "Annex 1.2.3 is available".
+    pub fn headline(u: &annex_update::Update) -> String {
+        if u.downgrade {
+            format!("Annex {} is available (leaves the beta)", u.version)
+        } else if u.prerelease {
+            format!("Annex {} (beta) is available", u.version)
+        } else {
+            format!("Annex {} is available", u.version)
+        }
+    }
+}
+
 /// A session this computer shows (host side).
 #[derive(Clone, PartialEq, Debug)]
 pub struct HostSession {
@@ -172,6 +198,13 @@ pub struct Model {
     pub host_error: Option<String>,
     pub host_sessions: Vec<HostSession>,
     pub internet: Option<InternetShare>,
+
+    // Updates.
+    pub update: UpdateState,
+    /// The version whose banner was closed with Not Now.
+    pub update_dismissed: Option<String>,
+    /// When the last check finished (Unix seconds).
+    pub update_checked_at: Option<i64>,
 
     clipboard: Option<crate::clipboard::Clipboard>,
     drop_tray: Option<crate::drop_tray::DropTray>,
@@ -239,6 +272,9 @@ impl Model {
             host_error: None,
             host_sessions: Vec::new(),
             internet: None,
+            update: UpdateState::Idle,
+            update_dismissed: None,
+            update_checked_at: None,
             clipboard: None,
             drop_tray: None,
             viewer_focused: false,
@@ -908,6 +944,62 @@ impl Model {
                 self.host_error = Some(why);
                 self.render();
             }
+            Msg::UpdateChecked(result) => self.update_checked(result),
+        }
+    }
+
+    // ---- Updates ------------------------------------------------------------------------
+
+    /// Asks GitHub for the releases list, in the background. No HTTP client is built in: `curl`
+    /// fetches it (see [`fetch_releases`]).
+    pub fn check_for_updates(&mut self) {
+        if self.update == UpdateState::Checking {
+            return;
+        }
+        tracing::info!(
+            target: "annex::update",
+            current = annex_update::whats_new::CURRENT,
+            beta = self.settings.beta_updates,
+            "update: checking"
+        );
+        self.update = UpdateState::Checking;
+        let tx = self.tx.clone();
+        let spawned = std::thread::Builder::new().name("annex-update".into()).spawn(move || {
+            let _ = tx.send_blocking(Msg::UpdateChecked(fetch_releases()));
+        });
+        if let Err(e) = spawned {
+            tracing::warn!(target: "annex::update", "update: couldn't start the check: {e}");
+            self.update = UpdateState::Failed(e.to_string());
+        }
+        self.render();
+    }
+
+    fn update_checked(&mut self, result: Result<String, String>) {
+        const T: &str = "annex::update";
+        self.update_checked_at =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64);
+        self.update = match result.and_then(|json| pick_update(&json, self.settings.beta_updates)) {
+            Ok(Some(u)) => {
+                tracing::info!(target: T, version = u.version, asset = u.asset_name, "update: available");
+                UpdateState::Available(u)
+            }
+            Ok(None) => {
+                tracing::info!(target: T, "update: this is the latest version");
+                UpdateState::UpToDate
+            }
+            Err(e) => {
+                tracing::warn!(target: T, "update: check failed: {e}");
+                UpdateState::Failed(e)
+            }
+        };
+        self.render();
+    }
+
+    /// The banner on Nearby and Share: an update, unless its banner was closed.
+    pub fn update_banner(&self) -> Option<&annex_update::Update> {
+        match &self.update {
+            UpdateState::Available(u) if self.update_dismissed.as_deref() != Some(u.version.as_str()) => Some(u),
+            _ => None,
         }
     }
 
@@ -1148,6 +1240,48 @@ fn friendly_internet_error(r: &str) -> String {
     } else {
         format!("Sharing with a code stopped: {r}")
     }
+}
+
+/// GitHub's releases list, with `curl` (installed nearly everywhere; the app has no HTTP client).
+fn fetch_releases() -> Result<String, String> {
+    let url = annex_update::RELEASES_URL.to_str().unwrap_or_default();
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "30", "-H", "Accept: application/vnd.github+json", "-A"])
+        .arg(format!("Annex/{}", annex_update::whats_new::CURRENT))
+        .arg(url)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "curl isn't installed".to_string()
+            } else {
+                format!("couldn't run curl: {e}")
+            }
+        })?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() { format!("curl failed ({})", out.status) } else { err });
+    }
+    String::from_utf8(out.stdout).map_err(|e| e.to_string())
+}
+
+/// The release to offer: its .deb, or .rpm on RPM systems (each release has both, per CPU, named
+/// as scripts/package-linux.sh names them: `Annex-<v>-linux-<x86_64|arm64>.<deb|rpm>`).
+fn pick_update(json: &str, beta: bool) -> Result<Option<annex_update::Update>, String> {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        a => a,
+    };
+    let rpm = !std::path::Path::new("/usr/bin/dpkg").exists() && std::path::Path::new("/usr/bin/rpm").exists();
+    let kinds = if rpm { ["rpm", "deb"] } else { ["deb", "rpm"] };
+    for kind in kinds {
+        let suffix = format!("-linux-{arch}.{kind}");
+        if let Some(u) =
+            annex_update::pick(json, annex_update::whats_new::CURRENT, beta, &suffix).map_err(|e| e.to_string())?
+        {
+            return Ok(Some(u));
+        }
+    }
+    Ok(None)
 }
 
 /// Where files from the other computer go.

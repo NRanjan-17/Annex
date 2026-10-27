@@ -127,7 +127,7 @@ impl Settings {
             "open_at_login={} start_sharing_at_launch={} headless={} quality={} use_mouse_and_keyboard={} \
              open_full_screen={} extend_by_default={} share_clipboard={} receive_files={} drop_at_top={} \
              prefer_hardware_encoder={} share_sound={} hear_sound={} send_mic={} virtual_mic={} show_technical_details={} verbose_logging={} own_server={} own_relay={} \
-             screen_token={} last_seen_version={}",
+             screen_token={} last_seen_version={} check_for_updates={} beta_updates={}",
             self.open_at_login,
             self.start_sharing_at_launch,
             self.headless,
@@ -149,6 +149,8 @@ impl Settings {
             !self.relay_url.trim().is_empty(),
             self.screen_token.is_some(),
             self.last_seen_version.as_deref().unwrap_or("none"),
+            self.check_for_updates,
+            self.beta_updates,
         )
     }
 
