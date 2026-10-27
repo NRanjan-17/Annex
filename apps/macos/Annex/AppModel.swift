@@ -96,7 +96,11 @@ final class AppModel: ObservableObject {
     private var core: CoreClient?
     private var discovery: DiscoveryHandle?
     private var host: HostController?
-    private var viewer: ViewerHandle? { didSet { updateKeepAwake(); updateInSession() } }
+    // Published by hand: the menu bar icon follows `isViewing`, and a plain property never redraws it.
+    private var viewer: ViewerHandle? {
+        willSet { objectWillChange.send() }
+        didSet { updateKeepAwake(); updateInSession() }
+    }
     /// Viewing, or showing this Mac to someone. Peer-to-peer browsing pauses meanwhile: it shares
     /// the Wi-Fi radio with the session and would add lag.
     @Published private(set) var inSession = false

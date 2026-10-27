@@ -128,7 +128,8 @@ private struct SettingsCommand: View {
     }
 }
 
-/// The menu bar icon, one look per state, so a glance says whether anyone can see this screen.
+/// The menu bar icon, one look per state, so a glance says whether a session is on: faded while
+/// nothing is connected (sharing or not), solid from the moment a connection succeeds.
 /// The dot means only that: this Mac is being shown. Showing another computer gets a ▶ instead.
 /// Template images: macOS tints them for light and dark menu bars.
 enum MenuBarGlyph {
@@ -150,8 +151,9 @@ enum MenuBarGlyph {
         let base = NSImage(named: "MenuBarIcon") ?? NSImage()
         let size = base.size == .zero ? NSSize(width: 18, height: 18) : base.size
         let image = NSImage(size: size, flipped: false) { rect in
-            // Off: faded, like a paused app. Sharing: solid. Live: solid with a dot. Viewing: a ▶.
-            base.draw(in: rect, from: .zero, operation: .sourceOver, fraction: state == .off ? 0.45 : 1)
+            // Off and sharing with nobody connected: faded. Live: solid with a dot. Viewing: solid with a ▶.
+            let connected = state == .live || state == .viewing
+            base.draw(in: rect, from: .zero, operation: .sourceOver, fraction: connected ? 1 : 0.45)
             if state == .live || state == .viewing {
                 let d = rect.width * (state == .live ? 0.34 : 0.4)
                 let badge = NSRect(x: rect.maxX - d, y: rect.maxY - d, width: d, height: d)
