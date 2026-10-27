@@ -83,6 +83,8 @@ pub struct Transfers {
     /// Cancel flags of running transfers, by (incoming, id).
     running: Mutex<HashMap<(bool, u64), Arc<AtomicBool>>>,
     tasks: Mutex<tokio::task::JoinSet<()>>,
+    /// The apps send from their own threads, outside the runtime.
+    rt: tokio::runtime::Handle,
 }
 
 impl Transfers {
@@ -104,6 +106,7 @@ impl Transfers {
             next_id: AtomicU64::new(1),
             running: Mutex::new(HashMap::new()),
             tasks: Mutex::new(tokio::task::JoinSet::new()),
+            rt: tokio::runtime::Handle::current(),
         });
         let me = t.clone();
         t.tasks.lock().unwrap().spawn(async move {
@@ -132,6 +135,7 @@ impl Transfers {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let header = Header { id, item: Item::Clipboard { mime: mime.into() }, size: data.len() as u64 };
         let me = self.clone();
+        let _rt = self.rt.enter();
         self.tasks.lock().unwrap().spawn(async move {
             let flag = Arc::new(AtomicBool::new(false));
             let mut src: &[u8] = &data;
@@ -160,6 +164,7 @@ impl Transfers {
             size,
         });
         let (me, path) = (self.clone(), path.to_path_buf());
+        let _rt = self.rt.enter();
         self.tasks.lock().unwrap().spawn(async move {
             let header = Header { id, item: Item::File { name }, size };
             let result = match tokio::fs::File::open(&path).await {

@@ -982,8 +982,11 @@ async fn files_and_clipboard_go_both_ways_intact() {
     assert!(ok);
     assert!(path.unwrap().ends_with("report (2).bin"));
 
-    // Clipboard, both ways.
-    assert!(viewer.send_clipboard("text/plain;charset=utf-8", "héllo".as_bytes().to_vec()));
+    // Clipboard, both ways. The apps call from their own threads, outside the runtime.
+    let sent = std::thread::scope(|s| {
+        s.spawn(|| viewer.send_clipboard("text/plain;charset=utf-8", "héllo".as_bytes().to_vec())).join().unwrap()
+    });
+    assert!(sent);
     let e = wait_for(&mut hrx, |e| matches!(e, Event::ClipboardReceived { .. })).await;
     assert!(
         matches!(e, Event::ClipboardReceived { ref mime, ref data, .. } if mime == "text/plain;charset=utf-8" && data == "héllo".as_bytes())
