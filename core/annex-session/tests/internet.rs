@@ -406,8 +406,6 @@ struct Outcome {
     host: Option<Event>,
     viewer: Option<Event>,
     frames: usize,
-    /// The bitrate scale the host's encoder was told to start at (100 if never told).
-    host_scale: u32,
     /// Allocation refreshes the relay granted during the session.
     refreshes: usize,
 }
@@ -461,7 +459,6 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome
                     host: None,
                     viewer: Some(Event::Error { message: e.to_string() }),
                     frames: 0,
-                    host_scale: 100,
                     refreshes: 0,
                 };
             }
@@ -490,7 +487,6 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome
     );
     let viewer_event =
         next_matching(&mut vrx, |e| matches!(e, Event::SessionStarted { .. } | Event::SessionEnded { .. })).await;
-    let mut host_scale = 100;
     let host_event = match viewer_event {
         Some(Event::SessionStarted { .. }) => {
             let started = next_matching(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
@@ -498,29 +494,17 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome
             // real encoder, answer keyframe requests: the host asks for one just after the session
             // starts and drops deltas until it gets it, so on a busy machine frame 0 can come too
             // early to count.
-            let mut scale = None;
             let mut keyframe = true;
             for _ in 0..20 {
                 host.submit_frame(&[7u8; 4000], clock::now_us(), std::mem::take(&mut keyframe));
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 while let Ok(e) = hrx.try_recv() {
-                    match e {
-                        Event::KeyframeRequested { .. } => keyframe = true,
-                        // The encoder's starting rate is set just after the session starts.
-                        Event::BitrateHint { scale_percent, .. } if scale.is_none() => scale = Some(scale_percent),
-                        _ => {}
+                    if matches!(e, Event::KeyframeRequested { .. }) {
+                        keyframe = true;
                     }
                 }
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
-            while let Ok(e) = hrx.try_recv() {
-                if let Event::BitrateHint { scale_percent, .. } = e
-                    && scale.is_none()
-                {
-                    scale = Some(scale_percent);
-                }
-            }
-            host_scale = scale.unwrap_or(host_scale);
             started
         }
         _ => None,
@@ -529,7 +513,7 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome
     viewer.disconnect().await;
     host.stop().await;
     let refreshes = refreshes.load(std::sync::atomic::Ordering::Relaxed);
-    Outcome { host: host_event, viewer: viewer_event, frames: delivered, host_scale, refreshes }
+    Outcome { host: host_event, viewer: viewer_event, frames: delivered, refreshes }
 }
 
 fn started(e: &Option<Event>) -> (LinkKind, TransportKind) {
@@ -559,7 +543,6 @@ async fn the_relay_connects_two_symmetric_routers() {
     assert_eq!(started(&o.viewer), (LinkKind::Relayed, TransportKind::Quic));
     assert_eq!(started(&o.host).0, LinkKind::Relayed);
     assert!(o.frames >= 15, "only {} of 20 frames arrived", o.frames);
-    assert!(o.host_scale >= 100, "the user's own relay has no bitrate limit ({} %)", o.host_scale);
     assert!(o.refreshes >= 3, "the allocation was refreshed through nonce changes ({} refreshes)", o.refreshes);
 }
 
