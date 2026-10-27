@@ -1,12 +1,16 @@
 //! Adaptive bitrate: turns viewer receiver reports into an encoder bitrate scale and an FEC level.
 //!
 //! Loss-based with a delay guard, in the spirit of GCC/TFRC but deliberately simple:
+//! - a queue of a few hundred milliseconds (RTT ≥ 3 × the best + 100 ms) → halve at once: the
+//!   link is far slower than the stream, and every second at this rate adds more delay;
 //! - a lost frame, heavy datagram loss (> 5 %), or RTT rising well above the best seen →
 //!   multiplicative decrease (× 0.8) and more parity;
 //! - RTT creeping up (≥ 1.5 × the best + 8 ms, the first sign of a Wi-Fi queue building) →
 //!   gentle decrease (× 0.9) before anything is lost;
 //! - moderate datagram loss (2–5 %) → hold the rate, add parity;
-//! - clean intervals → additive increase (+5 % of the nominal rate) and slowly less parity.
+//! - clean intervals → 5 % more each time (at least two points) and slowly less parity. Growing
+//!   by a share of the current rate, not of the nominal one, keeps a slow link from being
+//!   overshot again within a second of recovering.
 //!
 //! The scale is a percentage of the app's normal bitrate for the stream, so the core needs no
 //! codec knowledge.
@@ -15,7 +19,9 @@ use std::collections::VecDeque;
 
 use annex_proto::{Mode, Quality, ReceiverReport, StreamConfig};
 
-pub const MIN_SCALE: u32 = 20;
+/// The floor, as a percentage of the nominal bitrate: about 1 Mbit/s for 1440p at 60 fps. A
+/// link slower than the floor builds a queue that delays the picture by seconds, so it's low.
+pub const MIN_SCALE: u32 = 4;
 pub const MAX_SCALE: u32 = 150;
 pub const MIN_FEC: u32 = 10;
 pub const MAX_FEC: u32 = 40;
@@ -102,9 +108,10 @@ impl RateController {
         let total = r.shards as u64 + r.recovered as u64;
         let shard_loss = if total == 0 { 0.0 } else { r.recovered as f64 / total as f64 };
         let best_rtt_us = self.recent_rtt_us.iter().copied().min();
-        let (rtt_congested, rtt_rising) = match (best_rtt_us, r.rtt_us) {
-            (_, 0) | (None, _) => (false, false),
+        let (rtt_queued, rtt_congested, rtt_rising) = match (best_rtt_us, r.rtt_us) {
+            (_, 0) | (None, _) => (false, false, false),
             (Some(best), rtt) => (
+                rtt > best.saturating_mul(3).saturating_add(100_000),
                 rtt > best.saturating_mul(2).saturating_add(15_000),
                 rtt > best.saturating_add(best / 2).saturating_add(8_000),
             ),
@@ -116,7 +123,10 @@ impl RateController {
             self.recent_rtt_us.push_back(r.rtt_us);
         }
 
-        if r.lost > 0 || shard_loss > 0.05 || rtt_congested {
+        if rtt_queued {
+            self.scale = (self.scale / 2).max(MIN_SCALE.min(self.ceiling));
+            self.fec = (self.fec + 5).min(MAX_FEC);
+        } else if r.lost > 0 || shard_loss > 0.05 || rtt_congested {
             self.scale = (self.scale * 4 / 5).max(MIN_SCALE.min(self.ceiling));
             self.fec = (self.fec + 5).min(MAX_FEC);
         } else if rtt_rising {
@@ -124,7 +134,7 @@ impl RateController {
         } else if shard_loss > 0.02 {
             self.fec = (self.fec + 2).min(MAX_FEC);
         } else if r.frames > 0 {
-            self.scale = (self.scale + 5).min(self.ceiling);
+            self.scale = (self.scale + (self.scale / 20).max(2)).min(self.ceiling);
             self.fec = self.fec.saturating_sub(1).max(MIN_FEC);
         }
         RateDecision { scale_percent: self.scale, fec_percent: self.fec, scale_changed: self.scale != before }
@@ -226,10 +236,26 @@ mod tests {
         }
         // The path settles at a steady 30 ms: congested at first compared to 3 ms, but once the
         // low samples age out the rate climbs again instead of staying pinned at the floor.
-        for _ in 0..RTT_WINDOW + 30 {
+        for _ in 0..RTT_WINDOW + 80 {
             c.on_report(&report(60, 0, 1500, 0, 30_000));
         }
         assert_eq!(c.scale_percent(), MAX_SCALE);
+    }
+
+    #[test]
+    fn a_link_slower_than_the_stream_drains_its_queue() {
+        // The Mint laptop over Tailscale: 140 ms of path, then seconds of queue at 20 % of a
+        // 1440p stream. Halving on a deep queue reaches a rate the link carries within a few
+        // reports, far below the old 20 % floor.
+        let mut c = RateController::default();
+        for _ in 0..3 {
+            c.on_report(&report(25, 0, 200, 0, 140_000));
+        }
+        for _ in 0..5 {
+            c.on_report(&report(25, 0, 300, 0, 1_200_000));
+        }
+        assert!(c.scale_percent() <= 8, "{}", c.scale_percent());
+        assert!(c.scale_percent() >= MIN_SCALE);
     }
 
     #[test]
