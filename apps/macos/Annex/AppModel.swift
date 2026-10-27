@@ -97,9 +97,11 @@ final class AppModel: ObservableObject {
     private func updateKeepAwake() {
         let active = viewer != nil || !hostStatus.viewers.isEmpty || !hostStatus.extendViewers.isEmpty
         if active, keepAwake == nil {
+            Annex.log(.debug, "[session] keeping this Mac awake while the session runs")
             keepAwake = ProcessInfo.processInfo.beginActivity(
                 options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled], reason: "An Annex session is running")
         } else if !active, let token = keepAwake {
+            Annex.log(.debug, "[session] no session: this Mac may sleep again")
             ProcessInfo.processInfo.endActivity(token)
             keepAwake = nil
         }
@@ -132,6 +134,9 @@ final class AppModel: ObservableObject {
             .sink { [weak self] scale in self?.host?.extendScale = scale }
             .store(in: &cancellables)
         guard !Self.isRunningTests else { return }
+        $pane.dropFirst().removeDuplicates()
+            .sink { Annex.log(.debug, "[app] page: \($0)") }
+            .store(in: &cancellables)
         start()
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in self?.refreshPermissions() }
@@ -184,9 +189,15 @@ final class AppModel: ObservableObject {
 
     func refreshPermissions() {
         let recording = CGPreflightScreenCaptureAccess()
-        if recording != screenRecordingAllowed { screenRecordingAllowed = recording }
+        if recording != screenRecordingAllowed {
+            Annex.log(.info, "[permissions] Screen Recording is now \(recording ? "allowed" : "off")")
+            screenRecordingAllowed = recording
+        }
         let trusted = InputInjector.isTrusted
-        if trusted != accessibilityTrusted { accessibilityTrusted = trusted }
+        if trusted != accessibilityTrusted {
+            Annex.log(.info, "[permissions] Accessibility is now \(trusted ? "allowed" : "off")")
+            accessibilityTrusted = trusted
+        }
         settings.refreshLaunchAtLogin()
     }
 
@@ -209,12 +220,17 @@ final class AppModel: ObservableObject {
             // their own data folder.
             setenv("ANNEX_KEY_STORAGE", "file", 0)
             #endif
+            // Before the core starts, so its first lines already follow the setting.
+            settings.$verboseLogging.removeDuplicates().sink { Annex.setVerboseLogging($0) }.store(in: &cancellables)
             let name = settings.customDeviceName ?? Self.systemName
             let core = try CoreClient(dataDirectory: Self.dataDirectory, deviceName: name)
             self.core = core
+            logStartup(core)
             settings.$headless.sink { [weak core] on in core?.setHeadless(on) }.store(in: &cancellables)
             settings.$receiveFiles.sink { [weak core] on in
-                core?.setDownloads(on ? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first : nil)
+                let folder = on ? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first : nil
+                Annex.log(.debug, "[transfer] incoming files " + (folder.map { "go to \($0.path)" } ?? "are refused"))
+                core?.setDownloads(folder)
             }.store(in: &cancellables)
             clipboard.onCopy = { [weak self] mime, data in self?.copied(mime: mime, data: data) }
             notch.onDrop = { [weak self] urls in self?.send(files: urls) }
@@ -224,8 +240,10 @@ final class AppModel: ObservableObject {
                 if on { clipboard.start() } else { clipboard.stop(); copiedWhileAway = false }
             }.store(in: &cancellables)
             settings.$reverseScrollOnOthers.sink { [weak self] on in
-                guard let self else { return }
-                viewerWindow?.setReverseScroll(on && viewerPeerOS.map { $0 != "macos" } == true)
+                guard let self, let viewerWindow else { return }
+                let reverse = on && viewerPeerOS.map { $0 != "macos" } == true
+                Annex.log(.info, "[scroll] reverse scrolling \(reverse ? "on" : "off") (setting \(on), host \(viewerPeerOS ?? "unknown"))")
+                viewerWindow.setReverseScroll(reverse)
             }.store(in: &cancellables)
             deviceName = core.deviceName
             // Show up under Nearby on other computers as soon as Annex is open.
@@ -240,10 +258,52 @@ final class AppModel: ObservableObject {
                 .sink { [weak self] pane, on, busy in self?.updatePeerToPeerBrowsing(pane: pane, on: on && !busy) }
                 .store(in: &cancellables)
         } catch {
+            // Usually before the core could open the log, so this may only reach a terminal.
+            Annex.log(.error, "[app] couldn't start: \(error.localizedDescription)")
             startupError = error.localizedDescription
         }
         refreshDisplays()
         refreshTrusted()
+    }
+
+    /// The first lines of every log: what this Mac is and how Annex is set up.
+    private func logStartup(_ core: CoreClient) {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let build = "\(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?"))"
+        #if DEBUG
+        let config = "Debug"
+        #else
+        let config = "Release"
+        #endif
+        #if arch(arm64)
+        let arch = "Apple silicon"
+        #else
+        let arch = "Intel"
+        #endif
+        Annex.log(.info, "[app] Annex \(build) \(config), core \(Annex.version), "
+                  + "\(ProcessInfo.processInfo.operatingSystemVersionString), \(Self.hardwareModel) (\(arch))")
+        Annex.log(.info, "[app] device \"\(core.deviceName)\", identity \(core.fingerprint.prefix(16))…, "
+                  + "data \(Self.dataDirectory.path), opened \(Self.launchedAtLogin ? "at login" : "by the user")")
+        for (i, screen) in NSScreen.screens.enumerated() {
+            let f = screen.frame
+            Annex.log(.info, "[display] screen \(i + 1) of \(NSScreen.screens.count): \(screen.localizedName), "
+                      + "\(Int(f.width))×\(Int(f.height)) points at \(screen.backingScaleFactor)x"
+                      + (screen.safeAreaInsets.top > 0 ? ", notch" : "") + (screen == NSScreen.main ? ", main" : ""))
+        }
+        Annex.log(.info, "[permissions] Screen Recording \(CGPreflightScreenCaptureAccess() ? "allowed" : "off"), "
+                  + "Accessibility \(InputInjector.isTrusted ? "allowed" : "off"), "
+                  + "virtual displays \(HostController.extendSupported ? "supported" : "not supported")")
+        Annex.log(.info, "[settings] \(settings.snapshot)")
+    }
+
+    /// "Mac15,12", for the log.
+    private static var hardwareModel: String {
+        var size = 0
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        guard size > 0 else { return "Mac" }
+        var buf = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &buf, &size, nil, 0)
+        return String(cString: buf)
     }
 
     static var systemName: String { Host.current().localizedName ?? "Mac" }
@@ -253,6 +313,7 @@ final class AppModel: ObservableObject {
         guard let core else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let stored = core.setDeviceName(trimmed.isEmpty ? Self.systemName : trimmed)
+        Annex.log(.info, "[app] renamed \"\(deviceName)\" to \"\(stored)\"")
         settings.customDeviceName = trimmed.isEmpty ? nil : stored
         deviceName = stored
         core.setPresence(true)
@@ -264,7 +325,11 @@ final class AppModel: ObservableObject {
     }
 
     func refreshDisplays() {
-        displays = Displays.all()
+        let all = Displays.all()
+        if all != displays {
+            Annex.log(.debug, "[display] screens: " + all.map { "\($0.name) \($0.id) \($0.pixelWidth)×\($0.pixelHeight) px" }.joined(separator: "; "))
+        }
+        displays = all
         if selectedDisplayID == nil || !displays.contains(where: { $0.id == selectedDisplayID }) {
             selectedDisplayID = displays.first?.id
         }
@@ -277,19 +342,29 @@ final class AppModel: ObservableObject {
     // MARK: Hosting
 
     func setHosting(_ on: Bool) {
+        Annex.log(.info, "[host] \(on ? "start" : "stop") sharing (asked by the user)")
         on ? startHosting() : stopHosting()
     }
 
     private func startHosting() {
-        guard let core, host == nil,
-              let display = displays.first(where: { $0.id == selectedDisplayID }) ?? displays.first else { return }
+        guard let core else { return Annex.log(.warn, "[host] can't share: the core didn't start") }
+        guard host == nil else { return Annex.log(.debug, "[host] already sharing") }
+        guard let display = displays.first(where: { $0.id == selectedDisplayID }) ?? displays.first else {
+            return Annex.log(.warn, "[host] can't share: no screen found")
+        }
         // Ask macOS once per launch; after that the Share page explains what to do instead of
         // showing the system dialog every time sharing starts.
         screenRecordingAllowed = CGPreflightScreenCaptureAccess()
         if !screenRecordingAllowed && !askedForScreenRecording {
             askedForScreenRecording = true
-            CGRequestScreenCaptureAccess()
+            Annex.log(.info, "[permissions] asking macOS for Screen Recording")
+            let granted = CGRequestScreenCaptureAccess()
+            Annex.log(.info, "[permissions] Screen Recording prompt: \(granted ? "allowed" : "not allowed yet")")
+        } else if !screenRecordingAllowed {
+            Annex.log(.warn, "[permissions] sharing without Screen Recording: viewers will see a black screen")
         }
+        Annex.log(.info, "[host] sharing \(display.name) (\(display.id), \(display.pixelWidth)×\(display.pixelHeight) px), "
+                  + "hardware encoder \(settings.preferHardwareEncoder ? "preferred" : "off"), extend scale \(settings.extendScale)")
         let h = HostController(core: core, display: display, preferHardware: settings.preferHardwareEncoder)
         h.extendScale = settings.extendScale
         h.onStatus = { [weak self] s in self?.hostStatus = s }
@@ -299,21 +374,24 @@ final class AppModel: ObservableObject {
             host = h
             isHosting = true
             hostStatus = h.status
+            Annex.log(.info, "[host] sharing on port \(h.status.listeningPort ?? 0)")
             if settings.peerToPeerWiFi, let port = h.status.listeningPort.flatMap({ UInt16(exactly: $0) }), port > 0 {
                 do {
                     peerToPeerAdvertiser = try PeerToPeerAdvertiser(name: core.deviceName, fingerprint: core.fingerprint,
                                                                     extend: HostController.extendSupported, corePort: port,
                                                                     visibility: peerToPeerVisibility)
                 } catch {
-                    Annex.log("p2p: couldn't advertise: \(error)", error: true)
+                    Annex.log(.warn, "[network] peer-to-peer Wi-Fi: couldn't advertise: \(error)")
                 }
             }
         } catch {
+            Annex.log(.error, "[host] couldn't start sharing: \(error.localizedDescription)")
             hostStatus = HostController.Status(error: error.localizedDescription)
         }
     }
 
     private func stopHosting() {
+        if host != nil { Annex.log(.info, "[host] sharing stopped") }
         internetShare = nil
         peerToPeerAdvertiser?.stop()
         peerToPeerAdvertiser = nil
@@ -340,17 +418,20 @@ final class AppModel: ObservableObject {
 
     /// Host: get a code for a computer on another network to type.
     func shareCode() {
-        guard let host else { return }
+        guard let host else { return Annex.log(.warn, "[network] no code: not sharing") }
         internetShare = .starting
+        Annex.log(.info, "[network] getting a code from \(settings.server), own relay \(settings.ownRelay == nil ? "none" : "set")")
         do {
             try host.shareCode(server: settings.server,
                                ownRelay: settings.ownRelay)
         } catch {
+            Annex.log(.warn, "[network] couldn't get a code: \(error.localizedDescription)")
             internetShare = .ended(error.localizedDescription)
         }
     }
 
     func stopCode() {
+        Annex.log(.info, "[network] code stopped by the user")
         host?.stopCode()
         internetShare = nil
     }
@@ -369,6 +450,7 @@ final class AppModel: ObservableObject {
             switch (reason, internetShare) {
             case ("stopped", _): internetShare = nil
             case ("used", .relay(_, false, _)):
+                Annex.log(.warn, "[network] the code was used, but no direct path or relay reached the other computer")
                 internetShare = .ended("The other computer's network blocks direct connections, and no relay was available. "
                                        + "Add your own relay in Settings → Advanced.")
             case ("used", _): internetShare = .ended(nil)
@@ -394,6 +476,9 @@ final class AppModel: ObservableObject {
     func connectByCode() {
         let code = manualCode.trimmingCharacters(in: .whitespaces)
         guard let core, !code.isEmpty else { return }
+        // Never the code: it lets anyone in for 10 minutes.
+        Annex.log(.info, "[viewer] connecting by code through \(settings.server), extend \(extendMode), "
+                  + "control \(settings.controlWhenViewing), quality \(settings.quality)")
         disconnectViewer()
         switchOnStart = false
         holdingWindow = false
@@ -423,6 +508,7 @@ final class AppModel: ObservableObject {
             viewerStatus = "Connecting with code \(code.uppercased())…"
             viewingByCode = true
         } catch {
+            Annex.log(.warn, "[viewer] couldn't connect by code: \(error.localizedDescription)")
             viewerStatus = "Couldn't connect: \(error.localizedDescription)"
         }
     }
@@ -467,6 +553,7 @@ final class AppModel: ObservableObject {
     /// has to pair with the PIN shown here.
     func letNewMacsFindThisOne() {
         let until = Date().addingTimeInterval(Self.newMacWindow)
+        Annex.log(.info, "[network] every Mac nearby can find this one for \(Int(Self.newMacWindow / 60)) minutes")
         visibleToNewMacsUntil = until
         updatePeerToPeerVisibility()
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.newMacWindow) { [weak self] in
@@ -476,6 +563,7 @@ final class AppModel: ObservableObject {
     }
 
     func hideFromNewMacs() {
+        Annex.log(.info, "[network] only paired Macs can find this one again")
         visibleToNewMacsUntil = nil
         updatePeerToPeerVisibility()
     }
@@ -496,7 +584,9 @@ final class AppModel: ObservableObject {
     /// Host: ask a viewer (a Windows PC) to start its hotspot; this Mac joins it when it answers.
     func switchViewerToDirectWiFi(_ viewer: HostController.Viewer) {
         directStatus = "Asking \(viewer.name) to start direct Wi-Fi…"
+        Annex.log(.info, "[network] asking \(viewer.name) (session \(viewer.id)) to start direct Wi-Fi")
         if host?.requestDirectLink(session: viewer.id) != true {
+            Annex.log(.warn, "[network] direct Wi-Fi: \(viewer.name) is no longer connected")
             directStatus = "\(viewer.name) is no longer connected."
         }
     }
@@ -507,9 +597,13 @@ final class AppModel: ObservableObject {
         // Pin the certificate only for hosts we already trust; unknown hosts get a prompt.
         let pinned = peer.fingerprint.flatMap { fp in trusted.contains { $0.fingerprint == fp } ? fp : nil }
         let useDirect = useDirectWiFi
+        Annex.log(.info, "[viewer] connect to \(peer.name) (\(peer.instance)), \(pinned == nil ? "not paired" : "paired"), "
+                  + "extend \(extendMode), direct Wi-Fi \(useDirect)")
         guard settings.peerToPeerWiFi, let fp = peer.fingerprint,
               let p2p = peerToPeerHosts.first(where: { $0.fingerprint == fp }) else {
-            guard let address = peer.connectAddress else { return }
+            guard let address = peer.connectAddress else {
+                return Annex.log(.warn, "[viewer] \(peer.name) has no address to connect to")
+            }
             connect(address: address, title: peer.name, expectedFingerprint: pinned)
             switchOnStart = useDirect && viewer != nil
             return
@@ -520,17 +614,24 @@ final class AppModel: ObservableObject {
         let generation = viewerGeneration
         viewerStatus = "Connecting to \(peer.name)…"
         var tunnel: PeerToPeerTunnel?
-        tunnel = try? PeerToPeerTunnel(to: p2p.endpoint) { [weak self] local in
-            guard let self, self.viewerGeneration == generation else { tunnel?.stop(); return }
-            let address = [peer.connectAddress, local].compactMap { $0 }.joined(separator: ",")
-            guard !address.isEmpty else {
-                tunnel?.stop()
-                self.viewerStatus = "Couldn't reach \(peer.name) over peer-to-peer Wi-Fi."
-                return
+        Annex.log(.debug, "[network] \(peer.name) is also on peer-to-peer Wi-Fi: opening a relay")
+        do {
+            tunnel = try PeerToPeerTunnel(to: p2p.endpoint) { [weak self] local in
+                guard let self, self.viewerGeneration == generation else { tunnel?.stop(); return }
+                if local == nil { Annex.log(.warn, "[network] peer-to-peer relay to \(peer.name) didn't open") }
+                let address = [peer.connectAddress, local].compactMap { $0 }.joined(separator: ",")
+                guard !address.isEmpty else {
+                    tunnel?.stop()
+                    Annex.log(.warn, "[viewer] couldn't reach \(peer.name): no network address and no peer-to-peer relay")
+                    self.viewerStatus = "Couldn't reach \(peer.name) over peer-to-peer Wi-Fi."
+                    return
+                }
+                self.connect(address: address, title: peer.name, expectedFingerprint: pinned, tunnel: local == nil ? nil : tunnel)
+                if local == nil { tunnel?.stop() }
+                self.switchOnStart = useDirect && self.viewer != nil
             }
-            self.connect(address: address, title: peer.name, expectedFingerprint: pinned, tunnel: local == nil ? nil : tunnel)
-            if local == nil { tunnel?.stop() }
-            self.switchOnStart = useDirect && self.viewer != nil
+        } catch {
+            Annex.log(.warn, "[network] couldn't open a peer-to-peer relay to \(peer.name): \(error)")
         }
         if tunnel == nil, let address = peer.connectAddress {
             connect(address: address, title: peer.name, expectedFingerprint: pinned)
@@ -545,7 +646,9 @@ final class AppModel: ObservableObject {
     }
 
     private func connect(address: String, title: String, expectedFingerprint: String?, tunnel: PeerToPeerTunnel? = nil) {
-        guard let core else { tunnel?.stop(); return }
+        guard let core else { tunnel?.stop(); return Annex.log(.warn, "[viewer] can't connect: the core didn't start") }
+        Annex.log(.info, "[viewer] connecting to \(address) (\(title)), \(expectedFingerprint == nil ? "unpinned" : "pinned"), "
+                  + "peer-to-peer relay \(tunnel != nil), extend \(extendMode), control \(settings.controlWhenViewing), quality \(settings.quality)")
         disconnectViewer()
         peerToPeerTunnel = tunnel
         switchOnStart = false
@@ -576,6 +679,7 @@ final class AppModel: ObservableObject {
             viewerStatus = "Connecting to \(title)…"
             viewingByCode = false
         } catch {
+            Annex.log(.warn, "[viewer] couldn't connect to \(address): \(error.localizedDescription)")
             viewerStatus = "Couldn't connect: \(error.localizedDescription)"
         }
     }
@@ -583,6 +687,7 @@ final class AppModel: ObservableObject {
     func disconnectViewer() {
         // This viewer's own sessionEnded is ignored from here on (see viewerGeneration), so reset
         // what it would have reset.
+        if viewer != nil { Annex.log(.info, "[viewer] disconnecting from \(viewerPeerName)") }
         viewerGeneration += 1
         // The window goes first: freeing the connection waits for the bye to go out.
         let w = viewerWindow
@@ -646,8 +751,14 @@ final class AppModel: ObservableObject {
             if !holdingWindow { viewerWindow?.show(fullScreen: settings.openFullScreen) }
             controllingHost = s.input ?? false
             viewerPeerOS = s.peerOs
-            viewerWindow?.setReverseScroll(settings.reverseScrollOnOthers && s.peerOs.map { $0 != "macos" } == true)
-            viewerWindow?.setRelativePointer(s.mode == "extend" && s.pointerDeltas == true)
+            let reverse = settings.reverseScrollOnOthers && s.peerOs.map { $0 != "macos" } == true
+            let relative = s.mode == "extend" && s.pointerDeltas == true
+            Annex.log(.info, "[viewer] \(holdingWindow ? "window waits for direct Wi-Fi" : "window shown\(settings.openFullScreen ? " full screen" : "")")"
+                      + " (\(route.isEmpty ? "on the network" : route.lowercased())), controlling \(controllingHost), "
+                      + "pointer \(relative ? "movement" : "positions")")
+            Annex.log(.info, "[scroll] reverse scrolling \(reverse ? "on" : "off") (setting \(settings.reverseScrollOnOthers), host \(s.peerOs ?? "unknown"))")
+            viewerWindow?.setReverseScroll(reverse)
+            viewerWindow?.setRelativePointer(relative)
             if settings.controlWhenViewing {
                 viewerWindow?.setControlling(controllingHost, hostName: label(s.peerName))
             }
@@ -655,6 +766,7 @@ final class AppModel: ObservableObject {
             // The title set at session start keeps how it's reached (" · relay"); the size is a detail.
             viewerWindow?.setStreamSize(width: s.width, height: s.height)
         case .inputAllowed(_, let allowed):
+            if allowed != controllingHost { Annex.log(.info, "[input] \(allowed ? "now controlling" : "no longer controlling") \(viewerPeerName)") }
             controllingHost = allowed
             viewerWindow?.setControlling(allowed, hostName: label(viewerPeerName))
         case .latencyStats(let l):
@@ -662,22 +774,26 @@ final class AppModel: ObservableObject {
         case .directLinkOffer(_, let ssid, let passphrase):
             joinDirectLink(ssid: ssid, passphrase: passphrase, asViewer: true)
         case .directLinkUnavailable(_, let reason):
+            Annex.log(.warn, "[network] direct Wi-Fi not available: \(reason)")
             directStatus = reason
             directReconnect = nil
             showHeldWindow()
         case .directLinkRequested:
             // A host asks this Mac to run the hotspot; only Windows can.
+            Annex.log(.info, "[network] refused to run a hotspot: a Mac can't")
             viewer?.refuseDirectLink(reason: "This Mac can't run a hotspot. Start direct Wi-Fi from the Windows PC.")
         case .sessionEnded(_, let reason):
             if reason == "user" { onDirectWiFi = false }
             // Switching networks drops the old connection on purpose; reconnect instead of reporting it.
             if var d = directReconnect, d.attempts > 0 {
                 d.attempts -= 1
+                Annex.log(.info, "[network] reconnecting to \(d.name) over direct Wi-Fi in 2 s (\(d.attempts) tries left after this)")
                 directReconnect = d
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.reconnectDirect() }
                 viewerStatus = nil
             } else {
                 if directReconnect != nil {
+                    Annex.log(.warn, "[network] gave up reconnecting to \(viewerPeerName) over direct Wi-Fi")
                     directStatus = "Couldn't reach \(viewerPeerName) on direct Wi-Fi. Connect again from Nearby."
                     directReconnect = nil
                 }
@@ -706,6 +822,7 @@ final class AppModel: ObservableObject {
     private func showHeldWindow() {
         guard holdingWindow else { return }
         holdingWindow = false
+        Annex.log(.info, "[viewer] no direct Wi-Fi: showing the picture over the current network")
         viewerWindow?.show(fullScreen: settings.openFullScreen)
     }
 
@@ -714,6 +831,7 @@ final class AppModel: ObservableObject {
     /// Viewer: ask the other computer (a Windows PC) to start its hotspot for a direct link.
     func switchToDirectWiFi() {
         guard let viewer else { return }
+        Annex.log(.info, "[network] asking \(viewerPeerName) to start direct Wi-Fi")
         directStatus = "Asking \(viewerPeerName) to start direct Wi-Fi…"
         viewer.requestDirectLink()
     }
@@ -722,6 +840,8 @@ final class AppModel: ObservableObject {
     /// the viewer reconnects by itself once this Mac shows up on the hotspot.
     private func joinDirectLink(ssid: String, passphrase: String, asViewer: Bool) {
         directStatus = "Joining “\(ssid)”. The picture pauses for a moment."
+        // Never the passphrase.
+        Annex.log(.info, "[network] joining hotspot \"\(ssid)\" as the \(asViewer ? "viewer" : "host")")
         if asViewer, let fp = viewerFingerprint {
             directReconnect = (fp, viewerPeerName, extendMode, 4)
         }
@@ -729,16 +849,19 @@ final class AppModel: ObservableObject {
             let error = DirectWiFi.join(ssid: ssid, passphrase: passphrase)
             DispatchQueue.main.async {
                 guard let self else { return }
-                if error != nil {
+                if let error {
+                    Annex.log(.warn, "[network] couldn't join \"\(ssid)\": \(DirectWiFi.redact(error, passphrase))")
                     self.directReconnect = nil
                     self.directStatus = "Couldn't join automatically. Join “\(ssid)” from the Wi-Fi menu (password: \(passphrase)), then connect again."
                     self.showHeldWindow()
                 } else if !asViewer {
+                    Annex.log(.info, "[network] on \"\(ssid)\"; the viewer reconnects by itself")
                     self.hostDirectWiFi = ssid
                     self.directStatus = "On direct Wi-Fi (“\(ssid)”)."
                 } else if self.directReconnect != nil {
                     // This Mac left the old network, so the old session is dead: drop it now
                     // instead of waiting for it to time out, and reconnect over the hotspot.
+                    Annex.log(.info, "[network] on \"\(ssid)\"; dropping the old session to reconnect over it")
                     self.disconnectViewer()
                     self.reconnectDirect()
                 }
@@ -758,11 +881,14 @@ final class AppModel: ObservableObject {
         guard !ssid.isEmpty, !passphrase.isEmpty, !joiningPCHotspot else { return }
         joiningPCHotspot = true
         directStatus = "Joining “\(ssid)”…"
+        Annex.log(.info, "[network] joining a PC's hotspot \"\(ssid)\" by hand")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let error = DirectWiFi.join(ssid: ssid, passphrase: passphrase)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.joiningPCHotspot = false
+                Annex.log(error == nil ? .info : .warn, "[network] hotspot \"\(ssid)\": "
+                          + (error.map { "couldn't join: \(DirectWiFi.redact($0, passphrase))" } ?? "joined"))
                 if let error {
                     self.directStatus = "Couldn't join “\(ssid)”: \(error)"
                 } else if self.isHosting {
@@ -779,6 +905,7 @@ final class AppModel: ObservableObject {
 
     private func reconnectDirect() {
         guard let d = directReconnect else { return }
+        Annex.log(.info, "[network] reconnecting to \(d.name) at \(DirectWiFi.windowsHotspotAddress) on direct Wi-Fi")
         extendMode = d.extend
         connect(address: "\(DirectWiFi.windowsHotspotAddress):47800", title: d.name, expectedFingerprint: d.fingerprint)
     }
@@ -795,10 +922,14 @@ final class AppModel: ObservableObject {
     private func copied(mime: String, data: Data) {
         if viewer != nil, controllingHost {
             if viewerWindow?.isFocused == true {
-                _ = viewer?.sendClipboard(mime: mime, data: data)
+                let sent = viewer?.sendClipboard(mime: mime, data: data) == true
+                Annex.log(sent ? .debug : .warn, "[clipboard] \(sent ? "sent" : "couldn't send") \(mime), \(data.count) bytes to \(viewerPeerName)")
             } else {
+                Annex.log(.debug, "[clipboard] held \(mime), \(data.count) bytes until the viewer window is in front")
                 copiedWhileAway = true
             }
+        } else if viewer != nil {
+            Annex.log(.debug, "[clipboard] not sent to \(viewerPeerName): not controlling it")
         }
         host?.sendClipboard(mime: mime, data: data)
     }
@@ -807,15 +938,21 @@ final class AppModel: ObservableObject {
 
     /// Who dropped files go to: the host this Mac controls, else the viewers controlling it.
     private func updateNotch() {
-        guard settings.notchDrop else { return notch.setTarget(nil) }
+        guard settings.notchDrop else { return notch.setTarget(nil, why: "notch drop is off") }
         if viewer != nil, controllingHost {
-            notch.setTarget(label(viewerPeerName))
+            notch.setTarget(label(viewerPeerName), why: "controlling it")
+        } else if let name = host?.controllingViewer {
+            notch.setTarget(label(name), why: "it controls this Mac")
         } else {
-            notch.setTarget(host?.controllingViewer.map(label))
+            notch.setTarget(nil, why: viewer != nil ? "viewing without control" : isHosting ? "no viewer controls this Mac" : "no session")
         }
     }
 
     private func send(files: [URL]) {
+        let bytes = files.reduce(Int64(0)) { $0 + Int64((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        let to = viewer != nil && controllingHost ? viewerPeerName : host?.controllingViewer ?? "nobody"
+        Annex.log(.info, "[transfer] sending \(files.count) file(s), \(bytes) bytes, to \(to): "
+                  + files.map(\.lastPathComponent).joined(separator: ", "))
         for url in files {
             do {
                 if let viewer, controllingHost {
@@ -824,38 +961,46 @@ final class AppModel: ObservableObject {
                     try host?.sendFile(url)
                 }
             } catch {
-                Annex.log("couldn't send a file: \(error.localizedDescription)", error: true)
+                Annex.log(.warn, "[transfer] couldn't send \(url.path): \(error.localizedDescription)")
                 notify("Couldn't send \(url.lastPathComponent)", error.localizedDescription)
             }
         }
     }
 
     private func viewerFocused() {
+        Annex.log(.debug, "[viewer] window in front")
         guard copiedWhileAway, controllingHost else { return }
         copiedWhileAway = false
-        guard let item = clipboard.current() else { return }
-        _ = viewer?.sendClipboard(mime: item.mime, data: item.data)
+        guard let item = clipboard.current() else {
+            return Annex.log(.debug, "[clipboard] copied while away, but nothing to send now")
+        }
+        let sent = viewer?.sendClipboard(mime: item.mime, data: item.data) == true
+        Annex.log(sent ? .debug : .warn, "[clipboard] re-read on focus: \(sent ? "sent" : "couldn't send") \(item.mime), \(item.data.count) bytes")
     }
 
     private func handleSessionEvent(_ e: CoreEvent) {
         defer { updateNotch() }
         switch e {
         case .clipboardReceived(_, let mime, let data):
-            if settings.shareClipboard { clipboard.apply(mime: mime, data: data) }
+            if settings.shareClipboard {
+                clipboard.apply(mime: mime, data: data)
+            } else {
+                Annex.log(.debug, "[clipboard] ignored \(mime), \(data.count) bytes: sharing the clipboard is off")
+            }
         case .transferStarted(let t):
-            Annex.log("transfer: \(t.incoming ? "receiving" : "sending") \(t.size) bytes")
             notch.transferStarted(session: t.sessionId, id: t.id, incoming: t.incoming, name: t.name, size: t.size)
         case .transferProgress(let session, let id, let incoming, let done):
             notch.transferProgress(session: session, id: id, incoming: incoming, done: done)
         case .transferEnded(let session, let id, let incoming, let ok, let path, let error):
-            Annex.log("transfer \(id): \(incoming ? "received" : "sent") \(ok ? "ok" : error ?? "failed")", error: !ok)
             notch.transferEnded(session: session, id: id, incoming: incoming, ok: ok, path: path, error: error)
         case .internetCode, .internetJoined, .internetRelay, .internetCodeEnded:
             handleInternetEvent(e)
         case .directLinkRequested(let session):
+            Annex.log(.info, "[network] refused to run a hotspot for session \(session): a Mac can't")
             host?.refuseDirectLink(session: session)
         case .directLinkUnavailable(_, let reason):
             // Host: the viewer couldn't start a hotspot.
+            Annex.log(.warn, "[network] the viewer couldn't start direct Wi-Fi: \(reason)")
             directStatus = reason
         case .inputRequested(_, let name, let fingerprint):
             NSApp.activate(ignoringOtherApps: true)
@@ -865,17 +1010,25 @@ final class AppModel: ObservableObject {
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Not Now")
             refreshTrusted()
-            if alert.runModal() == .alertFirstButtonReturn,
-               let peer = trusted.first(where: { $0.fingerprint == fingerprint }) {
-                setAllowInput(peer, true)
+            Annex.log(.info, "[input] asking the user: may \(name) control this Mac?")
+            let allowed = alert.runModal() == .alertFirstButtonReturn
+            Annex.log(.info, "[input] the user said \(allowed ? "Allow" : "Not Now") to \(name)")
+            if allowed {
+                if let peer = trusted.first(where: { $0.fingerprint == fingerprint }) {
+                    setAllowInput(peer, true)
+                } else {
+                    Annex.log(.warn, "[input] \(name) isn't paired any more; nothing to allow")
+                }
             }
         case .directLinkOffer(_, let ssid, let passphrase):
             // A Windows viewer runs the hotspot; this Mac (the host) joins it.
             joinDirectLink(ssid: ssid, passphrase: passphrase, asViewer: false)
         case .pairingPin(let p):
-            // Host: show the PIN until pairing finishes or the user cancels.
+            // Host: show the PIN until pairing finishes or the user cancels. Never log the PIN.
+            Annex.log(.info, "[pairing] showing a PIN for \(p.peerName) (request \(p.requestId))")
             let panel = PinPanel(pin: p.pin, peerName: p.peerName,
                                  fingerprint: settings.showTechnicalDetails ? p.fingerprintDisplay : nil) { [weak self] in
+                Annex.log(.info, "[pairing] the user cancelled pairing with \(p.peerName)")
                 self?.core?.cancelRequest(p.requestId)
             }
             pinPanels[p.requestId] = panel
@@ -910,14 +1063,20 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Pair")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
+        Annex.log(.info, "[pairing] asking the user for \(req.peerName)'s PIN (request \(req.requestId))")
         if alert.runModal() == .alertFirstButtonReturn {
-            core.submitPin(requestID: req.requestId, pin: field.stringValue)
+            // Its length only.
+            let ok = core.submitPin(requestID: req.requestId, pin: field.stringValue)
+            Annex.log(ok ? .info : .warn, "[pairing] PIN entered (\(field.stringValue.count) characters)"
+                      + (ok ? "" : ", but the request had already ended"))
         } else {
+            Annex.log(.info, "[pairing] the user cancelled entering the PIN")
             core.cancelRequest(req.requestId)
         }
     }
 
     private func notify(_ title: String, _ text: String) {
+        Annex.log(.debug, "[app] alert: \(title)")
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = text
@@ -928,10 +1087,18 @@ final class AppModel: ObservableObject {
 
     /// Host: let a trusted device control this Mac's mouse and keyboard (or stop it).
     func setAllowInput(_ peer: TrustedPeer, _ allow: Bool) {
+        Annex.log(.info, "[input] \(allow ? "allow" : "stop") \(peer.name) using this Mac's mouse and keyboard")
         if allow && !InputInjector.isTrusted {
+            Annex.log(.info, "[permissions] asking macOS for Accessibility")
             InputInjector.requestTrust()
         }
-        _ = try? core?.setAllowInput(peer.fingerprint, allow)
+        do {
+            if try core?.setAllowInput(peer.fingerprint, allow) == false {
+                Annex.log(.warn, "[input] \(peer.name) isn't paired; nothing changed")
+            }
+        } catch {
+            Annex.log(.warn, "[input] couldn't change control for \(peer.name): \(error.localizedDescription)")
+        }
         refreshTrusted()
         refreshPermissions()
     }
@@ -974,7 +1141,12 @@ final class AppModel: ObservableObject {
     }
 
     func revoke(_ peer: TrustedPeer) {
-        _ = try? core?.untrust(peer.fingerprint)
+        Annex.log(.info, "[pairing] forgetting \(peer.name) (\(peer.fingerprint.prefix(16))…)")
+        do {
+            try core?.untrust(peer.fingerprint)
+        } catch {
+            Annex.log(.warn, "[pairing] couldn't forget \(peer.name): \(error.localizedDescription)")
+        }
         refreshTrusted()
     }
 
@@ -1018,6 +1190,7 @@ final class AppModel: ObservableObject {
         default: wanted = false
         }
         if wanted, peerToPeerBrowser == nil {
+            Annex.log(.debug, "[network] looking for Macs on peer-to-peer Wi-Fi")
             peerToPeerBrowser = PeerToPeerBrowser(known: { [weak self] in
                 Dictionary((self?.trusted ?? []).map { ($0.fingerprint, $0.name) }, uniquingKeysWith: { a, _ in a })
             }) { [weak self] hosts in
@@ -1027,6 +1200,7 @@ final class AppModel: ObservableObject {
                 self.rebuildNearby()
             }
         } else if !wanted, let b = peerToPeerBrowser {
+            Annex.log(.debug, "[network] stopped looking on peer-to-peer Wi-Fi (\(on ? "page closed" : "off or in a session"))")
             b.stop()
             peerToPeerBrowser = nil
             peerToPeerHosts = []
@@ -1035,6 +1209,7 @@ final class AppModel: ObservableObject {
     }
 
     func quit() {
+        Annex.log(.info, "[app] quit")
         disconnectViewer()
         stopHosting()
         // Let viewers get the bye before the process ends.

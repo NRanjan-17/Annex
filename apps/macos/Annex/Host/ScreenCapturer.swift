@@ -20,9 +20,10 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
     /// called meanwhile, so a stop during start can never leave capture running.
     func start(displayID: CGDirectDisplayID, width: Int, height: Int, fps: Int) async throws {
         let (gen, old) = begin()
-        if let old { try? await old.stopCapture() }
+        await Self.end(old)
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
+            Annex.log(.debug, "[capture] display \(displayID) not among \(content.displays.map(\.displayID)) yet")
             throw AnnexError(message: "Display \(displayID) is not available for capture")
         }
         let filter = SCContentFilter(display: display, excludingWindows: [])
@@ -38,7 +39,8 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
         config.queueDepth = 4
         config.capturesAudio = false
 
-        guard isCurrent(gen) else { return }
+        guard isCurrent(gen) else { return Annex.log(.debug, "[capture] start of display \(displayID) superseded") }
+        Annex.log(.debug, "[capture] starting display \(displayID) at \(width)×\(height), \(fps) fps")
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         do {
@@ -47,12 +49,25 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
             if isCurrent(gen) { throw error }
             return
         }
-        if !adopt(stream, generation: gen) { try? await stream.stopCapture() }
+        if !adopt(stream, generation: gen) {
+            Annex.log(.debug, "[capture] display \(displayID) stopped while starting")
+            await Self.end(stream)
+        }
     }
 
     func stop() async {
         let (_, stream) = begin()
-        try? await stream?.stopCapture()
+        await Self.end(stream)
+    }
+
+    /// Stops a stream; failing to is logged, not thrown (it's going away either way).
+    private static func end(_ stream: SCStream?) async {
+        guard let stream else { return }
+        do {
+            try await stream.stopCapture()
+        } catch {
+            Annex.log(.debug, "[capture] stopping a capture: \(error.localizedDescription)")
+        }
     }
 
     // Plain lock/unlock in synchronous helpers: Swift 6.3's type checker crashes on the
@@ -90,10 +105,12 @@ final class ScreenCapturer: NSObject, SCStreamOutput, SCStreamDelegate {
               SCFrameStatus(rawValue: rawStatus) == .complete,
               let pixelBuffer = sampleBuffer.imageBuffer
         else { return }
+        Annex.log(.trace, "[capture] frame \(CVPixelBufferGetWidth(pixelBuffer))×\(CVPixelBufferGetHeight(pixelBuffer))")
         onFrame?(pixelBuffer)
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        Annex.log(.warn, "[capture] macOS stopped a capture: \(error.localizedDescription)")
         onStop?(error)
     }
 }

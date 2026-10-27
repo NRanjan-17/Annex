@@ -19,7 +19,9 @@ final class Updater: ObservableObject {
         case manual(String)
     }
 
-    @Published private(set) var state: State = .idle
+    @Published private(set) var state: State = .idle {
+        didSet { if state != oldValue { Annex.log(.debug, "[update] \(Self.describe(state))") } }
+    }
     /// An automatic check found this update (the Share and Connect pages show a banner).
     @Published private(set) var announced = false
 
@@ -48,6 +50,20 @@ final class Updater: ObservableObject {
     }
 
     /// The old offer was for the other setting: drop it now, then look again with the new one.
+    /// A state for the log (without release notes).
+    private static func describe(_ state: State) -> String {
+        switch state {
+        case .idle: "idle"
+        case .checking: "checking"
+        case .upToDate: "up to date (\(Annex.version))"
+        case .available(let i): "\(i.version) available\(i.prerelease ? " (pre-release)" : "")\(i.downgrade ? " (downgrade)" : "")"
+        case .downloading(let i): "downloading \(i.version)"
+        case .installing(let i): "installing \(i.version)"
+        case .failed(let why): "failed: \(why)"
+        case .manual(let why): "needs finishing by hand: \(why)"
+        }
+    }
+
     private func betaChanged() {
         if case .available = state { state = .idle }
         announced = false
@@ -82,7 +98,10 @@ final class Updater: ObservableObject {
     }
 
     func dismissBanner() {
-        if case .available(let info) = state { settings.dismissedUpdateVersion = info.version }
+        if case .available(let info) = state {
+            Annex.log(.info, "[update] Not Now pressed for \(info.version)")
+            settings.dismissedUpdateVersion = info.version
+        }
         announced = false
     }
 
@@ -100,6 +119,7 @@ final class Updater: ObservableObject {
         }
         state = .checking
         let beta = settings.betaUpdates
+        Annex.log(.info, "[update] checking \(AnnexUpdate.releasesURL) (\(automatic ? "daily" : "asked"), beta \(beta))")
         do {
             var request = URLRequest(url: AnnexUpdate.releasesURL, timeoutInterval: 20)
             request.setValue("Annex/\(Annex.version)", forHTTPHeaderField: "User-Agent")
@@ -112,7 +132,10 @@ final class Updater: ObservableObject {
             settings.lastUpdateCheck = Date()
             // Going back to an older normal release is only offered when asked for (Beta updates
             // turned off, or Check Now), never by the daily check.
-            if automatic, found?.downgrade == true { found = nil }
+            if automatic, found?.downgrade == true {
+                Annex.log(.info, "[update] \(found?.version ?? "") is a downgrade: not offered by the daily check")
+                found = nil
+            }
             if let info = found {
                 state = .available(info)
                 if automatic { announced = true }
@@ -120,6 +143,7 @@ final class Updater: ObservableObject {
                 state = .upToDate
             }
         } catch {
+            Annex.log(.warn, "[update] check failed: \(error.localizedDescription)")
             // A failed automatic check stays quiet; the next one tries again.
             state = automatic ? .idle : .failed("Couldn't check for updates. \(error.localizedDescription)")
         }
@@ -152,7 +176,9 @@ final class Updater: ObservableObject {
         alert.addButton(withTitle: "Install")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let confirmed = alert.runModal() == .alertFirstButtonReturn
+        Annex.log(.info, "[update] the user chose \(confirmed ? "Install" : "Cancel") for \(info.version)")
+        guard confirmed else { return }
         Task { await install(info) }
     }
 
@@ -172,26 +198,35 @@ final class Updater: ObservableObject {
             try await download(info.sumsUrl, to: sums)
             try await download(info.sigUrl, to: sig)
             try AnnexUpdate.verify(sums: sums, sig: sig, file: dmg, assetName: info.assetName)
+            Annex.log(.info, "[update] \(name) downloaded and its signature verified")
 
             state = .installing(info)
             let destination = Bundle.main.bundleURL
             let parent = destination.deletingLastPathComponent().path
             guard FileManager.default.isWritableFile(atPath: parent) else {
+                Annex.log(.warn, "[update] \(parent) isn't writable: opening the disk image to finish by hand")
                 NSWorkspace.shared.open(dmg)
                 state = .manual("Drag Annex to Applications to finish updating.")
                 return
             }
             let staged = try await Task.detached { try Self.stage(dmg: dmg, in: dir) }.value
             try Self.launchHelper(replacing: destination, with: staged, workDir: dir)
+            Annex.log(.info, "[update] replacing \(destination.path) after quitting")
             NSApp.terminate(nil)
         } catch {
-            try? FileManager.default.removeItem(at: dir)
+            Annex.log(.error, "[update] install failed: \(error.localizedDescription)")
+            do {
+                try FileManager.default.removeItem(at: dir)
+            } catch {
+                Annex.log(.debug, "[update] couldn't remove \(dir.path): \(error.localizedDescription)")
+            }
             state = .failed("The update wasn't installed. \(error.localizedDescription)")
         }
     }
 
     private func download(_ url: String, to file: URL) async throws {
         guard let u = URL(string: url), u.scheme == "https" else { throw AnnexError(message: "The update's address isn't secure.") }
+        Annex.log(.debug, "[update] downloading \(u)")
         var request = URLRequest(url: u, timeoutInterval: 60)
         request.setValue("Annex/\(Annex.version)", forHTTPHeaderField: "User-Agent")
         let (temp, response) = try await session.download(for: request)
@@ -205,7 +240,13 @@ final class Updater: ObservableObject {
     nonisolated private static func stage(dmg: URL, in dir: URL) throws -> URL {
         let mount = dir.appendingPathComponent("mnt", isDirectory: true)
         try run("/usr/bin/hdiutil", ["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount.path, dmg.path])
-        defer { _ = try? run("/usr/bin/hdiutil", ["detach", mount.path, "-force"]) }
+        defer {
+            do {
+                try run("/usr/bin/hdiutil", ["detach", mount.path, "-force"])
+            } catch {
+                Annex.log(.warn, "[update] couldn't unmount the update: \(error.localizedDescription)")
+            }
+        }
         let source = mount.appendingPathComponent("Annex.app")
         guard Bundle(url: source)?.bundleIdentifier == Bundle.main.bundleIdentifier else {
             throw AnnexError(message: "The update doesn't contain Annex.")

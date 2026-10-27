@@ -1111,10 +1111,19 @@ private struct SettingsPage: View {
         GroupSection("Developer") {
             ToggleRow(title: "Show technical details", subtitle: "Identity codes, addresses and connection details.",
                       isOn: $settings.showTechnicalDetails)
-            GroupRow(title: "Log file", subtitle: "Always on. Stays on this Mac; Annex never sends it anywhere. Attach it to a bug report if something goes wrong.") {
-                Button("Show in Finder") {
+            ToggleRow(title: "Verbose logging",
+                      subtitle: "Also logs every mouse and keyboard event and every frame, never which keys. The log fills faster; turn it on to chase a problem.",
+                      isOn: $settings.verboseLogging)
+            GroupRow(title: "Log files", subtitle: "Always on. Stays on this Mac; Annex never sends it anywhere. Attach annex.log, and anything in crashes, to a bug report if something goes wrong.") {
+                Button("Show Log Files") {
                     let log = AppModel.dataDirectory.appendingPathComponent("annex.log")
-                    NSWorkspace.shared.activateFileViewerSelecting([log])
+                    Annex.log(.info, "[settings] Show Log Files pressed")
+                    // The file selected in its folder; just the folder if there's no log yet.
+                    if FileManager.default.fileExists(atPath: log.path) {
+                        NSWorkspace.shared.activateFileViewerSelecting([log])
+                    } else {
+                        NSWorkspace.shared.open(AppModel.dataDirectory)
+                    }
                 }
                     .pointingHand()
             }

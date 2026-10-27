@@ -52,12 +52,14 @@ final class NotchDrop: ObservableObject {
     // MARK: State from the app
 
     /// Files can go to `peer` now (a session with control either way). Nil: nothing connected.
-    func setTarget(_ peer: String?) {
+    /// `why`: what decided it, for the log.
+    func setTarget(_ peer: String?, why: String) {
         let can = peer != nil
         if let peer { peerName = peer }
         guard can != canSend else { return }
+        Annex.log(.info, "[drop] " + (peer.map { "files can go to \($0) (\(why))" } ?? "no one to send files to (\(why))"))
         canSend = can
-        if can { startWatching() } else { stopWatching(); if phase != .transfers { hide() } }
+        if can { startWatching() } else { stopWatching(); if phase != .transfers { hide(why: "no one to send to") } }
     }
 
     func transferStarted(session: UInt64, id: UInt64, incoming: Bool, name: String, size: UInt64) {
@@ -66,15 +68,18 @@ final class NotchDrop: ObservableObject {
         items.append(Item(id: key, incoming: incoming, name: name, size: size))
         // Only the latest few; finished ones go first.
         while items.count > 4, let i = items.firstIndex(where: { $0.ok != nil }) { items.remove(at: i) }
-        show(.transfers)
+        show(.transfers, why: "\(incoming ? "receiving" : "sending") \(name)")
     }
 
     func transferProgress(session: UInt64, id: UInt64, incoming: Bool, done: UInt64) {
+        Annex.log(.trace, "[transfer] \(incoming ? "in" : "out") \(session)/\(id): \(done) bytes")
         if let i = items.firstIndex(where: { $0.id == Self.key(session, id, incoming) }) { items[i].done = done }
     }
 
     func transferEnded(session: UInt64, id: UInt64, incoming: Bool, ok: Bool, path: String?, error: String?) {
-        guard let i = items.firstIndex(where: { $0.id == Self.key(session, id, incoming) }) else { return }
+        guard let i = items.firstIndex(where: { $0.id == Self.key(session, id, incoming) }) else {
+            return Annex.log(.debug, "[drop] transfer \(session)/\(id) ended but isn't in the tray")
+        }
         items[i].ok = ok
         items[i].path = path
         items[i].error = error
@@ -84,12 +89,13 @@ final class NotchDrop: ObservableObject {
 
     func reveal(_ item: Item) {
         guard let path = item.path else { return }
+        Annex.log(.info, "[drop] Show pressed: \(path)")
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
     func dismiss() {
         items.removeAll { $0.ok != nil }
-        if items.isEmpty { hide() }
+        if items.isEmpty { hide(why: "dismissed") }
     }
 
     private static func key(_ session: UInt64, _ id: UInt64, _ incoming: Bool) -> String { "\(session)-\(id)-\(incoming)" }
@@ -109,9 +115,11 @@ final class NotchDrop: ObservableObject {
             MainActor.assumeIsolated { self?.dragEnded() }
         }
         monitors = [down, drag, up].compactMap { $0 }
+        Annex.log(monitors.count == 3 ? .debug : .warn, "[drop] watching drags (\(monitors.count) of 3 mouse monitors)")
     }
 
     private func stopWatching() {
+        if !monitors.isEmpty { Annex.log(.debug, "[drop] stopped watching drags") }
         monitors.forEach(NSEvent.removeMonitor)
         monitors.removeAll()
         dragging = false
@@ -123,11 +131,17 @@ final class NotchDrop: ObservableObject {
             guard canSend, dragBoard.changeCount != dragCountAtMouseDown,
                   dragBoard.types?.contains(.fileURL) == true else { return }
             dragging = true
-            if phase != .transfers { show(.glowing) }
+            Annex.log(.info, "[drop] a file drag started")
+            if phase != .transfers { show(.glowing, why: "file drag started") }
         }
         guard phase == .glowing || phase == .open else { return }
-        let near = distanceToNotch(NSEvent.mouseLocation) < 140
-        if near && phase == .glowing { show(.open) } else if !near && phase == .open { show(.glowing) }
+        let distance = distanceToNotch(NSEvent.mouseLocation)
+        let near = distance < 140
+        if near && phase == .glowing {
+            show(.open, why: "drag \(Int(distance)) pt from the notch")
+        } else if !near && phase == .open {
+            show(.glowing, why: "drag moved away, \(Int(distance)) pt from the notch")
+        }
     }
 
     private func dragEnded() {
@@ -136,28 +150,32 @@ final class NotchDrop: ObservableObject {
         // A drop on the tray arrives just after the mouse goes up.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self, !self.dragging, self.phase == .glowing || self.phase == .open else { return }
-            self.hide()
+            self.hide(why: "drag ended without a drop")
         }
     }
 
     /// Dragged files reached the tray itself.
     fileprivate func dragEnteredTray() {
-        if phase == .glowing || phase == .hidden { show(.open) }
+        if phase == .glowing || phase == .hidden { show(.open, why: "drag reached the tray") }
     }
 
     /// Files dropped on the tray or the viewer window.
     func dropped(_ urls: [URL]) {
         dragging = false
         let files = urls.flatMap(Self.files(in:))
-        guard !files.isEmpty else { hide(); return }
-        show(.transfers)
+        Annex.log(.info, "[drop] \(urls.count) item(s) dropped, \(files.count) file(s) to send")
+        guard !files.isEmpty else { hide(why: "nothing to send in the drop"); return }
+        show(.transfers, why: "files dropped")
         onDrop?(files)
     }
 
     /// A file, or every file inside a folder (hidden ones skipped).
     private static func files(in url: URL) -> [URL] {
         var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { return [] }
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else {
+            Annex.log(.warn, "[drop] dropped item not found: \(url.path)")
+            return []
+        }
         guard isDir.boolValue else { return [url] }
         let e = FileManager.default.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey],
                                                options: [.skipsHiddenFiles, .skipsPackageDescendants])
@@ -188,7 +206,8 @@ final class NotchDrop: ObservableObject {
         return (dx * dx + dy * dy).squareRoot()
     }
 
-    private func show(_ phase: Phase) {
+    private func show(_ phase: Phase, why: String) {
+        if phase != self.phase { Annex.log(.debug, "[drop] \(self.phase) → \(phase): \(why)") }
         hideWork?.cancel()
         let panel = self.panel ?? makePanel()
         if let screen = Self.screen {
@@ -204,7 +223,8 @@ final class NotchDrop: ObservableObject {
         withAnimation(.spring(response: 0.5, dampingFraction: 0.66)) { self.phase = phase }
     }
 
-    private func hide() {
+    private func hide(why: String) {
+        if phase != .hidden { Annex.log(.debug, "[drop] \(phase) → hidden: \(why)") }
         hideWork?.cancel()
         // Pops back in, quicker and without the bounce.
         withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { phase = .hidden }
@@ -221,7 +241,7 @@ final class NotchDrop: ObservableObject {
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.phase == .transfers, !self.dragging, !self.hovering else { return }
-                self.hide()
+                self.hide(why: "transfers done")
             }
         }
         hideWork = work

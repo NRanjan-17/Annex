@@ -31,8 +31,26 @@ enum Annex {
     static var version: String { String(cString: annex_version()) }
     static func nowMicros() -> Int64 { annex_now_us() }
     static func displayFingerprint(_ fp: String) -> String { takeString(annex_display_fingerprint(fp)) }
-    /// Writes a line to annex.log (always on), next to the core's own.
-    static func log(_ message: String, error: Bool = false) { annex_log(error ? 2 : 0, message) }
+    /// How serious a log line is. `error` also saves what led up to it to crashes/; `trace` is
+    /// written only with verbose logging on.
+    enum LogLevel: Int32 { case info = 0, warn = 1, error = 2, debug = 3, trace = 4 }
+
+    /// Verbose logging is on (Settings → Developer). Cached here so hot paths skip trace lines
+    /// without building them.
+    private(set) static var verbose = false
+
+    /// Writes a line to annex.log, next to the core's own. Start with the feature in brackets:
+    /// "[clipboard] copied text, 12 bytes". Never what's copied, keys pressed, or a secret.
+    static func log(_ level: LogLevel, _ message: @autoclosure () -> String) {
+        if level == .trace && !verbose { return }
+        annex_log(level.rawValue, message())
+    }
+
+    static func setVerboseLogging(_ on: Bool) {
+        verbose = on
+        annex_set_log_verbose(on)
+    }
+
     /// macOS virtual key code for a HID usage from an `input` event.
     static func macKeyCode(hid: UInt16) -> CGKeyCode? {
         let c = annex_key_native_from_hid(hid)
@@ -134,7 +152,12 @@ final class CoreClient {
 
     var trustedPeers: [TrustedPeer] {
         let json = takeString(annex_core_trusted_peers_json(raw))
-        return (try? CoreEvent.decoder.decode([TrustedPeer].self, from: Data(json.utf8))) ?? []
+        do {
+            return try CoreEvent.decoder.decode([TrustedPeer].self, from: Data(json.utf8))
+        } catch {
+            Annex.log(.warn, "[pairing] couldn't read the paired devices list: \(error)")
+            return []
+        }
     }
 
     @discardableResult

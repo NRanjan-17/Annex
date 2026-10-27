@@ -244,7 +244,10 @@ enum CoreEvent: Equatable {
 
     static func decode(_ data: Data) -> CoreEvent {
         let d = decoder
-        guard let tag = try? d.decode(Tag.self, from: data) else { return .unknown(type: "invalid") }
+        guard let tag = try? d.decode(Tag.self, from: data) else {
+            Annex.log(.warn, "[app] a core event wasn't JSON (\(data.count) bytes)")
+            return .unknown(type: "invalid")
+        }
         do {
             switch tag.type {
             case "listening": return .listening(port: try d.decode(Port.self, from: data).port)
@@ -303,7 +306,21 @@ enum CoreEvent: Equatable {
             default: return .unknown(type: tag.type)
             }
         } catch {
+            // Only the type and the reason: the event itself may hold a clipboard or a passphrase.
+            Annex.log(.warn, "[app] couldn't read a \(tag.type) event: \(Self.shape(of: error))")
             return .unknown(type: tag.type)
+        }
+    }
+
+    /// A decoding error without the values it quotes.
+    private static func shape(of error: Error) -> String {
+        guard let e = error as? DecodingError else { return "\(type(of: error))" }
+        switch e {
+        case .keyNotFound(let key, _): return "missing \(key.stringValue)"
+        case .typeMismatch(let t, let c): return "\(c.codingPath.map(\.stringValue).joined(separator: ".")) isn't \(t)"
+        case .valueNotFound(let t, let c): return "\(c.codingPath.map(\.stringValue).joined(separator: ".")) has no \(t)"
+        case .dataCorrupted(let c): return "corrupt at \(c.codingPath.map(\.stringValue).joined(separator: "."))"
+        @unknown default: return "decoding failed"
         }
     }
 }
