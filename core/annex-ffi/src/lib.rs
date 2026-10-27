@@ -62,6 +62,7 @@ fn guard(f: impl FnOnce() -> Result<i32, (i32, String)>) -> i32 {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(v)) => v,
         Ok(Err((code, msg))) => {
+            tracing::warn!(target: "annex::ffi", code, "call failed: {msg}");
             set_error(msg);
             code
         }
@@ -138,6 +139,7 @@ impl Callbacks {
     fn event_sink(self: &Arc<Self>) -> EventSink {
         let me = self.clone();
         Arc::new(move |e: Event| {
+            annex_session::log_event(&e);
             if let Ok(json) = serde_json::to_string(&e) {
                 me.event_json(&json);
             }
@@ -286,102 +288,39 @@ pub struct AnnexDiscovery {
     callbacks: Arc<Callbacks>,
 }
 
-/// The log file: `<data_dir>/annex.log`, always written (debug level for Annex's own steps).
-/// Local only: never uploaded; users attach it to bug reports themselves. Past 5 MB it moves to `annex.old.log` and a new one starts, so
-/// the two never take more than about 10 MB.
-struct LogFile {
-    enabled: std::sync::atomic::AtomicBool,
-    path: Mutex<Option<PathBuf>>,
-    /// The open file and how many bytes it holds.
-    file: Mutex<Option<(std::fs::File, u64)>>,
-}
-
-const LOG_MAX: u64 = 5 * 1024 * 1024;
-
-static LOG: LogFile =
-    LogFile { enabled: std::sync::atomic::AtomicBool::new(true), path: Mutex::new(None), file: Mutex::new(None) };
-
-/// Where tracing writes: `annex.log`, unless an app turned it off.
-struct LogSink;
-
-impl std::io::Write for LogSink {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if !LOG.enabled.load(std::sync::atomic::Ordering::Relaxed) {
-            return Ok(buf.len());
-        }
-        let mut file = LOG.file.lock().unwrap_or_else(|e| e.into_inner());
-        if file.as_ref().is_some_and(|(_, len)| *len > LOG_MAX) {
-            *file = None;
-        }
-        if file.is_none() {
-            let Some(path) = LOG.path.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return Ok(buf.len()) };
-            if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX) {
-                let _ = std::fs::rename(&path, path.with_file_name("annex.old.log"));
-            }
-            *file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok().map(|f| {
-                let len = f.metadata().map_or(0, |m| m.len());
-                (f, len)
-            });
-        }
-        match file.as_mut() {
-            Some((f, len)) => {
-                let n = f.write(buf)?;
-                *len += n as u64;
-                Ok(n)
-            }
-            None => Ok(buf.len()),
-        }
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-/// Points the log at `<data_dir>/annex.log` and installs the logger (once per process): debug
-/// for Annex's own crates, info for the libraries under it. `ANNEX_LOG=0` turns it off.
-fn init_logging(data_dir: &std::path::Path) {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    let _ = std::fs::create_dir_all(data_dir);
-    *LOG.path.lock().unwrap_or_else(|e| e.into_inner()) = Some(data_dir.join("annex.log"));
-    ONCE.call_once(|| {
-        if std::env::var_os("ANNEX_LOG").is_some_and(|v| v == "0") {
-            LOG.enabled.store(false, std::sync::atomic::Ordering::Relaxed);
-        }
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
-        let levels = tracing_subscriber::filter::Targets::new()
-            .with_default(tracing::Level::INFO)
-            .with_target("annex", tracing::Level::DEBUG)
-            .with_target("app", tracing::Level::DEBUG);
-        let _ = tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer().with_writer(|| LogSink).with_ansi(false).with_target(false))
-            .with(levels)
-            .try_init();
-        // Panics on background threads don't end the process, but they explain what stopped working.
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let thread = std::thread::current();
-            tracing::error!(thread = thread.name().unwrap_or("?"), "panic: {info}");
-            previous(info);
-        }));
-        tracing::info!(version = env!("CARGO_PKG_VERSION"), os = std::env::consts::OS, "annex core started");
-    });
-}
-
-/// Turns the log file on or off (on by default; the apps leave it on). Takes effect immediately.
+/// Turns the log file (`<data_dir>/annex.log`) on or off (on by default; the apps leave it on).
+/// Takes effect immediately. See the `annex-log` crate for what goes in it.
 #[unsafe(no_mangle)]
 pub extern "C" fn annex_set_log_enabled(enabled: bool) {
-    LOG.enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);
-    if enabled {
-        tracing::info!(version = env!("CARGO_PKG_VERSION"), os = std::env::consts::OS, "logging on");
-    } else {
-        *LOG.file.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    annex_log::set_enabled(enabled);
+}
+
+/// Verbose logging: everything at trace (each input event, each progress step), for chasing a
+/// problem. Off by default.
+#[unsafe(no_mangle)]
+pub extern "C" fn annex_set_log_verbose(verbose: bool) {
+    annex_log::set_verbose(verbose);
+}
+
+/// Saves the last few thousand log lines to `<data_dir>/crashes/` now, as happens by itself on
+/// each error. `why`: a word for the file name (may be null). Returns the file (free with
+/// `annex_string_free`), or null before a core was created.
+///
+/// # Safety
+/// `why` must be a valid NUL-terminated string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_log_save_recording(why: *const c_char) -> *mut c_char {
+    let why = unsafe { opt_str_arg(why, "why") }.ok().flatten().unwrap_or("saved");
+    match annex_log::save_recording(why) {
+        Some(path) => out_string(&path.to_string_lossy()),
+        None => std::ptr::null_mut(),
     }
 }
 
-/// Writes one line from the app to the log (while it's on): `level` 0 = info, 1 = warning,
-/// 2 = error. The app's own steps (capture, encoding, virtual displays) explain what the core can't.
+/// Writes one line from the app to the log: `level` 0 = info, 1 = warning, 2 = error (also saves
+/// what led up to it), 3 = debug, 4 = trace (verbose only). Start `message` with the feature in
+/// brackets, e.g. "[clipboard] copied text, 12 bytes". The app's own steps (capture, encoding,
+/// clipboard, drag and drop) explain what the core can't. Never log what's copied or a secret.
 ///
 /// # Safety
 /// `message` must be a valid NUL-terminated string or null.
@@ -391,6 +330,8 @@ pub unsafe extern "C" fn annex_log(level: i32, message: *const c_char) {
     match level {
         2 => tracing::error!(target: "app", "{message}"),
         1 => tracing::warn!(target: "app", "{message}"),
+        3 => tracing::debug!(target: "app", "{message}"),
+        4 => tracing::trace!(target: "app", "{message}"),
         _ => tracing::info!(target: "app", "{message}"),
     }
 }
@@ -509,7 +450,7 @@ pub unsafe extern "C" fn annex_core_new(
         }
         let dir = PathBuf::from(unsafe { str_arg(data_dir, "data_dir") }?);
         let name = unsafe { str_arg(device_name, "device_name") }?;
-        init_logging(&dir);
+        annex_log::init(&dir, false);
         let core = Core::open(&dir, name, TrustPolicy::Pair).map_err(failed)?;
         new_core(core, out)
     })
@@ -2029,6 +1970,7 @@ pub unsafe extern "C" fn annex_discovery_start(
             .discovery()?
             .browse(move |e| {
                 if let Ok(json) = serde_json::to_string(&e) {
+                    tracing::debug!(target: "annex::discovery", "{json}");
                     cb.event_json(&json);
                 }
             })

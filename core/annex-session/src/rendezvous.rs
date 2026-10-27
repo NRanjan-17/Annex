@@ -38,13 +38,20 @@ pub struct Peer {
 }
 
 /// A short-lived login for a relay, as the rendezvous server hands it out.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TurnLogin {
     pub urls: Vec<String>,
     pub username: String,
     pub credential: String,
     /// Seconds the login works for; the relay then drops the session.
     pub ttl: u32,
+}
+
+/// Without the credential, so it can't reach the log.
+impl std::fmt::Debug for TurnLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurnLogin").field("urls", &self.urls).field("ttl", &self.ttl).finish_non_exhaustive()
+    }
 }
 
 impl TurnLogin {

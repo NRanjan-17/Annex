@@ -70,6 +70,7 @@ version = "0.1.0"
 dependencies = [
  "annex-crypto",
  "annex-discovery",
+ "annex-log",
  "annex-media-win",
  "annex-proto",
  "annex-session",
@@ -77,6 +78,14 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "annex-log"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]

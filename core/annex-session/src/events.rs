@@ -188,6 +188,40 @@ pub enum Event {
 
 pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
 
+/// Logs an event the core hands to the app, without what must stay private: PINs, internet codes,
+/// Wi-Fi passphrases, clipboard contents and which keys were pressed are left out. Input,
+/// progress and latency (many a second) only show with verbose logging.
+pub fn log_event(e: &Event) {
+    const T: &str = "annex::event";
+    match e {
+        Event::InternetCode { expires_in, .. } => tracing::debug!(target: T, expires_in, "internet code ready"),
+        Event::PairingPin { request_id, peer_name, fingerprint_display, .. } => {
+            tracing::debug!(target: T, request_id, peer_name, fingerprint_display, "showing a pairing PIN")
+        }
+        Event::DirectLinkOffer { session_id, ssid, .. } => {
+            tracing::debug!(target: T, session_id, ssid, "direct link offered")
+        }
+        Event::ClipboardReceived { session_id, mime, data } => {
+            tracing::debug!(target: T, session_id, mime, bytes = data.len(), "clipboard received")
+        }
+        Event::Input { session_id, event } => {
+            let kind = match event {
+                InputEvent::MouseMove { .. } => "mouse move",
+                InputEvent::MouseButton { .. } => "mouse button",
+                InputEvent::Scroll { .. } => "scroll",
+                InputEvent::Key { .. } => "key",
+                InputEvent::MouseDelta { .. } => "mouse delta",
+            };
+            tracing::trace!(target: T, session_id, kind, "input")
+        }
+        Event::TransferProgress { .. } | Event::LatencyStats { .. } => tracing::trace!(target: T, "{e:?}"),
+        Event::SessionEnded { session_id, reason } => tracing::info!(target: T, session_id, reason, "session ended"),
+        Event::Error { message } => tracing::warn!(target: T, "error for the app: {message}"),
+        Event::TransferEnded { ok: false, .. } => tracing::warn!(target: T, "{e:?}"),
+        _ => tracing::debug!(target: T, "{e:?}"),
+    }
+}
+
 /// Standard base64 with padding, for bytes inside JSON events.
 fn base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S::Error> {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

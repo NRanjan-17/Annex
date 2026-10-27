@@ -62,9 +62,16 @@ char *annex_core_device_name(const AnnexCore *core);
 char *annex_core_trusted_peers_json(const AnnexCore *core);
 /* Returns 1 if removed, 0 if not trusted. */
 int32_t annex_core_untrust(const AnnexCore *core, const char *fingerprint);
-/* Writes the core's log to <data_dir>/annex.log while enabled. On by default. */
+/* Writes the log to <data_dir>/annex.log while enabled. On by default. */
 void annex_set_log_enabled(bool enabled);
-/* Writes one line from the app to the log while it's on: level 0 = info, 1 = warning, 2 = error. */
+/* Verbose logging: everything at trace (each input event, each progress step). Off by default. */
+void annex_set_log_verbose(bool verbose);
+/* Saves the last few thousand log lines to <data_dir>/crashes/ now (as happens on each error).
+ * `why` (may be NULL) goes in the file name. Returns the file (annex_string_free), or NULL. */
+char *annex_log_save_recording(const char *why);
+/* Writes one line from the app to the log: level 0 = info, 1 = warning, 2 = error (also saves what
+ * led up to it), 3 = debug, 4 = trace (verbose only). Start with the feature in brackets, e.g.
+ * "[clipboard] copied text, 12 bytes". Never log what's copied or a secret. */
 void annex_log(int32_t level, const char *message);
 /* Lists this device under "Nearby" on other computers while Annex is open (as not sharing until a
  * host starts). Call once at startup and again after a rename. */

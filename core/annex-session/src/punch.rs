@@ -34,11 +34,18 @@ pub fn set_relay_refresh(every: Duration) {
 }
 
 /// A relay (TURN server) and the login for it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TurnServer {
     pub addr: SocketAddr,
     pub username: String,
     pub password: String,
+}
+
+/// Without the password, so it can't reach the log.
+impl std::fmt::Debug for TurnServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TurnServer").field("addr", &self.addr).field("username", &self.username).finish_non_exhaustive()
+    }
 }
 
 /// The login for a relay, once its realm and nonce are known.
