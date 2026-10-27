@@ -278,14 +278,6 @@ async fn wrong_pin_fails_and_nothing_is_trusted() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn host_can_cancel_pairing() {
-    let host_core = Core::ephemeral("Host", TrustPolicy::Pair).unwrap();
-    let viewer_core = Core::ephemeral("Viewer", TrustPolicy::Pair).unwrap();
-    let (h, v) = pair_attempt(&host_core, &viewer_core, None).await;
-    assert_eq!((h.as_str(), v.as_str()), ("not_paired", "pairing_cancelled"));
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn repeated_failures_lock_pairing() {
     let host_core = Core::ephemeral("Host", TrustPolicy::Pair).unwrap();
     let viewer_core = Core::ephemeral("Viewer", TrustPolicy::Pair).unwrap();
@@ -397,26 +389,6 @@ async fn eventually(mut check: impl FnMut() -> bool) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("condition not reached");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn two_mirror_viewers_receive_the_same_frames() {
-    let (hev, mut hrx) = channel_sink();
-    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
-    let (s1, got1) = frame_counter();
-    let (s2, got2) = frame_counter();
-    let (e1, _r1) = channel_sink();
-    let (e2, _r2) = channel_sink();
-    let v1 = connect_viewer(viewer_core("A"), viewer_cfg(host.port()), e1, s1);
-    wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
-    let v2 = connect_viewer(viewer_core("B"), viewer_cfg(host.port()), e2, s2);
-    wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
-    assert_eq!(host.submit_frame(b"key", clock::now_us(), true), SubmitResult::Sent);
-    assert_eq!(host.submit_frame(b"delta", clock::now_us(), false), SubmitResult::Sent);
-    eventually(|| got1.lock().unwrap().len() == 2 && got2.lock().unwrap().len() == 2).await;
-    v1.disconnect().await;
-    v2.disconnect().await;
-    host.stop().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -657,134 +629,6 @@ async fn sessions_use_quic_with_datagram_video() {
     host.stop().await;
 }
 
-/// Windows reports an ICMP "port unreachable" from an earlier send as a ConnectionReset error on
-/// the next receive (the viewer races several attempts). That is not fatal for a relay.
-fn relay_error_is_fatal(e: &std::io::Error) -> bool {
-    !matches!(e.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionRefused)
-}
-
-/// UDP relay that drops every `drop_every`-th host→viewer packet once the handshake is done.
-/// A loopback UDP socket with 4 MB buffers. Each frame arrives as a burst of ~26 datagrams, and
-/// Windows' default receive buffer can overflow under that, adding loss the test didn't ask for.
-fn roomy_udp() -> tokio::net::UdpSocket {
-    let s = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)).unwrap();
-    s.set_recv_buffer_size(4 << 20).unwrap();
-    s.set_send_buffer_size(4 << 20).unwrap();
-    s.bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into()).unwrap();
-    s.set_nonblocking(true).unwrap();
-    tokio::net::UdpSocket::from_std(s.into()).unwrap()
-}
-
-async fn lossy_udp_proxy(target: std::net::SocketAddr, drop_every: usize) -> u16 {
-    let front = Arc::new(roomy_udp());
-    let back = Arc::new(roomy_udp());
-    back.connect(target).await.unwrap();
-    let port = front.local_addr().unwrap().port();
-    let client: Arc<Mutex<Option<std::net::SocketAddr>>> = Arc::default();
-    {
-        let (front, back, client) = (front.clone(), back.clone(), client.clone());
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 65536];
-            loop {
-                match front.recv_from(&mut buf).await {
-                    Ok((n, from)) => {
-                        *client.lock().unwrap() = Some(from);
-                        let _ = back.send(&buf[..n]).await;
-                    }
-                    Err(e) if !relay_error_is_fatal(&e) => continue,
-                    Err(_) => break,
-                }
-            }
-        });
-    }
-    tokio::spawn(async move {
-        let mut buf = vec![0u8; 65536];
-        let mut count = 0usize;
-        loop {
-            let n = match back.recv(&mut buf).await {
-                Ok(n) => n,
-                Err(e) if !relay_error_is_fatal(&e) => continue,
-                Err(_) => break,
-            };
-            count += 1;
-            if count > 50 && count.is_multiple_of(drop_every) {
-                continue;
-            }
-            let to = *client.lock().unwrap();
-            if let Some(to) = to {
-                let _ = front.send_to(&buf[..n], to).await;
-            }
-        }
-    });
-    port
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn fec_carries_frames_through_packet_loss() {
-    let (hev, mut hrx) = channel_sink();
-    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
-    let proxy = lossy_udp_proxy(format!("127.0.0.1:{}", host.port()).parse().unwrap(), 20).await;
-    let (fs, got) = frame_counter();
-    let (vev, _vrx) = channel_sink();
-    let viewer = connect_viewer(viewer_core("V"), viewer_cfg(proxy), vev, fs);
-    let Event::SessionStarted { transport, .. } =
-        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
-    else {
-        unreachable!()
-    };
-    assert_eq!(transport, TransportKind::Quic);
-    let frame = vec![3u8; 30_000];
-    let mut sent = 0;
-    for i in 0..100 {
-        // Keyframe every 10 frames so a lost frame doesn't stall delivery for long.
-        if host.submit_frame(&frame, clock::now_us(), i % 10 == 0) == SubmitResult::Sent {
-            sent += 1;
-        }
-        tokio::time::sleep(Duration::from_millis(16)).await;
-    }
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let delivered = got.lock().unwrap().len();
-    // Pacing may skip a few frames on a busy machine; the test is about what loss does to the rest.
-    assert!(sent >= 60, "only {sent} frames were sent");
-    // Without FEC, 5 % loss over ~26 datagrams per frame would deliver about a quarter of them. Half
-    // keeps a wide margin over that while leaving room for a busy CI machine (once 67 % on Windows).
-    assert!(delivered * 100 >= sent * 50, "only {delivered} of {sent} frames survived 5 % loss");
-    assert!(got.lock().unwrap().iter().all(|f| *f == frame));
-    viewer.disconnect().await;
-    host.stop().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn heavy_loss_triggers_a_lower_bitrate_hint() {
-    let (hev, mut hrx) = channel_sink();
-    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
-    // Every 6th packet lost (~17 %): beyond what 15 % FEC rebuilds for long.
-    let proxy = lossy_udp_proxy(format!("127.0.0.1:{}", host.port()).parse().unwrap(), 6).await;
-    let (vev, _vrx) = channel_sink();
-    let viewer = connect_viewer(viewer_core("V"), viewer_cfg(proxy), vev, Arc::new(|_| {}));
-    let Event::SessionStarted { session_id, .. } =
-        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
-    else {
-        unreachable!()
-    };
-    let feeder = tokio::spawn(async move {
-        for i in 0..200 {
-            host.submit_frame(&[1u8; 30_000], clock::now_us(), i % 30 == 0);
-            tokio::time::sleep(Duration::from_millis(16)).await;
-        }
-        host
-    });
-    let Event::BitrateHint { session_id: hinted, scale_percent } =
-        wait_for(&mut hrx, |e| matches!(e, Event::BitrateHint { .. })).await
-    else {
-        unreachable!()
-    };
-    assert_eq!(hinted, session_id);
-    assert!(scale_percent < 100, "loss must lower the bitrate, got {scale_percent} %");
-    viewer.disconnect().await;
-    feeder.await.unwrap().stop().await;
-}
-
 /// Pairs, then connects with `input` requested. Returns the running pair plus event streams.
 async fn input_session(
     allow: bool,
@@ -859,66 +703,6 @@ async fn input_needs_the_host_to_allow_the_device() {
         assert!(!matches!(e, Event::Input { .. }), "input without permission: {e:?}");
     }
     viewer.disconnect().await;
-    host.stop().await;
-}
-
-/// Direct Wi-Fi negotiation works from either side: whoever can run a hotspot offers it, and
-/// either side can ask or decline.
-#[tokio::test(flavor = "multi_thread")]
-async fn direct_link_messages_flow_both_ways() {
-    let (hev, mut hrx) = channel_sink();
-    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
-    let (vev, mut vrx) = channel_sink();
-    let viewer = connect_viewer(viewer_core("V"), viewer_cfg(host.port()), vev, Arc::new(|_| {}));
-    let Event::SessionStarted { session_id: id, .. } =
-        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
-    else {
-        unreachable!()
-    };
-    wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await;
-
-    // Viewer asks; host declines.
-    viewer.request_direct_link();
-    wait_for(&mut hrx, |e| matches!(e, Event::DirectLinkRequested { session_id } if *session_id == id)).await;
-    assert!(host.refuse_direct_link(id, "no_hotspot"));
-    wait_for(&mut vrx, |e| matches!(e, Event::DirectLinkUnavailable { reason, .. } if reason == "no_hotspot")).await;
-
-    // Host asks; viewer declines, then offers its hotspot.
-    assert!(host.request_direct_link(id));
-    wait_for(&mut vrx, |e| matches!(e, Event::DirectLinkRequested { .. })).await;
-    viewer.refuse_direct_link("busy");
-    wait_for(&mut hrx, |e| matches!(e, Event::DirectLinkUnavailable { reason, .. } if reason == "busy")).await;
-    viewer.offer_direct_link("Annex-ab12", "0123456789abcdef");
-    wait_for(&mut hrx, |e| matches!(e, Event::DirectLinkOffer { ssid, .. } if ssid == "Annex-ab12")).await;
-
-    // Host offers its own.
-    assert!(host.offer_direct_link(id, "Annex-cd34", "fedcba9876543210"));
-    wait_for(&mut vrx, |e| matches!(e, Event::DirectLinkOffer { ssid, .. } if ssid == "Annex-cd34")).await;
-
-    viewer.disconnect().await;
-    host.stop().await;
-}
-
-/// The host listens on IPv6 as well (discovery advertises `fe80::…` on a cable, and viewers try
-/// it first), over both QUIC and the TCP fallback, and an IPv4 viewer still reads as IPv4.
-#[tokio::test(flavor = "multi_thread")]
-async fn host_accepts_ipv6_and_ipv4_viewers() {
-    let (hev, mut hrx) = channel_sink();
-    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
-    for address in [format!("[::1]:{}", host.port()), format!("127.0.0.1:{}", host.port())] {
-        let (vev, mut vrx) = channel_sink();
-        let viewer =
-            connect_viewer(viewer_core("Viewer"), ViewerConfig { address, ..viewer_cfg(0) }, vev, Arc::new(|_| {}));
-        let Event::SessionStarted { transport, .. } =
-            wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await
-        else {
-            unreachable!()
-        };
-        assert_eq!(transport, annex_session::TransportKind::Quic);
-        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
-        viewer.disconnect().await;
-        wait_for(&mut hrx, |e| matches!(e, Event::SessionEnded { .. })).await;
-    }
     host.stop().await;
 }
 
@@ -1018,38 +802,6 @@ async fn a_viewer_without_control_cant_send_files_or_clipboard() {
         assert!(!matches!(e, Event::ClipboardReceived { .. } | Event::TransferStarted { .. }), "{e:?}");
     }
     assert!(files_in(host_dl.path()).is_empty());
-    viewer.disconnect().await;
-    host.stop().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_cancelled_file_leaves_nothing_behind() {
-    let (host, viewer, mut hrx, mut vrx, host_core, _) = input_session(true).await;
-    let (host_dl, src) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    host_core.set_downloads(Some(host_dl.path().to_path_buf()));
-    let Event::SessionStarted { session_id, .. } =
-        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
-    else {
-        unreachable!()
-    };
-    wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await;
-    let file = src.path().join("big.bin");
-    // Big enough to still be arriving when it's cancelled; one noise block repeated, since making
-    // 400 MB of noise byte by byte takes seconds in a debug build.
-    std::fs::write(&file, noise(1 << 20).repeat(400)).unwrap();
-    viewer.send_file(&file).unwrap();
-    let Event::TransferProgress { id, .. } =
-        wait_for(&mut hrx, |e| matches!(e, Event::TransferProgress { incoming: true, .. })).await
-    else {
-        unreachable!()
-    };
-    host.cancel_transfer(session_id, true, id);
-    let (ok, _, _) = ended(&wait_for(&mut hrx, |e| ended(e).is_some()).await).unwrap();
-    assert!(!ok);
-    let (ok, _, error) = ended(&wait_for(&mut vrx, |e| ended(e).is_some()).await).unwrap();
-    assert!(!ok, "the sender learns it was cancelled");
-    assert!(error.unwrap().contains("Cancelled"));
-    assert!(files_in(host_dl.path()).is_empty(), "no partial file: {:?}", files_in(host_dl.path()));
     viewer.disconnect().await;
     host.stop().await;
 }

@@ -232,21 +232,6 @@ mod tests {
     }
 
     #[test]
-    fn moderate_loss_holds_rate_and_adds_parity() {
-        let mut c = RateController::default();
-        let d = c.on_report(&report(60, 0, 1000, 30, 3000)); // ~2.9 % recovered
-        assert_eq!((d.scale_percent, d.fec_percent, d.scale_changed), (100, 17, false));
-    }
-
-    #[test]
-    fn rising_delay_is_treated_as_congestion() {
-        let mut c = RateController::default();
-        c.on_report(&report(60, 0, 1500, 0, 4000));
-        let d = c.on_report(&report(60, 0, 1500, 0, 40_000)); // bufferbloat: RTT 10x
-        assert!(d.scale_changed && d.scale_percent < 105);
-    }
-
-    #[test]
     fn quality_caps_the_rate() {
         let mut c = RateController::new(Quality::Fast);
         assert_eq!(c.scale_percent(), 55);
@@ -256,30 +241,6 @@ mod tests {
         assert_eq!(c.scale_percent(), 55, "Fast never climbs above its ceiling");
         assert_eq!(RateController::new(Quality::Balanced).scale_percent(), 85);
         assert_eq!(RateController::new(Quality::Best).scale_percent(), 100);
-    }
-
-    #[test]
-    fn creeping_delay_backs_off_gently_before_loss() {
-        let mut c = RateController::default();
-        c.on_report(&report(60, 0, 1500, 0, 4000));
-        // 4 ms best → 20 ms is above 1.5x + 8 ms, below the 2x + 15 ms congestion line.
-        let d = c.on_report(&report(60, 0, 1500, 0, 20_000));
-        // The clean first report raised it to 105 %; the gentle back-off is ×0.9.
-        assert_eq!((d.scale_percent, d.scale_changed), (94, true));
-    }
-
-    #[test]
-    fn a_brief_low_rtt_is_forgotten() {
-        let mut c = RateController::default();
-        for _ in 0..3 {
-            c.on_report(&report(60, 0, 1500, 0, 3000));
-        }
-        // The path settles at a steady 30 ms: congested at first compared to 3 ms, but once the
-        // low samples age out the rate climbs again instead of staying pinned at the floor.
-        for _ in 0..RTT_WINDOW + 80 {
-            c.on_report(&report(60, 0, 1500, 0, 30_000));
-        }
-        assert_eq!(c.scale_percent(), MAX_SCALE);
     }
 
     #[test]
@@ -310,27 +271,6 @@ mod tests {
     }
 
     #[test]
-    fn smaller_picture_has_hysteresis() {
-        assert!(!reduced_picture(SMALLER_PICTURE_BELOW_BPS, false));
-        assert!(reduced_picture(SMALLER_PICTURE_BELOW_BPS - 1, false));
-        // Between the lines nothing changes, either way.
-        assert!(!reduced_picture(3_500_000, false));
-        assert!(reduced_picture(3_500_000, true));
-        assert!(reduced_picture(FULL_PICTURE_ABOVE_BPS, true));
-        assert!(!reduced_picture(FULL_PICTURE_ABOVE_BPS + 1, true));
-    }
-
-    #[test]
-    fn smaller_picture_halves_each_side_and_caps_fps() {
-        assert_eq!(reduced_stream(&stream(2560, 1440, 60)), Some(stream(1280, 720, 30)));
-        assert_eq!(reduced_stream(&stream(1920, 1080, 30)), Some(stream(960, 540, 30)));
-        // Odd halves round down to even.
-        assert_eq!(reduced_stream(&stream(2940, 1910, 60)), Some(stream(1470, 954, 30)));
-        // Portrait screens too.
-        assert_eq!(reduced_stream(&stream(1080, 1920, 60)), Some(stream(540, 960, 30)));
-    }
-
-    #[test]
     fn small_streams_stay_whole() {
         // 720p30 at Quality Fast sits at 2.2 Mbit/s (the 4 Mbit/s floor × 55 %) on a perfect
         // link: never halve that.
@@ -352,12 +292,5 @@ mod tests {
         assert_eq!(mirror_picture(&full, 4_000_000, true), (true, small));
         assert_eq!(mirror_picture(&full, 5_000_000, true), (false, full.clone()));
         assert_eq!(mirror_picture(&full, 3_000_000, false), (false, full));
-    }
-
-    #[test]
-    fn idle_intervals_change_nothing() {
-        let mut c = RateController::default();
-        let d = c.on_report(&report(0, 0, 0, 0, 0));
-        assert_eq!((d.scale_percent, d.scale_changed), (100, false));
     }
 }

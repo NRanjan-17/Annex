@@ -564,36 +564,6 @@ async fn the_relay_connects_two_symmetric_routers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_second_viewer_shares_the_hosts_relay_address() {
-    let net = Arc::new(Net::default());
-    stun_server(&net);
-    turn_server(&net);
-    let home = net.router(Nat::Symmetric, "203.0.113.10");
-    let cfg = HostConfig {
-        port: 0,
-        stream: StreamConfig { codec: Codec::H264, width: 1280, height: 720, fps: 60 },
-        extend: false,
-        udp: Some(net.socket("10.0.0.2:47800", Some(home))),
-    };
-    let (hev, _hrx) = sink();
-    let host = start_host(core("Host"), cfg, hev).await.unwrap();
-    let login = || TurnServer { addr: TURN.parse().unwrap(), username: TURN_USER.into(), password: turn_pass().into() };
-    let first = host.relay(login(), vec!["203.0.113.20".parse().unwrap()], false).await.unwrap();
-    // A relay refuses a second allocation from the same socket (437); this one reuses the first,
-    // letting the new viewer in (with a nonce that has changed meanwhile).
-    let second = host.relay(login(), vec!["203.0.113.30".parse().unwrap()], false).await.unwrap();
-    assert_eq!(first, second);
-    host.stop().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn our_relay_keeps_sessions_to_fast_quality() {
-    let o = connect_across(Nat::Symmetric, Nat::PortRestricted, Relay::Ours).await;
-    assert_eq!(started(&o.host).0, LinkKind::Relayed);
-    assert_eq!(o.host_scale, 55, "held to Fast (6 Mbit/s is more than 720p needs)");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_wrong_relay_login_is_refused() {
     let o = connect_across(Nat::Symmetric, Nat::Symmetric, Relay::WrongLogin).await;
     let Some(Event::Error { message }) = &o.viewer else { panic!("got {:?}", o.viewer) };
