@@ -55,6 +55,7 @@ internal sealed partial class DropTray
     private PointInt32 _downAt;
     private long _downTicks;
     private bool _fromExplorer;
+    private bool _fileDrag;
 
     // The island's size in device-independent pixels, animated.
     private double _w, _h;
@@ -157,17 +158,29 @@ internal sealed partial class DropTray
             var moved = Math.Abs(p.X - _downAt.X) + Math.Abs(p.Y - _downAt.Y);
             if (moved < 24 || Environment.TickCount64 - _downTicks < 250) return;
             _dragging = true;
-            // Files nearly always come from File Explorer or the desktop; glow for those straight away.
-            if (_fromExplorer && _phase == Phase.Hidden) Show(Phase.Glowing);
+            _fileDrag = false;
+        }
+        // Pop out for files and folders from any app: Explorer and the desktop, or anything showing the
+        // shell's drag image.
+        if (!_fileDrag && (_fromExplorer || DragImageShown()))
+        {
+            _fileDrag = true;
+            if (_phase == Phase.Hidden) Show(Phase.Glowing);
         }
         if (_phase == Phase.Transfers) return;
         var near = DistanceToIsland(p) < 160 * Scale;
         if (near && _phase != Phase.Open) Show(Phase.Open);
         else if (!near && _phase == Phase.Open)
         {
-            if (_fromExplorer) Show(Phase.Glowing);
+            if (_fileDrag) Show(Phase.Glowing);
             else Hide();
         }
+    }
+
+    private static bool DragImageShown()
+    {
+        var hwnd = FindWindowW("SysDragImage", null);
+        return hwnd != 0 && IsWindowVisible(hwnd);
     }
 
     private static bool IsExplorerAt(PointInt32 p)
@@ -531,4 +544,11 @@ internal sealed partial class DropTray
 
     [System.Runtime.InteropServices.LibraryImport("user32.dll")]
     private static partial uint GetDpiForSystem();
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll", StringMarshalling = System.Runtime.InteropServices.StringMarshalling.Utf16)]
+    private static partial nint FindWindowW(string className, string? windowName);
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static partial bool IsWindowVisible(nint hwnd);
 }

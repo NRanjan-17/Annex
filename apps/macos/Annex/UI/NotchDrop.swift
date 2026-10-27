@@ -326,7 +326,7 @@ private struct NotchDropView: View {
         let n = model.notchSize
         switch model.phase {
         case .hidden: return n
-        case .glowing: return CGSize(width: n.width + 24, height: n.height + 6)
+        case .glowing: return CGSize(width: n.width + 56, height: n.height + 14)
         case .open: return CGSize(width: 380, height: n.height + 118)
         case .transfers: return CGSize(width: 380, height: n.height + 20 + CGFloat(max(model.items.count, 1)) * 44)
         }

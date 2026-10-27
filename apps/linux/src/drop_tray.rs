@@ -23,14 +23,15 @@ window.annex-island-window { background: transparent; }
   transition: min-width 260ms ease-out, min-height 260ms ease-out, margin 260ms ease-out,
     opacity 200ms ease-out, box-shadow 260ms ease-out;
 }
-.annex-island.open, .annex-island.transfers {
+.annex-island.glowing, .annex-island.open, .annex-island.transfers {
   opacity: 1; margin: 0 26px 26px 26px;
   transition: min-width 420ms cubic-bezier(0.34, 1.56, 0.64, 1), min-height 420ms cubic-bezier(0.34, 1.56, 0.64, 1),
     margin 300ms ease-out, opacity 150ms ease-out, box-shadow 300ms ease-out;
 }
+.annex-island.glowing { min-width: 200px; min-height: 34px; }
 .annex-island.open { min-width: 380px; min-height: 150px; }
 .annex-island.transfers { min-width: 380px; }
-.annex-island.open {
+.annex-island.glowing, .annex-island.open {
   border-width: 0 2px 2px 2px; animation: annex-flow 2.4s linear infinite;
   box-shadow: 0 0 8px rgba(255, 255, 255, 0.9), 0 0 22px rgba(255, 255, 255, 0.5);
 }
@@ -57,6 +58,8 @@ window.annex-island-window { background: transparent; }
 enum Phase {
     /// Only the strip that waits for a drag.
     Hidden,
+    /// A drag reached the top: a small glowing pill, about to open.
+    Glowing,
     Open,
     Transfers,
 }
@@ -132,7 +135,8 @@ impl DropTray {
             let i = inner.clone();
             drop.connect_enter(move |_, _, _| {
                 if i.phase.get() == Phase::Hidden {
-                    i.set_phase(Phase::Open);
+                    i.set_phase(Phase::Glowing);
+                    i.open_later(300);
                 }
                 gdk::DragAction::COPY
             });
@@ -140,7 +144,7 @@ impl DropTray {
         {
             let i = inner.clone();
             drop.connect_leave(move |_| {
-                if i.phase.get() == Phase::Open {
+                if matches!(i.phase.get(), Phase::Glowing | Phase::Open) {
                     i.hide_later(700);
                 }
             });
@@ -194,7 +198,7 @@ impl DropTray {
             }
             s.can_send = can;
         }
-        if !can && i.phase.get() == Phase::Open {
+        if !can && matches!(i.phase.get(), Phase::Glowing | Phase::Open) {
             i.set_phase(Phase::Hidden);
         }
         i.update_visible();
@@ -252,13 +256,14 @@ impl Inner {
     fn set_phase(self: &Rc<Self>, phase: Phase) {
         self.state.borrow_mut().generation += 1;
         self.phase.set(phase);
-        for c in ["open", "transfers"] {
+        for c in ["glowing", "open", "transfers"] {
             self.island.remove_css_class(c);
         }
         match phase {
             Phase::Hidden => {
                 self.state.borrow_mut().items.retain(|x| x.ok.is_none());
             }
+            Phase::Glowing => self.island.add_css_class("glowing"),
             Phase::Open => self.island.add_css_class("open"),
             Phase::Transfers => self.island.add_css_class("transfers"),
         }
@@ -272,6 +277,17 @@ impl Inner {
         if show != self.window.is_visible() {
             self.window.set_visible(show);
         }
+    }
+
+    /// Opens the pill if the drag is still on it after `ms`.
+    fn open_later(self: &Rc<Self>, ms: u64) {
+        let generation = self.state.borrow().generation;
+        let me = self.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
+            if me.state.borrow().generation == generation && me.phase.get() == Phase::Glowing {
+                me.set_phase(Phase::Open);
+            }
+        });
     }
 
     fn hide_later(self: &Rc<Self>, ms: u64) {
@@ -292,10 +308,10 @@ impl Inner {
             self.content.remove(&c);
         }
         // Hidden: only the strip, without the content's padding.
-        self.content.set_visible(self.phase.get() != Phase::Hidden);
+        self.content.set_visible(!matches!(self.phase.get(), Phase::Hidden | Phase::Glowing));
         let s = self.state.borrow();
         match self.phase.get() {
-            Phase::Hidden => {}
+            Phase::Hidden | Phase::Glowing => {}
             Phase::Open => {
                 let icon = gtk::Image::from_icon_name("document-save-symbolic");
                 icon.set_pixel_size(28);
