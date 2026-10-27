@@ -30,7 +30,7 @@
       {
         "kind": "improved",
         "title": "Smooth video on slow connections",
-        "detail": "On a slow link Annex now lowers the picture's bitrate far enough to stay live instead of falling seconds behind."
+        "detail": "On a slow link Annex now stays live instead of falling seconds behind, sending a smaller picture until the link speeds up again."
       },
       {
         "kind": "fixed",
