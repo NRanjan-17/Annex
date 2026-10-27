@@ -104,6 +104,7 @@ impl Core {
     /// pick it up when hosting restarts. Returns the name as stored (cleaned and shortened).
     pub fn set_device_name(&self, name: &str) -> String {
         let name = clean_name(name);
+        tracing::info!(name, "device name set");
         *self.device_name.lock().unwrap() = name.clone();
         name
     }
@@ -113,6 +114,7 @@ impl Core {
     /// SSH to read, and paired devices may use the mouse and keyboard without being allowed one by
     /// one. Off by default.
     pub fn set_headless(&self, on: bool) {
+        tracing::info!(on, "headless");
         self.headless.store(on, Ordering::Relaxed);
     }
 
@@ -123,6 +125,7 @@ impl Core {
     /// Where files sent from the other computer are saved (usually Downloads); None (the
     /// default) refuses them. Applies to sessions that start afterwards.
     pub fn set_downloads(&self, dir: Option<PathBuf>) {
+        tracing::info!(dir = ?dir, "receiving files into");
         *self.downloads.lock().unwrap() = dir;
     }
 
@@ -163,6 +166,7 @@ impl Core {
     /// Host side: lets a trusted device control this computer's mouse and keyboard (or stops it).
     /// Running sessions pick the change up within about a second. Returns false if not trusted.
     pub fn set_allow_input(&self, fingerprint: &str, allow: bool) -> Result<bool, SessionError> {
+        tracing::info!(fingerprint, allow, "control by this device");
         Ok(self.trust.lock().unwrap().set_allow_input(fingerprint, allow)?)
     }
 
@@ -174,17 +178,20 @@ impl Core {
 
     /// Revokes a peer. Returns true if it was trusted.
     pub fn untrust(&self, fingerprint: &str) -> Result<bool, SessionError> {
+        tracing::info!(fingerprint, "forgetting a device");
         Ok(self.trust.lock().unwrap().remove(fingerprint)?)
     }
 
     /// Answers a `pairing_pin_required` request with the PIN the user typed.
     /// Returns false if the request is unknown or already answered.
     pub fn submit_pin(&self, request_id: u64, pin: &str) -> bool {
+        tracing::debug!(request_id, "PIN typed");
         self.answer(request_id, Some(pin.to_string()))
     }
 
     /// Cancels a pending pairing (either side).
     pub fn cancel_request(&self, request_id: u64) -> bool {
+        tracing::info!(request_id, "pairing cancelled");
         self.answer(request_id, None)
     }
 

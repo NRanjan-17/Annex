@@ -130,17 +130,20 @@ impl Transfers {
     pub fn send_clipboard(self: &Arc<Self>, mime: &str, data: Vec<u8>) -> bool {
         let cap = if self.limited { MAX_CLIPBOARD_LIMITED } else { MAX_CLIPBOARD };
         if data.len() as u64 > cap {
+            tracing::info!(mime, bytes = data.len(), cap, "clipboard too big for this link; not sent");
             return false;
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        tracing::debug!(id, mime, bytes = data.len(), "sending the clipboard");
         let header = Header { id, item: Item::Clipboard { mime: mime.into() }, size: data.len() as u64 };
         let me = self.clone();
         let _rt = self.rt.enter();
         self.tasks.lock().unwrap().spawn(async move {
             let flag = Arc::new(AtomicBool::new(false));
             let mut src: &[u8] = &data;
-            if let Err(e) = me.send(&header, &mut src, &flag, |_| {}).await {
-                tracing::debug!("clipboard not sent: {e}");
+            match me.send(&header, &mut src, &flag, |_| {}).await {
+                Ok(()) => tracing::debug!(id, "clipboard sent"),
+                Err(e) => tracing::warn!(id, "clipboard not sent: {e}"),
             }
         });
         true
@@ -154,6 +157,7 @@ impl Transfers {
             return Err("Send the files in a folder, not the folder itself.".into());
         }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        tracing::info!(id, name, size, paced = self.limited, "sending a file");
         let flag = Arc::new(AtomicBool::new(false));
         self.running.lock().unwrap().insert((false, id), flag.clone());
         (self.events)(Event::TransferStarted {
@@ -166,6 +170,7 @@ impl Transfers {
         let (me, path) = (self.clone(), path.to_path_buf());
         let _rt = self.rt.enter();
         self.tasks.lock().unwrap().spawn(async move {
+            let started = Instant::now();
             let header = Header { id, item: Item::File { name }, size };
             let result = match tokio::fs::File::open(&path).await {
                 Ok(mut f) => {
@@ -179,7 +184,7 @@ impl Transfers {
                 Err(e) => Err(e.to_string()),
             };
             me.running.lock().unwrap().remove(&(false, id));
-            tracing::info!(id, ok = result.is_ok(), "file sent");
+            log_outcome("sent", id, size, started, &result);
             me.ended(false, id, result.map(|()| None));
         });
         Ok(id)
@@ -187,6 +192,7 @@ impl Transfers {
 
     /// Stops a running transfer, either way. The receiving side deletes what it had written.
     pub fn cancel(&self, incoming: bool, id: u64) {
+        tracing::info!(incoming, id, "cancelling a transfer");
         if let Some(flag) = self.running.lock().unwrap().get(&(incoming, id)) {
             flag.store(true, Ordering::Relaxed);
         }
@@ -254,7 +260,7 @@ impl Transfers {
         let header = match read_header(&mut recv).await {
             Ok(h) => h,
             Err(e) => {
-                tracing::debug!("transfer: bad header: {e}");
+                tracing::warn!("transfer: bad header: {e}");
                 let _ = recv.stop(FAILED.into());
                 return;
             }
@@ -268,6 +274,7 @@ impl Transfers {
             Item::Clipboard { mime } => {
                 let cap = if self.limited { MAX_CLIPBOARD_LIMITED } else { MAX_CLIPBOARD };
                 if header.size > cap {
+                    tracing::info!(%mime, size = header.size, cap, "clipboard too big for this link; refused");
                     let _ = recv.stop(REFUSED.into());
                     return;
                 }
@@ -278,15 +285,16 @@ impl Transfers {
                     recv.read_exact(&mut sum).await
                 };
                 if read.await.is_err() || ring::digest::digest(&ring::digest::SHA256, &data).as_ref() != sum {
-                    tracing::debug!(%mime, "clipboard item damaged; dropped");
+                    tracing::warn!(%mime, "clipboard item damaged; dropped");
                     let _ = recv.stop(FAILED.into());
                     return;
                 }
-                tracing::debug!(%mime, "clipboard item received");
+                tracing::debug!(%mime, bytes = data.len(), "clipboard item received");
                 (self.events)(Event::ClipboardReceived { session_id: self.session_id, mime, data });
             }
             Item::File { name } => {
                 let Some(dir) = self.downloads.clone() else {
+                    tracing::info!(name, "file refused: receiving files is off");
                     let _ = recv.stop(REFUSED.into());
                     return;
                 };
@@ -301,9 +309,11 @@ impl Transfers {
                     name: name.clone(),
                     size: header.size,
                 });
+                tracing::info!(id, name, size = header.size, dir = %dir.display(), "receiving a file");
+                let started = Instant::now();
                 let result = self.receive_file(&mut recv, &dir, &name, header.size, id, &flag).await;
                 self.running.lock().unwrap().remove(&(true, id));
-                tracing::info!(id, ok = result.is_ok(), "file received");
+                log_outcome("received", id, header.size, started, &result);
                 self.ended(true, id, result.map(Some));
             }
         }
@@ -463,6 +473,16 @@ fn read_reason(e: quinn::ReadError) -> String {
             "Cancelled on the other computer.".into()
         }
         other => other.to_string(),
+    }
+}
+
+/// How a file transfer went: how long, how fast, and why it failed.
+fn log_outcome<T>(what: &str, id: u64, size: u64, started: Instant, result: &Result<T, String>) {
+    let secs = started.elapsed().as_secs_f64();
+    let mbps = if secs > 0.0 { size as f64 * 8.0 / secs / 1e6 } else { 0.0 };
+    match result {
+        Ok(_) => tracing::info!(id, size, secs = format!("{secs:.2}"), mbps = format!("{mbps:.1}"), "file {what}"),
+        Err(e) => tracing::warn!(id, size, secs = format!("{secs:.2}"), "file not {what}: {e}"),
     }
 }
 

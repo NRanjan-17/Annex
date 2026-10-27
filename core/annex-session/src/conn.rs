@@ -5,6 +5,21 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::SessionError;
 
+/// Logs a control message between the two computers. Input, reports and clock pings (many a
+/// second) only show with verbose logging; pairing bytes, passphrases and keys pressed never do.
+fn log_control(dir: &str, msg: &Control) {
+    match msg {
+        Control::Input(_) => tracing::trace!(dir, "control: input"),
+        Control::ReceiverReport(r) => tracing::trace!(dir, ?r, "control: receiver report"),
+        Control::ClockPing { .. } | Control::ClockPong { .. } => tracing::trace!(dir, "control: clock sync"),
+        Control::PairSpake { .. } => tracing::debug!(dir, "pairing: key exchange"),
+        Control::PairConfirm { .. } => tracing::debug!(dir, "pairing: confirmation"),
+        Control::DirectLinkOffer { ssid, .. } => tracing::debug!(dir, ssid, "direct link offer"),
+        // Nothing private in the rest.
+        _ => tracing::debug!(dir, ?msg, "control"),
+    }
+}
+
 pub(crate) enum Incoming {
     Control(Control),
     Video(VideoFrame),
@@ -35,6 +50,7 @@ impl<R: AsyncRead + Unpin> Reader<R> {
             match header.kind {
                 RecordType::Control => {
                     if let Some(msg) = Control::decode(&self.buf)? {
+                        log_control("received", &msg);
                         return Ok(Incoming::Control(msg));
                     }
                     tracing::debug!("skipping unknown control message");
@@ -64,6 +80,7 @@ impl<W: AsyncWrite + Unpin> Writer<W> {
     }
 
     pub async fn send_control(&mut self, msg: &Control) -> Result<(), SessionError> {
+        log_control("sent", msg);
         self.send(RecordType::Control, &msg.encode()).await
     }
 

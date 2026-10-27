@@ -194,6 +194,10 @@ pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
 pub fn log_event(e: &Event) {
     const T: &str = "annex::event";
     match e {
+        // A code to connect by stays out; addresses are fine.
+        Event::Connecting { address } if !address.contains(['.', ':']) => {
+            tracing::debug!(target: T, "connecting by internet code")
+        }
         Event::InternetCode { expires_in, .. } => tracing::debug!(target: T, expires_in, "internet code ready"),
         Event::PairingPin { request_id, peer_name, fingerprint_display, .. } => {
             tracing::debug!(target: T, request_id, peer_name, fingerprint_display, "showing a pairing PIN")

@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing::Instrument as _;
 
 use annex_proto::{Codec, Control, DisplayInfo, Mode, Role, StreamConfig, VideoFlags, VideoHeader};
 use tokio::net::TcpListener;
@@ -454,19 +455,20 @@ async fn accept_loop(
                             Ok(est) => handle_conn(est, shared, shutdown).await,
                             Err(e) => tracing::info!("TCP handshake failed: {e}"),
                         }
-                    });
+                    }.instrument(conn_span(addr)));
                 }
                 Err(e) => tracing::warn!("accept failed: {e}"),
             },
             Some(incoming) = quic_accept(&quic) => {
                 tracing::info!(addr = %crate::transport::canonical(incoming.remote_address()), "incoming QUIC connection");
                 let (shared, shutdown) = (shared.clone(), shutdown.clone());
+                let span = conn_span(incoming.remote_address());
                 sessions.spawn(async move {
                     match accept_quic(incoming).await {
                         Ok(est) => handle_conn(est, shared, shutdown).await,
                         Err(e) => tracing::info!("QUIC handshake failed: {e}"),
                     }
-                });
+                }.instrument(span));
             }
             _ = shutdown.changed() => break,
             Some(_) = sessions.join_next(), if !sessions.is_empty() => {}
@@ -477,6 +479,11 @@ async fn accept_loop(
         q.close(0u32.into(), b"host stopped");
         let _ = timeout(Duration::from_millis(500), q.wait_idle()).await;
     }
+}
+
+/// Every line about one viewer's connection carries its address, and its session once it has one.
+fn conn_span(addr: std::net::SocketAddr) -> tracing::Span {
+    tracing::info_span!("viewer", addr = %crate::transport::canonical(addr), session = tracing::field::Empty)
 }
 
 async fn handle_conn(est: Established, shared: Arc<Shared>, shutdown: watch::Receiver<bool>) {
@@ -616,6 +623,7 @@ async fn run_session(
     } else {
         None
     };
+    tracing::Span::current().record("session", id);
     tracing::info!(id, peer = %peer.device_name, mode = ?req.mode, input = req.input, quality = ?req.quality, "session request");
     if let Some(reason) = reject {
         tracing::warn!(id, reason, "session rejected");

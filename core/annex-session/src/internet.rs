@@ -57,6 +57,7 @@ pub async fn share_code(
         Err(SessionError::Rejected(r)) if r == "code_expired" => "expired".into(),
         Err(e) => e.to_string(),
     };
+    tracing::info!(reason, "internet code ended");
     events(Event::InternetCodeEnded { reason });
 }
 

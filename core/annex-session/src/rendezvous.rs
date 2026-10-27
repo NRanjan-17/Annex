@@ -242,6 +242,7 @@ pub async fn host(server: &str, name: &str, addrs: &[SocketAddr], own_relay: boo
         Msg::Code { code, expires_in } => (code, Duration::from_secs(expires_in.into())),
         _ => return Err(SessionError::Violation("rendezvous: expected a code".into())),
     };
+    tracing::info!(server, expires_in = expires_in.as_secs(), own_relay, "rendezvous: got a code");
     let (addrs, local) = split(addrs);
     send(&mut ws, &Msg::Hello { name: name.into(), addrs, local, own_relay }).await?;
     Ok(HostCode { ws, code, expires_in })
@@ -251,6 +252,7 @@ pub async fn host(server: &str, name: &str, addrs: &[SocketAddr], own_relay: boo
 /// used or expired code, and `Rejected("too_many_attempts")` after too many tries.
 pub async fn join(server: &str, code: &str, name: &str, addrs: &[SocketAddr]) -> Result<Joined, SessionError> {
     let code: String = code.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    tracing::info!(server, "rendezvous: joining by code");
     let mut ws = open(server, &format!("/v1/join/{code}")).await?;
     let (addrs, local) = split(addrs);
     send(&mut ws, &Msg::Join { name: name.into(), addrs, local }).await?;

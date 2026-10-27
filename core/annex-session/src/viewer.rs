@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tracing::Instrument as _;
 
 use annex_proto::{Codec, Control, DisplayInfo, InputEvent, Mode, Quality, Role, SessionRequest};
 use tokio::sync::mpsc;
@@ -215,19 +216,26 @@ pub fn connect_viewer(core: Arc<Core>, cfg: ViewerConfig, events: EventSink, fra
     let (cmd, cmd_rx) = mpsc::unbounded_channel();
     let transfers = Arc::new(std::sync::OnceLock::new());
     let session_transfers = transfers.clone();
-    let task = tokio::spawn(async move {
-        // Peer-sent reasons stay bare codes (`pairing_failed`, `busy`, ...) for the apps.
-        let result = run(core, cfg, events.clone(), frames, cmd_rx, &session_transfers).await;
-        if let Some(t) = session_transfers.get() {
-            t.close();
+    let span = tracing::info_span!("host", address = tracing::field::Empty);
+    if cfg.join.is_none() {
+        span.record("address", cfg.address.as_str());
+    }
+    let task = tokio::spawn(
+        async move {
+            // Peer-sent reasons stay bare codes (`pairing_failed`, `busy`, ...) for the apps.
+            let result = run(core, cfg, events.clone(), frames, cmd_rx, &session_transfers).await;
+            if let Some(t) = session_transfers.get() {
+                t.close();
+            }
+            let reason = match result {
+                Ok(r) | Err(SessionError::Rejected(r)) => r,
+                Err(e) => e.to_string(),
+            };
+            tracing::info!(%reason, "viewer session ended");
+            events(Event::SessionEnded { session_id: 0, reason });
         }
-        let reason = match result {
-            Ok(r) | Err(SessionError::Rejected(r)) => r,
-            Err(e) => e.to_string(),
-        };
-        tracing::info!(%reason, "viewer session ended");
-        events(Event::SessionEnded { session_id: 0, reason });
-    });
+        .instrument(span),
+    );
     ViewerHandle { cmd, task: Mutex::new(Some(task)), transfers }
 }
 
