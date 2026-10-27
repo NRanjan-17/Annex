@@ -34,6 +34,11 @@ final class HostController {
     var extendScale = 0 {
         didSet { for s in extendSessions.values { s.setScale(extendScale) } }
     }
+    /// Settings → Sound → Share this computer's sound: mirror viewers hear this Mac, for new and
+    /// running captures. The core sends it only while a viewer listens.
+    var shareSound = false {
+        didSet { capturer.setCapturesSound(shareSound) }
+    }
     /// Every Extend display has its scaling applied (tests wait for this before changing modes).
     var extendScalingSettled: Bool { extendSessions.values.allSatisfy(\.scaleSettled) }
     private var host: HostHandle?
@@ -64,6 +69,10 @@ final class HostController {
         self.core = core
         self.display = display
         self.preferHardware = preferHardware
+        capturer.wantsSound = { [weak core] in core?.soundWanted ?? false }
+        capturer.onSound = { [weak core] samples, frames, channels, rate in
+            core?.pushSound(samples, frames: frames, channels: channels, rate: rate)
+        }
     }
 
     var streamSize: (Int, Int) {

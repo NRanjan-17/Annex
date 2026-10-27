@@ -35,6 +35,14 @@ pub struct Settings {
     /// Sharing: the size of text and windows on a screen extending this one. 0 = the other
     /// screen's own scale (200 % on a Retina Mac); otherwise a percentage, 100–200.
     pub extend_scale: u32,
+    /// Sound: send what this computer plays to whoever views it.
+    pub share_sound: bool,
+    /// Sound: play what the other computer sends (its sound, or a viewer's microphone).
+    pub hear_sound: bool,
+    /// Sound: send this computer's microphone to the computer it views.
+    pub send_mic: bool,
+    /// Sound: a viewer's microphone becomes "Annex Microphone" here instead of playing aloud.
+    pub virtual_mic: bool,
     pub show_technical_details: bool,
     /// Everything Annex does goes in the log (every input event, every progress step).
     pub verbose_logging: bool,
@@ -67,6 +75,10 @@ impl Default for Settings {
             drop_at_top: true,
             prefer_hardware_encoder: true,
             extend_scale: 0,
+            share_sound: true,
+            hear_sound: true,
+            send_mic: false,
+            virtual_mic: true,
             show_technical_details: false,
             verbose_logging: false,
             check_for_updates: true,
@@ -114,7 +126,7 @@ impl Settings {
         format!(
             "open_at_login={} start_sharing_at_launch={} headless={} quality={} use_mouse_and_keyboard={} \
              open_full_screen={} extend_by_default={} share_clipboard={} receive_files={} drop_at_top={} \
-             prefer_hardware_encoder={} show_technical_details={} verbose_logging={} own_server={} own_relay={} \
+             prefer_hardware_encoder={} share_sound={} hear_sound={} send_mic={} virtual_mic={} show_technical_details={} verbose_logging={} own_server={} own_relay={} \
              screen_token={} last_seen_version={}",
             self.open_at_login,
             self.start_sharing_at_launch,
@@ -127,6 +139,10 @@ impl Settings {
             self.receive_files,
             self.drop_at_top,
             self.prefer_hardware_encoder,
+            self.share_sound,
+            self.hear_sound,
+            self.send_mic,
+            self.virtual_mic,
             self.show_technical_details,
             self.verbose_logging,
             !self.rendezvous_server.trim().is_empty(),
@@ -134,6 +150,16 @@ impl Settings {
             self.screen_token.is_some(),
             self.last_seen_version.as_deref().unwrap_or("none"),
         )
+    }
+
+    /// The sound switches, for the core.
+    pub fn audio(&self) -> annex_session::audio::AudioSettings {
+        annex_session::audio::AudioSettings {
+            share_sound: self.share_sound,
+            hear_sound: self.hear_sound,
+            send_mic: self.send_mic,
+            virtual_mic: self.virtual_mic,
+        }
     }
 
     /// The code server to use: the user's, or Annex's.
@@ -214,6 +240,7 @@ mod tests {
         assert_eq!(s.server(), ANNEX_SERVER);
         assert!(!s.verbose_logging);
         assert!(s.last_seen_version.is_none());
+        assert!(s.share_sound && s.hear_sound && !s.send_mic && s.virtual_mic);
     }
 
     #[test]

@@ -580,6 +580,45 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         "dim",
     ));
 
+    b.append(&label("Sound", "section"));
+    let sound: [(&str, &str, bool, fn(&mut crate::settings::Settings, bool)); 3] = [
+        ("Share this computer's sound", "People viewing this computer hear what it plays.", s.share_sound, |s, on| {
+            s.share_sound = on
+        }),
+        (
+            "Hear the other computer",
+            "Plays the shared computer's sound here, and a viewer's microphone.",
+            s.hear_sound,
+            |s, on| s.hear_sound = on,
+        ),
+        (
+            "Send my microphone",
+            "Your voice plays on the computer you're viewing. Use headphones to avoid an echo.",
+            s.send_mic,
+            |s, on| s.send_mic = on,
+        ),
+    ];
+    let virtual_mic = annex_session::audio::virtual_microphone_here().then_some((
+        "Use a viewer's microphone as Annex Microphone",
+        "Apps here, like Zoom or Meet, can pick Annex Microphone. Off: it plays aloud.",
+        s.virtual_mic,
+        (|s, on| s.virtual_mic = on) as fn(&mut crate::settings::Settings, bool),
+    ));
+    for (text, caption, on, set) in sound.into_iter().chain(virtual_mic) {
+        toggle(
+            &b,
+            text,
+            on,
+            Box::new(move |m, on| {
+                set(&mut m.settings, on);
+                m.core.set_audio(m.settings.audio());
+            }),
+        );
+        let note = label(caption, "dim");
+        note.set_wrap(true);
+        b.append(&note);
+    }
+
     b.append(&label("Internet", "section"));
     b.append(&label("Codes and relays go through Annex's server unless you use your own.", "dim"));
     let fields: [(&str, String, SetText); 4] = [

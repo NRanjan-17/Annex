@@ -1007,6 +1007,7 @@ private struct SettingsPage: View {
             if showAdvanced {
                 sharing
                 viewing
+                sound
                 clipboardAndFiles
                 internet
                 developer
@@ -1099,6 +1100,27 @@ private struct SettingsPage: View {
             ToggleRow(title: "Reverse scrolling on Windows and Linux",
                       subtitle: "With natural scrolling on, scrolling on them feels like it does on this Mac.",
                       isOn: $settings.reverseScrollOnOthers)
+        }
+    }
+
+    private var sound: some View {
+        GroupSection("Sound") {
+            ToggleRow(title: "Share this computer's sound", subtitle: "People viewing this computer hear what it plays.",
+                      isOn: $settings.shareSound)
+            ToggleRow(title: "Hear the other computer", subtitle: "Plays the shared computer's sound here, and a viewer's microphone.",
+                      isOn: $settings.hearSound)
+            ToggleRow(title: "Send my microphone",
+                      subtitle: "Your voice plays on the computer you're viewing. Use headphones to avoid an echo.",
+                      isOn: Binding(get: { settings.sendMicrophone }, set: { model.setSendMicrophone($0) }))
+            if model.microphoneDenied {
+                GroupRow(title: "Annex can't use the microphone. Allow it in System Settings → Privacy & Security → Microphone.",
+                         status: .symbol("exclamationmark.triangle.fill", .orange))
+            }
+            if Annex.virtualMicrophoneSupported {
+                ToggleRow(title: "Use a viewer's microphone as Annex Microphone",
+                          subtitle: "Apps here, like Zoom or Meet, can pick Annex Microphone. Off: it plays aloud.",
+                          isOn: $settings.virtualMicrophone)
+            }
         }
     }
 

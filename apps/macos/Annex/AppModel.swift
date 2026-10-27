@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Combine
 import Foundation
 
@@ -64,6 +65,8 @@ final class AppModel: ObservableObject {
     private var askedForScreenRecording = false
     /// Accessibility permission (needed to let viewers control this Mac).
     @Published private(set) var accessibilityTrusted = InputInjector.isTrusted
+    /// Settings → Sound: macOS refused Annex the microphone, so Send my microphone can't work.
+    @Published private(set) var microphoneDenied = false
     /// Viewer: the host currently accepts this Mac's mouse and keyboard.
     @Published private(set) var controllingHost = false
     /// Viewer: the computer this Mac shows, by the name it gave.
@@ -140,6 +143,10 @@ final class AppModel: ObservableObject {
         settings.$extendScale.dropFirst().removeDuplicates()
             .sink { [weak self] scale in self?.host?.extendScale = scale }
             .store(in: &cancellables)
+        // So does sharing this Mac's sound, on a running mirror capture.
+        settings.$shareSound.dropFirst().removeDuplicates()
+            .sink { [weak self] on in self?.host?.shareSound = on }
+            .store(in: &cancellables)
         guard !Self.isRunningTests else { return }
         $pane.dropFirst().removeDuplicates()
             .sink { Annex.log(.debug, "[app] page: \($0)") }
@@ -207,6 +214,43 @@ final class AppModel: ObservableObject {
             accessibilityTrusted = trusted
         }
         settings.refreshLaunchAtLogin()
+        // Allowed again (or taken away) in System Settings while Annex was in the background.
+        let micDenied = settings.sendMicrophone && Self.microphoneRefused
+        if micDenied != microphoneDenied { microphoneDenied = micDenied }
+    }
+
+    private static var microphoneRefused: Bool {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        return status == .denied || status == .restricted
+    }
+
+    /// Settings → Sound → Send my microphone. Turning it on asks macOS for the microphone first, so
+    /// the prompt shows now rather than when a session opens it; refused, the switch stays off.
+    func setSendMicrophone(_ on: Bool) {
+        guard on else {
+            microphoneDenied = false
+            settings.sendMicrophone = false
+            return
+        }
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            microphoneDenied = false
+            settings.sendMicrophone = true
+        case .notDetermined:
+            Annex.log(.info, "[permissions] asking macOS for the microphone")
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                DispatchQueue.main.async {
+                    Annex.log(.info, "[permissions] microphone prompt: \(granted ? "allowed" : "not allowed")")
+                    guard let self else { return }
+                    self.microphoneDenied = !granted
+                    self.settings.sendMicrophone = granted
+                }
+            }
+        default:
+            Annex.log(.warn, "[permissions] the microphone isn't allowed; Send my microphone stays off")
+            microphoneDenied = true
+            settings.sendMicrophone = false
+        }
     }
 
     static var dataDirectory: URL {
@@ -235,6 +279,11 @@ final class AppModel: ObservableObject {
             self.core = core
             logStartup(core)
             settings.$headless.sink { [weak core] on in core?.setHeadless(on) }.store(in: &cancellables)
+            Publishers.CombineLatest4(settings.$shareSound, settings.$hearSound, settings.$sendMicrophone, settings.$virtualMicrophone)
+                .sink { [weak core] share, hear, mic, virtualMic in
+                    core?.setAudio(shareSound: share, hearSound: hear, sendMicrophone: mic, virtualMicrophone: virtualMic)
+                }
+                .store(in: &cancellables)
             settings.$receiveFiles.sink { [weak core] on in
                 let folder = on ? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first : nil
                 Annex.log(.debug, "[transfer] incoming files " + (folder.map { "go to \($0.path)" } ?? "are refused"))
@@ -375,6 +424,7 @@ final class AppModel: ObservableObject {
                   + "hardware encoder \(settings.preferHardwareEncoder ? "preferred" : "off"), extend scale \(settings.extendScale)")
         let h = HostController(core: core, display: display, preferHardware: settings.preferHardwareEncoder)
         h.extendScale = settings.extendScale
+        h.shareSound = settings.shareSound
         h.onStatus = { [weak self] s in self?.hostStatus = s }
         h.onEvent = { [weak self] e in self?.handleSessionEvent(e) }
         do {

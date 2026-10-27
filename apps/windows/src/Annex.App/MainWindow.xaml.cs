@@ -177,6 +177,7 @@ public sealed partial class MainWindow : Window
             _core.SetPresence(true);
             _core.SetHeadless(_settings.Headless);
             _core.SetDownloads(_settings.ReceiveFiles ? DownloadsFolder : null);
+            ApplyAudio();
             _clipboard.Copied += OnCopied;
             _drop = new DropTray(_ui);
             _drop.Dropped += SendFiles;
@@ -1786,6 +1787,8 @@ public sealed partial class MainWindow : Window
         SharingSection(p);
         p.Children.Add(Ui.Section("Viewing"));
         ViewingSection(p);
+        p.Children.Add(Ui.Section("Sound"));
+        SoundSection(p);
         p.Children.Add(Ui.Section("Internet"));
         InternetSettings(p);
         p.Children.Add(Ui.Section("Developer"));
@@ -1916,6 +1919,28 @@ public sealed partial class MainWindow : Window
                 _settings.Save();
                 _core?.SetDownloads(on ? DownloadsFolder : null);
             })));
+    }
+
+    private void SoundSection(StackPanel p)
+    {
+        p.Children.Add(Ui.Card("", "Share this computer's sound", "People viewing this computer hear what it plays.",
+            Ui.Switch(_settings.ShareSound, on => { Setting("share this computer's sound", on); _settings.ShareSound = on; _settings.Save(); ApplyAudio(); })));
+        p.Children.Add(Ui.Card("", "Hear the other computer", "Plays the shared computer's sound here, and a viewer's microphone.",
+            Ui.Switch(_settings.HearSound, on => { Setting("hear the other computer", on); _settings.HearSound = on; _settings.Save(); ApplyAudio(); })));
+        p.Children.Add(Ui.Card("", "Send my microphone", "Your voice plays on the computer you're viewing. Use headphones to avoid an echo.",
+            Ui.Switch(_settings.SendMicrophone, on => { Setting("send my microphone", on); _settings.SendMicrophone = on; _settings.Save(); ApplyAudio(); })));
+        if (CoreClient.VirtualMicrophoneSupported)
+            p.Children.Add(Ui.Card("", "Use a viewer's microphone as Annex Microphone",
+                "Apps here, like Zoom or Meet, can pick Annex Microphone. Off: it plays aloud.",
+                Ui.Switch(_settings.VirtualMicrophone, on => { Setting("viewer's microphone as Annex Microphone", on); _settings.VirtualMicrophone = on; _settings.Save(); ApplyAudio(); })));
+    }
+
+    /// <summary>Hands the Sound settings to the core (at startup and on every change).</summary>
+    private void ApplyAudio()
+    {
+        if (_core is null) return;
+        try { _core.SetAudio(_settings.ShareSound, _settings.HearSound, _settings.SendMicrophone, _settings.VirtualMicrophone); }
+        catch (AnnexException e) { AnnexLog.Warn($"[settings] couldn't apply sound settings: {e.Message}"); }
     }
 
     // Clipboard and files.

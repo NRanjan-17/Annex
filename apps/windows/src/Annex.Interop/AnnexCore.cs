@@ -201,6 +201,14 @@ public sealed class CoreClient : IDisposable
     /// folder, and paired devices may use the mouse and keyboard without being allowed one by one.</summary>
     public void SetHeadless(bool on) => NativeMethods.Check(NativeMethods.annex_core_set_headless(Raw, on));
 
+    /// <summary>Sound in sessions: share this PC's sound with viewers, play what the other computer sends,
+    /// send this PC's microphone, and make a viewer's microphone "Annex Microphone" (where supported).</summary>
+    public void SetAudio(bool shareSound, bool hearSound, bool sendMic, bool virtualMic) =>
+        NativeMethods.Check(NativeMethods.annex_core_set_audio(Raw, shareSound, hearSound, sendMic, virtualMic));
+
+    /// <summary>Whether a viewer's microphone can become "Annex Microphone" here (not on Windows yet).</summary>
+    public static bool VirtualMicrophoneSupported => NativeMethods.annex_virtual_microphone_supported();
+
     /// <summary>Where files from the other computer go; null refuses them.</summary>
     public void SetDownloads(string? folder) => NativeMethods.Check(NativeMethods.annex_core_set_downloads(Raw, folder));
 

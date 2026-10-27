@@ -67,6 +67,15 @@ internal static unsafe partial class NativeMethods
     [LibraryImport(Lib)]
     public static partial int annex_core_set_headless(nint core, [MarshalAs(UnmanagedType.U1)] bool on);
 
+    [LibraryImport(Lib)]
+    public static partial int annex_core_set_audio(nint core, [MarshalAs(UnmanagedType.U1)] bool shareSound,
+        [MarshalAs(UnmanagedType.U1)] bool hearSound, [MarshalAs(UnmanagedType.U1)] bool sendMic,
+        [MarshalAs(UnmanagedType.U1)] bool virtualMic);
+
+    [LibraryImport(Lib)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static partial bool annex_virtual_microphone_supported();
+
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     public static partial int annex_core_submit_pin(nint core, ulong requestId, string pin);
 

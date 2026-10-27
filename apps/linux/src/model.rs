@@ -213,6 +213,7 @@ impl Model {
         tracing::info!(target: "annex::pairing", name, fingerprint = core.fingerprint(), "identity ready");
         core.set_headless(settings.headless);
         core.set_downloads(settings.receive_files.then(downloads_dir));
+        core.set_audio(settings.audio());
         let model = Rc::new(RefCell::new(Model {
             rt,
             core,
