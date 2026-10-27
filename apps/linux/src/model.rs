@@ -170,7 +170,7 @@ impl Model {
     pub fn new(tx: async_channel::Sender<Msg>) -> Shared {
         let settings = Settings::load();
         let data = settings::data_dir();
-        crate::log::init(&data, settings.save_log);
+        crate::log::init(&data);
         let name = settings.device_name.clone().unwrap_or_else(system_name);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)

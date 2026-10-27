@@ -23,8 +23,6 @@ final class AppSettings: ObservableObject {
     @Published var quality: Int { didSet { defaults.set(quality, forKey: Keys.quality) } }
     /// Show identity codes, addresses, stream sizes and latency in the UI. Off by default.
     @Published var showTechnicalDetails: Bool { didSet { defaults.set(showTechnicalDetails, forKey: Keys.technical) } }
-    /// Write annex.log for bug reports. Off by default.
-    @Published var saveLog: Bool { didSet { defaults.set(saveLog, forKey: Keys.log); Annex.setLogEnabled(saveLog) } }
     /// Look for a new version on GitHub once a day.
     @Published var checkForUpdates: Bool { didSet { defaults.set(checkForUpdates, forKey: Keys.updates) } }
     /// Offer pre-releases too. Turning it off offers the newest normal release.
@@ -66,7 +64,6 @@ final class AppSettings: ObservableObject {
         static let extend = "extendByDefault"
         static let name = "deviceName"
         static let quality = "quality"
-        static let log = "saveLog"
         static let technical = "showTechnicalDetails"
         static let updates = "checkForUpdates"
         static let beta = "betaUpdates"
@@ -101,7 +98,6 @@ final class AppSettings: ObservableObject {
         extendByDefault = defaults.bool(forKey: Keys.extend)
         customDeviceName = defaults.string(forKey: Keys.name)
         quality = defaults.integer(forKey: Keys.quality)
-        saveLog = defaults.bool(forKey: Keys.log)
         showTechnicalDetails = defaults.bool(forKey: Keys.technical)
         checkForUpdates = defaults.bool(forKey: Keys.updates)
         // Saved only when the user flips it. Until then it follows what's installed: someone who

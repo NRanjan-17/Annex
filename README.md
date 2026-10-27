@@ -263,8 +263,9 @@ Details: [docs/SECURITY.md](docs/SECURITY.md) · [docs/PROTOCOL.md](docs/PROTOCO
 | The PIN keeps failing | After 5 wrong PINs, pairing pauses for 10 minutes. Type the PIN shown on the *sharing* computer. |
 | Laggy picture | Use a cable or Ethernet instead of Wi-Fi, or try *Direct Wi-Fi*. Keep *Hardware video encoder* on (Settings → Sharing). |
 
-**Reporting a bug?** Turn on **Settings → Developer → Save a log file**, reproduce the problem,
-and attach `annex.log` to [an issue](https://github.com/NRanjan-17/Annex/issues).
+**Reporting a bug?** Annex always keeps a log, `annex.log` (**Settings → Developer → Log file**
+opens it). It stays on your computer; Annex never sends it anywhere. Attach it to
+[an issue](https://github.com/NRanjan-17/Annex/issues) so we can see what went wrong.
 **Show technical details** in the same place reveals identity codes, addresses and connection
 figures.
 

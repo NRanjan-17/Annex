@@ -205,7 +205,6 @@ final class AppModel: ObservableObject {
             #endif
             let name = settings.customDeviceName ?? Self.systemName
             let core = try CoreClient(dataDirectory: Self.dataDirectory, deviceName: name)
-            Annex.setLogEnabled(settings.saveLog)
             self.core = core
             settings.$headless.sink { [weak core] on in core?.setHeadless(on) }.store(in: &cancellables)
             deviceName = core.deviceName

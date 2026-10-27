@@ -286,18 +286,22 @@ pub struct AnnexDiscovery {
     callbacks: Arc<Callbacks>,
 }
 
-/// The log file: `<data_dir>/annex.log`, written only while enabled (off by default, see
-/// `annex_set_log_enabled`). Local only, for bug reports; a new file starts past 5 MB.
+/// The log file: `<data_dir>/annex.log`, always written (debug level for Annex's own steps).
+/// Local only: never uploaded; users attach it to bug reports themselves. Past 5 MB it moves to `annex.old.log` and a new one starts, so
+/// the two never take more than about 10 MB.
 struct LogFile {
     enabled: std::sync::atomic::AtomicBool,
     path: Mutex<Option<PathBuf>>,
-    file: Mutex<Option<std::fs::File>>,
+    /// The open file and how many bytes it holds.
+    file: Mutex<Option<(std::fs::File, u64)>>,
 }
 
-static LOG: LogFile =
-    LogFile { enabled: std::sync::atomic::AtomicBool::new(false), path: Mutex::new(None), file: Mutex::new(None) };
+const LOG_MAX: u64 = 5 * 1024 * 1024;
 
-/// Where tracing writes: nowhere unless the user turned logging on.
+static LOG: LogFile =
+    LogFile { enabled: std::sync::atomic::AtomicBool::new(true), path: Mutex::new(None), file: Mutex::new(None) };
+
+/// Where tracing writes: `annex.log`, unless an app turned it off.
 struct LogSink;
 
 impl std::io::Write for LogSink {
@@ -306,15 +310,25 @@ impl std::io::Write for LogSink {
             return Ok(buf.len());
         }
         let mut file = LOG.file.lock().unwrap_or_else(|e| e.into_inner());
+        if file.as_ref().is_some_and(|(_, len)| *len > LOG_MAX) {
+            *file = None;
+        }
         if file.is_none() {
             let Some(path) = LOG.path.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return Ok(buf.len()) };
-            if std::fs::metadata(&path).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
+            if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX) {
                 let _ = std::fs::rename(&path, path.with_file_name("annex.old.log"));
             }
-            *file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok();
+            *file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok().map(|f| {
+                let len = f.metadata().map_or(0, |m| m.len());
+                (f, len)
+            });
         }
         match file.as_mut() {
-            Some(f) => f.write(buf),
+            Some((f, len)) => {
+                let n = f.write(buf)?;
+                *len += n as u64;
+                Ok(n)
+            }
             None => Ok(buf.len()),
         }
     }
@@ -324,21 +338,25 @@ impl std::io::Write for LogSink {
     }
 }
 
-/// Points the log at `<data_dir>/annex.log` and installs the logger (once per process).
-/// `ANNEX_LOG=1` turns it on from the start (tests, support).
+/// Points the log at `<data_dir>/annex.log` and installs the logger (once per process): debug
+/// for Annex's own crates, info for the libraries under it. `ANNEX_LOG=0` turns it off.
 fn init_logging(data_dir: &std::path::Path) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     let _ = std::fs::create_dir_all(data_dir);
     *LOG.path.lock().unwrap_or_else(|e| e.into_inner()) = Some(data_dir.join("annex.log"));
     ONCE.call_once(|| {
-        if std::env::var_os("ANNEX_LOG").is_some_and(|v| v == "1") {
-            LOG.enabled.store(true, std::sync::atomic::Ordering::Relaxed);
+        if std::env::var_os("ANNEX_LOG").is_some_and(|v| v == "0") {
+            LOG.enabled.store(false, std::sync::atomic::Ordering::Relaxed);
         }
-        let _ = tracing_subscriber::fmt()
-            .with_writer(|| LogSink)
-            .with_ansi(false)
-            .with_max_level(tracing::Level::INFO)
-            .with_target(false)
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        let levels = tracing_subscriber::filter::Targets::new()
+            .with_default(tracing::Level::INFO)
+            .with_target("annex", tracing::Level::DEBUG)
+            .with_target("app", tracing::Level::DEBUG);
+        let _ = tracing_subscriber::registry()
+            .with(tracing_subscriber::fmt::layer().with_writer(|| LogSink).with_ansi(false).with_target(false))
+            .with(levels)
             .try_init();
         // Panics on background threads don't end the process, but they explain what stopped working.
         let previous = std::panic::take_hook();
@@ -351,7 +369,7 @@ fn init_logging(data_dir: &std::path::Path) {
     });
 }
 
-/// Turns the log file on or off (off by default). Takes effect immediately.
+/// Turns the log file on or off (on by default; the apps leave it on). Takes effect immediately.
 #[unsafe(no_mangle)]
 pub extern "C" fn annex_set_log_enabled(enabled: bool) {
     LOG.enabled.store(enabled, std::sync::atomic::Ordering::Relaxed);

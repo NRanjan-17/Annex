@@ -16,6 +16,7 @@ on the network can read or alter the stream.**
 | Revocation | Remove a device in the app (or `annex peers remove <id>`); its next connection needs approval again |
 | Headless mode | Off by default. When on (Settings → No one at this screen), the pairing PIN is also written to `pairing-pin.txt` in the data folder (owner-only, deleted when pairing ends) for someone logged in over SSH, so anyone who can read this user's files can pair; and paired devices may use the mouse and keyboard without being allowed one by one. Unpaired devices never get input |
 | No cloud | No accounts, servers, relays or telemetry. The only internet traffic is the update check (GitHub's releases list, once a day and again when you install an update; can be turned off) |
+| Log file | Always on: `annex.log` in the data folder records connection steps (addresses, device names and IDs, errors), never PINs, keys or screen contents. It never leaves the computer; Annex doesn't upload it. Past 5 MB it moves to `annex.old.log` (about 10 MB at most). The user attaches it to a bug report if they choose. |
 | Updates | Installed only if the release's `SHA256SUMS.txt` carries a valid Ed25519 signature (made in CI with a key kept in the protected `release` environment; public key in `core/annex-update`) and the download's SHA-256 is listed in it. Unsigned releases are never offered |
 
 Tests: `core/annex-crypto/src/pairing.rs` covers right/wrong PIN, MITM across two TLS

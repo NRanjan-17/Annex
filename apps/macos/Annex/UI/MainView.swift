@@ -1094,18 +1094,12 @@ private struct SettingsPage: View {
         GroupSection("Developer") {
             ToggleRow(title: "Show technical details", subtitle: "Identity codes, addresses and connection details.",
                       isOn: $settings.showTechnicalDetails)
-            GroupRow(title: "Save a log file", subtitle: "For bug reports. Stays on this Mac. Off by default.") {
-                HStack(spacing: 8) {
-                    if settings.saveLog {
-                        Button("Show in Finder") {
-                            let log = AppModel.dataDirectory.appendingPathComponent("annex.log")
-                            NSWorkspace.shared.activateFileViewerSelecting([log])
-                        }
-                            .pointingHand()
-                    }
-                    Toggle("", isOn: $settings.saveLog).toggleStyle(.switch).labelsHidden()
-                        .pointingHand()
+            GroupRow(title: "Log file", subtitle: "Always on. Stays on this Mac; Annex never sends it anywhere. Attach it to a bug report if something goes wrong.") {
+                Button("Show in Finder") {
+                    let log = AppModel.dataDirectory.appendingPathComponent("annex.log")
+                    NSWorkspace.shared.activateFileViewerSelecting([log])
                 }
+                    .pointingHand()
             }
         }
     }
