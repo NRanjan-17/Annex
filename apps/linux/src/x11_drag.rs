@@ -133,8 +133,9 @@ impl Placer {
 }
 
 impl Placer {
-    /// Cuts the window to one rectangle (in GTK pixels): it shows and takes clicks only there.
-    pub fn shape(&self, window: &gtk::Window, x: i32, y: i32, width: i32, height: i32) {
+    /// Cuts the window to a rectangle (in GTK pixels) with its bottom corners rounded by `radius`:
+    /// it shows and takes clicks only there.
+    pub fn shape(&self, window: &gtk::Window, x: i32, y: i32, width: i32, height: i32, radius: i32) {
         let scale = window.scale_factor();
         let r = [x * scale, y * scale, width.max(1) * scale, height.max(1) * scale];
         if r == self.shaped.get() {
@@ -142,13 +143,31 @@ impl Placer {
         }
         let Some(xid) = xid(window) else { return };
         self.shaped.set(r);
-        let rect = xproto::Rectangle { x: r[0] as i16, y: r[1] as i16, width: r[2] as u16, height: r[3] as u16 };
+        let rects = rounded(r, (radius * scale).min(r[2] / 2).min(r[3]));
         for kind in [shape::SK::BOUNDING, shape::SK::INPUT] {
-            let _ =
-                self.conn.shape_rectangles(shape::SO::SET, kind, xproto::ClipOrdering::UNSORTED, xid, 0, 0, &[rect]);
+            let _ = self.conn.shape_rectangles(shape::SO::SET, kind, xproto::ClipOrdering::UNSORTED, xid, 0, 0, &rects);
         }
         let _ = self.conn.flush();
     }
+}
+
+/// `[x, y, width, height]` as rectangles: the body, then one row per pixel of the rounded corners.
+fn rounded([x, y, w, h]: [i32; 4], radius: i32) -> Vec<xproto::Rectangle> {
+    let rect = |x: i32, y: i32, w: i32, h: i32| xproto::Rectangle {
+        x: x as i16,
+        y: y as i16,
+        width: w as u16,
+        height: h as u16,
+    };
+    let mut out = vec![rect(x, y, w, h - radius)];
+    let r = f64::from(radius);
+    for row in 0..radius {
+        // How far in the curve is at this row, measured at the middle of the pixel.
+        let dy = f64::from(row) + 0.5;
+        let inset = (r - (r * r - dy * dy).max(0.0).sqrt()).round() as i32;
+        out.push(rect(x + inset, y + h - radius + row, w - 2 * inset, 1));
+    }
+    out
 }
 
 fn xid(window: &gtk::Window) -> Option<u32> {

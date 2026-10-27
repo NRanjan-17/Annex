@@ -64,6 +64,7 @@ internal sealed partial class DropTray
     private const double PillWidth = 200, PillHeight = 34, TrayWidth = 380;
     /// <summary>The window sits this far above the screen so only its bottom corners are round.</summary>
     private const double Overhang = 14;
+    private const double Radius = 20;
 
     public DropTray(DispatcherQueue ui)
     {
@@ -277,7 +278,7 @@ internal sealed partial class DropTray
         {
             BorderBrush = silver,
             BorderThickness = new Thickness(2.5, 0, 2.5, 2.5),
-            CornerRadius = new CornerRadius(0, 0, 20, 20),
+            CornerRadius = new CornerRadius(0, 0, Radius, Radius),
             Child = _content,
         };
         root.Children.Add(_island);
@@ -399,6 +400,10 @@ internal sealed partial class DropTray
         var pw = (int)Math.Round(w * s);
         var ph = (int)Math.Round((h + Overhang) * s);
         _window!.AppWindow.MoveAndResize(new RectInt32(area.X + (area.Width - pw) / 2, area.Y - (int)(Overhang * s), pw, ph));
+        // Round the bottom corners like the silver edge (the top ones are above the screen).
+        var r = (int)Math.Round(Radius * 2 * s);
+        var region = CreateRoundRectRgn(0, -r, pw + 1, ph + 1, r, r);
+        if (region != 0 && SetWindowRgn(WinRT.Interop.WindowNative.GetWindowHandle(_window), region, true) == 0) DeleteObject(region);
     }
 
     private static void Fade(UIElement element, double to, double ms)
@@ -544,6 +549,17 @@ internal sealed partial class DropTray
 
     [System.Runtime.InteropServices.LibraryImport("user32.dll")]
     private static partial uint GetDpiForSystem();
+
+    [System.Runtime.InteropServices.LibraryImport("gdi32.dll")]
+    private static partial nint CreateRoundRectRgn(int left, int top, int right, int bottom, int widthEllipse, int heightEllipse);
+
+    [System.Runtime.InteropServices.LibraryImport("gdi32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static partial bool DeleteObject(nint obj);
+
+    /// <summary>Windows owns <paramref name="region"/> once this succeeds.</summary>
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    private static partial int SetWindowRgn(nint hwnd, nint region, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)] bool redraw);
 
     [System.Runtime.InteropServices.LibraryImport("user32.dll", StringMarshalling = System.Runtime.InteropServices.StringMarshalling.Utf16)]
     private static partial nint FindWindowW(string className, string? windowName);

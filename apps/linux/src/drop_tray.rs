@@ -336,6 +336,8 @@ impl Inner {
             b.y() as i32,
             (b.width() + 2.0 * pad) as i32,
             (b.height() + pad) as i32,
+            // Without see-through windows, the shape is what rounds the corners.
+            if pad > 0.0 { 0 } else { 20 },
         );
     }
 
