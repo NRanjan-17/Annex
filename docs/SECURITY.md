@@ -14,7 +14,7 @@ on the network can read or alter the stream.**
 | Replay protection | Fresh ECDHE per connection; no resumption, tickets or 0-RTT; TLS record sequence numbers |
 | Forward secrecy | Ephemeral key exchange per session |
 | Revocation | Remove a device in the app (or `annex peers remove <id>`); its next connection needs approval again |
-| No cloud | No accounts, servers, relays or telemetry. The only internet traffic is the update check (GitHub's releases list, once a day; can be turned off) |
+| No cloud | No accounts, servers, relays or telemetry. The only internet traffic is the update check (GitHub's releases list, once a day and again when you install an update; can be turned off) |
 | Updates | Installed only if the release's `SHA256SUMS.txt` carries a valid Ed25519 signature (made in CI with a key kept in the protected `release` environment; public key in `core/annex-update`) and the download's SHA-256 is listed in it. Unsigned releases are never offered |
 
 Tests: `core/annex-crypto/src/pairing.rs` covers right/wrong PIN, MITM across two TLS
