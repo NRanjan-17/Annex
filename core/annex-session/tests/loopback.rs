@@ -920,3 +920,130 @@ async fn host_accepts_ipv6_and_ipv4_viewers() {
     }
     host.stop().await;
 }
+
+// ---- Clipboard and files -------------------------------------------------------------------
+
+fn noise(len: usize) -> Vec<u8> {
+    let mut x = 0x2545_f491_4f6c_dd1du64;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect()
+}
+
+fn files_in(dir: &std::path::Path) -> Vec<String> {
+    let mut v: Vec<String> =
+        std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    v.sort();
+    v
+}
+
+fn ended(e: &Event) -> Option<(bool, Option<String>, Option<String>)> {
+    match e {
+        Event::TransferEnded { ok, path, error, .. } => Some((*ok, path.clone(), error.clone())),
+        _ => None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn files_and_clipboard_go_both_ways_intact() {
+    let (host, viewer, mut hrx, mut vrx, host_core, viewer_core) = input_session(true).await;
+    let (host_dl, viewer_dl, src) =
+        (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    host_core.set_downloads(Some(host_dl.path().to_path_buf()));
+    viewer_core.set_downloads(Some(viewer_dl.path().to_path_buf()));
+    let Event::SessionStarted { session_id, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
+    else {
+        unreachable!()
+    };
+    wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+
+    // Viewer → host: 3 MB, byte for byte, under its own name, nothing else left behind.
+    let data = noise(3 << 20);
+    let file = src.path().join("report.bin");
+    std::fs::write(&file, &data).unwrap();
+    viewer.send_file(&file).unwrap();
+    let (ok, path, error) = ended(&wait_for(&mut hrx, |e| ended(e).is_some()).await).unwrap();
+    assert!(ok, "{error:?}");
+    assert_eq!(std::fs::read(path.unwrap()).unwrap(), data);
+    assert_eq!(files_in(host_dl.path()), ["report.bin"]);
+    assert!(ended(&wait_for(&mut vrx, |e| ended(e).is_some()).await).unwrap().0, "the sender sees it arrive");
+
+    // Host → viewer, and a name that's taken gets a number.
+    std::fs::write(viewer_dl.path().join("report.bin"), b"old").unwrap();
+    host.send_file(session_id, &file).unwrap();
+    let (ok, path, _) =
+        ended(&wait_for(&mut vrx, |e| matches!(e, Event::TransferEnded { incoming: true, .. })).await).unwrap();
+    assert!(ok);
+    assert!(path.unwrap().ends_with("report (2).bin"));
+
+    // Clipboard, both ways.
+    assert!(viewer.send_clipboard("text/plain;charset=utf-8", "héllo".as_bytes().to_vec()));
+    let e = wait_for(&mut hrx, |e| matches!(e, Event::ClipboardReceived { .. })).await;
+    assert!(
+        matches!(e, Event::ClipboardReceived { ref mime, ref data, .. } if mime == "text/plain;charset=utf-8" && data == "héllo".as_bytes())
+    );
+    let png = noise(200_000);
+    assert!(host.send_clipboard(session_id, "image/png", png.clone()));
+    let e = wait_for(&mut vrx, |e| matches!(e, Event::ClipboardReceived { .. })).await;
+    assert!(matches!(e, Event::ClipboardReceived { ref data, .. } if *data == png));
+    viewer.disconnect().await;
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_viewer_without_control_cant_send_files_or_clipboard() {
+    let (host, viewer, mut hrx, mut vrx, host_core, _) = input_session(false).await;
+    let (host_dl, src) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    host_core.set_downloads(Some(host_dl.path().to_path_buf()));
+    wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+    let file = src.path().join("x.bin");
+    std::fs::write(&file, noise(100_000)).unwrap();
+    viewer.send_file(&file).unwrap();
+    viewer.send_clipboard("text/plain;charset=utf-8", b"secret".to_vec());
+    let (ok, _, error) = ended(&wait_for(&mut vrx, |e| ended(e).is_some()).await).unwrap();
+    assert!(!ok);
+    assert!(error.unwrap().contains("doesn't take files"));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    while let Ok(e) = hrx.try_recv() {
+        assert!(!matches!(e, Event::ClipboardReceived { .. } | Event::TransferStarted { .. }), "{e:?}");
+    }
+    assert!(files_in(host_dl.path()).is_empty());
+    viewer.disconnect().await;
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_file_leaves_nothing_behind() {
+    let (host, viewer, mut hrx, mut vrx, host_core, _) = input_session(true).await;
+    let (host_dl, src) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    host_core.set_downloads(Some(host_dl.path().to_path_buf()));
+    let Event::SessionStarted { session_id, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
+    else {
+        unreachable!()
+    };
+    wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await;
+    let file = src.path().join("big.bin");
+    std::fs::write(&file, noise(400 << 20)).unwrap();
+    viewer.send_file(&file).unwrap();
+    let Event::TransferProgress { id, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::TransferProgress { incoming: true, .. })).await
+    else {
+        unreachable!()
+    };
+    host.cancel_transfer(session_id, true, id);
+    let (ok, _, _) = ended(&wait_for(&mut hrx, |e| ended(e).is_some()).await).unwrap();
+    assert!(!ok);
+    let (ok, _, error) = ended(&wait_for(&mut vrx, |e| ended(e).is_some()).await).unwrap();
+    assert!(!ok, "the sender learns it was cancelled");
+    assert!(error.unwrap().contains("Cancelled"));
+    assert!(files_in(host_dl.path()).is_empty(), "no partial file: {:?}", files_in(host_dl.path()));
+    viewer.disconnect().await;
+    host.stop().await;
+}

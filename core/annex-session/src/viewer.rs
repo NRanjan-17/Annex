@@ -146,6 +146,8 @@ enum Cmd {
 pub struct ViewerHandle {
     cmd: mpsc::UnboundedSender<Cmd>,
     task: Mutex<Option<JoinHandle<()>>>,
+    /// Set once the session starts, if both sides take clipboard and files.
+    transfers: Arc<std::sync::OnceLock<Arc<crate::transfer::Transfers>>>,
 }
 
 impl ViewerHandle {
@@ -180,6 +182,23 @@ impl ViewerHandle {
             self.cmd.send(Cmd::Control(Control::DirectLinkOffer { ssid: ssid.into(), passphrase: passphrase.into() }));
     }
 
+    /// Puts a clipboard item on the host's clipboard. False: no session yet, the host can't
+    /// take it (older version, TCP), or it's too big for the link.
+    pub fn send_clipboard(&self, mime: &str, data: Vec<u8>) -> bool {
+        self.transfers.get().is_some_and(|t| t.send_clipboard(mime, data))
+    }
+
+    /// Sends a file to the host; the returned id is in its transfer events.
+    pub fn send_file(&self, path: &std::path::Path) -> Result<u64, String> {
+        self.transfers.get().ok_or_else(crate::transfer::no_transfers)?.send_file(path)
+    }
+
+    pub fn cancel_transfer(&self, incoming: bool, id: u64) {
+        if let Some(t) = self.transfers.get() {
+            t.cancel(incoming, id);
+        }
+    }
+
     /// Sends `Bye`, closes the connection and waits for the session task to finish.
     pub async fn disconnect(&self) {
         let _ = self.cmd.send(Cmd::Disconnect);
@@ -194,16 +213,22 @@ impl ViewerHandle {
 /// Progress is reported through `events`; the last event is always `SessionEnded`.
 pub fn connect_viewer(core: Arc<Core>, cfg: ViewerConfig, events: EventSink, frames: FrameSink) -> ViewerHandle {
     let (cmd, cmd_rx) = mpsc::unbounded_channel();
+    let transfers = Arc::new(std::sync::OnceLock::new());
+    let session_transfers = transfers.clone();
     let task = tokio::spawn(async move {
         // Peer-sent reasons stay bare codes (`pairing_failed`, `busy`, ...) for the apps.
-        let reason = match run(core, cfg, events.clone(), frames, cmd_rx).await {
+        let result = run(core, cfg, events.clone(), frames, cmd_rx, &session_transfers).await;
+        if let Some(t) = session_transfers.get() {
+            t.close();
+        }
+        let reason = match result {
             Ok(r) | Err(SessionError::Rejected(r)) => r,
             Err(e) => e.to_string(),
         };
         tracing::info!(%reason, "viewer session ended");
         events(Event::SessionEnded { session_id: 0, reason });
     });
-    ViewerHandle { cmd, task: Mutex::new(Some(task)) }
+    ViewerHandle { cmd, task: Mutex::new(Some(task)), transfers }
 }
 
 async fn resolve(address: &str) -> Result<std::net::SocketAddr, SessionError> {
@@ -235,6 +260,7 @@ async fn run(
     events: EventSink,
     frames: FrameSink,
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
+    transfers: &std::sync::OnceLock<Arc<crate::transfer::Transfers>>,
 ) -> Result<String, SessionError> {
     events(Event::Connecting { address: cfg.join.as_ref().map_or_else(|| cfg.address.clone(), |j| j.code.clone()) });
     let (est, net) = match &cfg.join {
@@ -259,7 +285,8 @@ async fn run(
     let mut reader = Reader::new(reader);
     let mut writer = Writer::new(writer);
     let knows = core.knows(&fp);
-    writer.send_control(&hello(&core, vec![Role::Viewer], knows, &["h264"])).await?;
+    let caps: &[&str] = if quic.is_some() { &["h264", crate::transfer::CAP] } else { &["h264"] };
+    writer.send_control(&hello(&core, vec![Role::Viewer], knows, caps)).await?;
     let peer = match timeout(HANDSHAKE_TIMEOUT, reader.next_control()).await?? {
         Control::SessionReject { reason } => return Err(SessionError::Rejected(reason)),
         other => check_hello(other, &fp)?,
@@ -308,6 +335,21 @@ async fn run(
         input,
         pointer_deltas,
     });
+    if let Some(conn) = &quic
+        && peer.caps.iter().any(|c| c == crate::transfer::CAP)
+    {
+        // The viewer takes what the host sends (the app decides whether to use the clipboard;
+        // files need a downloads folder). Any relay is treated as ours: paced.
+        let t = crate::transfer::Transfers::start(
+            conn.clone(),
+            0,
+            events.clone(),
+            core.downloads(),
+            link == LinkKind::Relayed,
+            Box::new(|| true),
+        );
+        let _ = transfers.set(t);
+    }
     // Flipped by the host's `input_allowed` messages.
     let input_allowed = Arc::new(std::sync::atomic::AtomicBool::new(input));
     events(Event::StreamConfig { stream });

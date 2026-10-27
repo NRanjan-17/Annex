@@ -40,6 +40,8 @@ pub struct Core {
     data_dir: Option<PathBuf>,
     /// Nobody watches this computer's screen (see [`Core::set_headless`]).
     headless: AtomicBool,
+    /// Where files from the other computer go (see [`Core::set_downloads`]).
+    downloads: Mutex<Option<PathBuf>>,
 }
 
 impl Core {
@@ -82,6 +84,7 @@ impl Core {
             failures: Mutex::new(VecDeque::new()),
             data_dir,
             headless: AtomicBool::new(false),
+            downloads: Mutex::new(None),
         })
     }
 
@@ -115,6 +118,16 @@ impl Core {
 
     pub fn headless(&self) -> bool {
         self.headless.load(Ordering::Relaxed)
+    }
+
+    /// Where files sent from the other computer are saved (usually Downloads); None (the
+    /// default) refuses them. Applies to sessions that start afterwards.
+    pub fn set_downloads(&self, dir: Option<PathBuf>) {
+        *self.downloads.lock().unwrap() = dir;
+    }
+
+    pub fn downloads(&self) -> Option<PathBuf> {
+        self.downloads.lock().unwrap().clone()
     }
 
     /// Where a headless computer writes the PIN while pairing: `<data>/pairing-pin.txt`.

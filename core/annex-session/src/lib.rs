@@ -17,6 +17,7 @@ pub mod rendezvous;
 pub mod stats;
 #[doc(hidden)]
 pub mod stun;
+pub mod transfer;
 mod transport;
 mod viewer;
 

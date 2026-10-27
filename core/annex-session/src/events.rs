@@ -144,12 +144,60 @@ pub enum Event {
         session_id: u64,
         reason: String,
     },
+    /// The other computer copied something: put it on this one's clipboard (if the user shares
+    /// the clipboard). `mime`: "text/plain;charset=utf-8" or "image/png". `data` is base64 in JSON.
+    ClipboardReceived {
+        session_id: u64,
+        mime: String,
+        #[serde(serialize_with = "base64")]
+        data: Vec<u8>,
+    },
+    /// A file started going either way. `incoming`: from the other computer to this one.
+    TransferStarted {
+        session_id: u64,
+        id: u64,
+        incoming: bool,
+        name: String,
+        size: u64,
+    },
+    /// Bytes done so far, about four times a second.
+    TransferProgress {
+        session_id: u64,
+        id: u64,
+        incoming: bool,
+        done: u64,
+    },
+    /// Finished. `path`: where a received file was saved. `error`: why it failed, for the user.
+    TransferEnded {
+        session_id: u64,
+        id: u64,
+        incoming: bool,
+        ok: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     Error {
         message: String,
     },
 }
 
 pub type EventSink = Arc<dyn Fn(Event) + Send + Sync>;
+
+/// Standard base64 with padding, for bytes inside JSON events.
+fn base64<S: serde::Serializer>(data: &[u8], s: S) -> Result<S::Ok, S::Error> {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for c in data.chunks(3) {
+        let n =
+            (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            out.push(if i <= c.len() { A[(n >> shift & 63) as usize] as char } else { '=' });
+        }
+    }
+    s.serialize_str(&out)
+}
 
 /// A received video frame, borrowed for the duration of the callback.
 #[derive(Debug)]
