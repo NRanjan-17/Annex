@@ -330,7 +330,11 @@ private struct NotchDropView: View {
         }
     }
 
-    private static let glow = AngularGradient(colors: [.cyan, .blue, .purple, .pink, .orange, .yellow, .cyan], center: .center)
+    /// Annex's look: white light with the live green, sweeping round the edge.
+    private func glow(_ turn: Bool) -> AngularGradient {
+        AngularGradient(colors: [.white.opacity(0.15), .white, Color.annexLive, .white.opacity(0.15), .white.opacity(0.15)],
+                        center: .center, angle: .degrees(turn ? 360 : 0))
+    }
 
     var body: some View {
         let shape = NotchShape(bottomRadius: model.phase == .glowing || model.phase == .hidden ? 10 : 22)
@@ -343,12 +347,10 @@ private struct NotchDropView: View {
         }
         .frame(width: size.width, height: size.height)
         .overlay {
-            // The light: a rainbow edge that turns while files are dragged.
-            shape.stroke(Self.glow, lineWidth: model.phase == .open ? 2 : 3)
-                .rotationEffect(.zero)
-                .hueRotation(.degrees(spin ? 360 : 0))
-                .blur(radius: 1.5)
-                .shadow(color: .purple.opacity(0.8), radius: model.phase == .open ? 10 : 14)
+            // The light: a white and green sweep round the edge while files are dragged.
+            shape.stroke(glow(spin), lineWidth: model.phase == .open ? 2 : 3)
+                .blur(radius: 1)
+                .shadow(color: Color.annexLive.opacity(0.55), radius: model.phase == .open ? 10 : 14)
                 .opacity(model.phase == .glowing || model.phase == .open ? 1 : 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -364,7 +366,7 @@ private struct NotchDropView: View {
             VStack(spacing: 8) {
                 Image(systemName: "arrow.down.doc.fill")
                     .font(.system(size: 30, weight: .medium))
-                    .foregroundStyle(Self.glow)
+                    .foregroundStyle(.white)
                     .symbolEffect(.bounce, options: .repeating)
                 Text("Drop to send to \(model.peerName)")
                     .font(.system(size: 13, weight: .semibold))
@@ -396,7 +398,7 @@ private struct ItemRow: View {
             ZStack {
                 Circle().stroke(.white.opacity(0.15), lineWidth: 3)
                 Circle().trim(from: 0, to: item.ok == true ? 1 : fraction)
-                    .stroke(item.ok == false ? Color.red : Color.green, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .stroke(item.ok == false ? Color.white.opacity(0.5) : Color.annexLive, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                 Image(systemName: item.ok == true ? "checkmark" : item.ok == false ? "xmark" : item.incoming ? "arrow.down" : "arrow.up")
                     .font(.system(size: 11, weight: .bold))
