@@ -1,5 +1,25 @@
 [
   {
+    "version": "0.3.2",
+    "items": [
+      {
+        "kind": "new",
+        "title": "Hear the other computer",
+        "detail": "While you view a computer, you hear what it plays. Turn it off in Settings → Advanced → Sound."
+      },
+      {
+        "kind": "new",
+        "title": "Talk through the other computer",
+        "detail": "Turn on Send my microphone in Settings → Advanced → Sound and your voice plays on the computer you're viewing. Use headphones to avoid an echo."
+      },
+      {
+        "kind": "new",
+        "title": "Annex Microphone on Linux",
+        "detail": "On a Linux computer you control, your microphone shows up as Annex Microphone, so Zoom, Meet or Discord there can use it for calls."
+      }
+    ]
+  },
+  {
     "version": "0.3.1",
     "items": [
       {
