@@ -119,6 +119,16 @@ fn first_output() -> Option<(String, (i32, i32))> {
 }
 
 impl Host {
+    /// The island's Pause/Resume for a file sent to a viewer; true if it's being sent.
+    pub fn pause_transfer(&self, session_id: u64, id: u64, paused: bool) -> bool {
+        self.handle.pause_transfer(session_id, id, paused)
+    }
+
+    /// The island's Unsend or Stop for a file going to or coming from a viewer.
+    pub fn cancel_transfer(&self, session_id: u64, incoming: bool, id: u64) {
+        self.handle.cancel_transfer(session_id, incoming, id)
+    }
+
     pub fn start(m: &mut Model) -> Result<Host, String> {
         let session = desktop::session();
         let prefer_hardware = m.settings.prefer_hardware_encoder;

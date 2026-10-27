@@ -1109,10 +1109,7 @@ impl Model {
         } else if key.viewer {
             self.viewer.as_ref().is_some_and(|v| v.handle.pause_transfer(key.id, paused))
         } else {
-            // TODO(host.rs): `Host` keeps its `HostHandle` private; needs
-            // `Host::pause_transfer(session, id, paused) -> bool` there.
-            tracing::warn!(target: T, ?key, "files: pausing a file sent to a viewer isn't wired yet");
-            false
+            self.host.as_ref().is_some_and(|h| h.pause_transfer(key.session, key.id, paused))
         };
         if !took {
             tracing::warn!(target: T, ?key, paused, "files: couldn't pause or resume: it isn't being sent");
@@ -1135,9 +1132,13 @@ impl Model {
                 None => false,
             }
         } else {
-            // TODO(host.rs): needs `Host::cancel_transfer(session, incoming, id)` there.
-            tracing::warn!(target: T, ?key, "files: stopping a transfer with a viewer isn't wired yet");
-            false
+            match &self.host {
+                Some(h) => {
+                    h.cancel_transfer(key.session, key.incoming, key.id);
+                    true
+                }
+                None => false,
+            }
         };
         if !done {
             tracing::warn!(target: T, ?key, "files: couldn't stop the transfer: its session is gone");
