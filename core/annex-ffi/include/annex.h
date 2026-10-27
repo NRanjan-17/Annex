@@ -94,6 +94,19 @@ int32_t annex_core_set_headless(const AnnexCore *core, bool on);
 /* Where files from the other computer are saved (e.g. Downloads); NULL refuses them (default).
  * Applies to sessions that start afterwards. */
 int32_t annex_core_set_downloads(const AnnexCore *core, const char *dir);
+/* Sound switches, applied at once (running sessions too): share this computer's sound with viewers,
+ * play what the other computer sends, send this computer's microphone, and make a viewer's
+ * microphone "Annex Microphone" (where supported) instead of playing it aloud. Returns 0. */
+int32_t annex_core_set_audio(const AnnexCore *core, bool share_sound, bool hear_sound, bool send_mic,
+                             bool virtual_mic);
+/* This computer's own sound from an app that captures it (Mac, ScreenCaptureKit): frames x channels
+ * interleaved floats at rate Hz. Ignored while nobody listens. Returns 0. */
+int32_t annex_core_push_sound(const AnnexCore *core, const float *samples, size_t frames, uint32_t channels,
+                              uint32_t rate);
+/* 1 while a viewer listens to this computer's sound (capture it only then), else 0. */
+int32_t annex_core_sound_wanted(const AnnexCore *core);
+/* Whether "Annex Microphone" can be made here (Linux now; Mac and Windows need a driver). */
+bool annex_virtual_microphone_supported(void);
 /* This platform's key code (macOS virtual key code / Windows scancode, 0xE0xx = extended) for a
  * HID usage from an "input" event, or -1 if there is no such key. */
 int32_t annex_key_native_from_hid(uint16_t usage);

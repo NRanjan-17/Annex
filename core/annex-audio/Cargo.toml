@@ -1,0 +1,18 @@
+[package]
+name = "annex-audio"
+description = "Sound between two computers: the microphone, the computer's own sound, Opus, and playback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+cpal = "0.18"
+opus = "0.3"
+audiopus_sys = { version = "0.2", features = ["static"] }
+tracing = "0.1.44"
+
+[lints]
+workspace = true

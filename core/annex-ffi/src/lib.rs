@@ -607,6 +607,68 @@ pub unsafe extern "C" fn annex_core_set_downloads(core: *const AnnexCore, dir: *
     })
 }
 
+/// The sound switches, applied at once to running sessions too: share this computer's sound with
+/// viewers, play what the other computer sends, send this computer's microphone, and turn a
+/// viewer's microphone into "Annex Microphone" (where supported) instead of playing it aloud.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_set_audio(
+    core: *const AnnexCore,
+    share_sound: bool,
+    hear_sound: bool,
+    send_mic: bool,
+    virtual_mic: bool,
+) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        c.core.set_audio(annex_session::audio::AudioSettings { share_sound, hear_sound, send_mic, virtual_mic });
+        Ok(0)
+    })
+}
+
+/// This computer's own sound, from an app that captures it itself (the Mac): `frames` frames of
+/// `channels` interleaved float samples at `rate` Hz. Cheap and ignored while nobody listens.
+///
+/// # Safety
+/// `core` must be valid; `samples` must point to `frames * channels` floats (or be null with 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_push_sound(
+    core: *const AnnexCore,
+    samples: *const f32,
+    frames: usize,
+    channels: u32,
+    rate: u32,
+) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        let len = frames.saturating_mul(channels as usize);
+        if len == 0 {
+            return Ok(0);
+        }
+        if samples.is_null() {
+            return Err(invalid("samples is null"));
+        }
+        let samples = unsafe { std::slice::from_raw_parts(samples, len) };
+        c.core.push_system_sound(samples, channels.min(u16::MAX as u32) as u16, rate);
+        Ok(0)
+    })
+}
+
+/// 1 while a viewer is listening to this computer's sound (capture it only then), else 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_sound_wanted(core: *const AnnexCore) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        Ok(c.core.sound_wanted() as i32)
+    })
+}
+
+/// Whether "Annex Microphone" can be made on this computer (Linux for now; Mac and Windows need a
+/// driver, coming later).
+#[unsafe(no_mangle)]
+pub extern "C" fn annex_virtual_microphone_supported() -> bool {
+    annex_session::audio::virtual_microphone_here()
+}
+
 /// `data`/`len` as bytes (empty allowed).
 unsafe fn bytes_arg<'a>(data: *const u8, len: usize) -> Result<&'a [u8], (i32, String)> {
     if len == 0 {

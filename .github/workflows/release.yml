@@ -195,7 +195,7 @@ jobs:
           # libgstreamer1.0-dev needs ("held broken packages").
           sudo apt-get remove -y -qq libunwind-14-dev || true
           sudo apt-get install -y --no-install-recommends libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libxkbcommon-dev libdbus-1-dev pkg-config rpm meson ninja-build libwayland-dev wayland-protocols
+            libxkbcommon-dev libdbus-1-dev libasound2-dev pkg-config rpm meson ninja-build libwayland-dev wayland-protocols
       - run: rustup show active-toolchain || rustup toolchain install
       - name: Stamp version into the Rust core
         env:

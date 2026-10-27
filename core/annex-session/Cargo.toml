@@ -10,6 +10,8 @@ publish.workspace = true
 [dependencies]
 annex-crypto = { path = "../annex-crypto" }
 annex-proto = { path = "../annex-proto" }
+annex-audio = { path = "../annex-audio" }
+bytes = "1"
 md5 = { package = "md-5", version = "0.11.0" }
 ring = "0.17.14"
 rustls-platform-verifier = "0.7.1"
