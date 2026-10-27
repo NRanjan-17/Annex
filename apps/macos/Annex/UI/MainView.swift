@@ -1079,6 +1079,9 @@ private struct SettingsPage: View {
                       isOn: $settings.shareClipboard)
             ToggleRow(title: "Receive files", subtitle: "Files the other computer sends go to Downloads.",
                       isOn: $settings.receiveFiles)
+            ToggleRow(title: "Drop files on the notch",
+                      subtitle: "While connected, drag files to the top of the screen to send them.",
+                      isOn: $settings.notchDrop)
         }
     }
 

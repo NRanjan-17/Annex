@@ -22,6 +22,8 @@ final class AppSettings: ObservableObject {
     @Published var reverseScrollOnOthers: Bool { didSet { defaults.set(reverseScrollOnOthers, forKey: Keys.reverseScroll) } }
     /// Copy on one computer, paste on the other, while one controls the other. On by default.
     @Published var shareClipboard: Bool { didSet { defaults.set(shareClipboard, forKey: Keys.clipboard) } }
+    /// Drag files to the notch (or the middle of the menu bar) to send them. On by default.
+    @Published var notchDrop: Bool { didSet { defaults.set(notchDrop, forKey: Keys.notchDrop) } }
     /// Take files the other computer sends, into Downloads. On by default.
     @Published var receiveFiles: Bool { didSet { defaults.set(receiveFiles, forKey: Keys.receiveFiles) } }
     /// Viewer: default to using the other computer as an extra display.
@@ -71,6 +73,7 @@ final class AppSettings: ObservableObject {
         static let clipboard = "shareClipboard"
         static let reverseScroll = "reverseScrollOnOthers"
         static let receiveFiles = "receiveFiles"
+        static let notchDrop = "notchDrop"
         static let extend = "extendByDefault"
         static let name = "deviceName"
         static let quality = "quality"
@@ -99,7 +102,7 @@ final class AppSettings: ObservableObject {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true, Keys.updates: true,
-                                       Keys.peerToPeer: true, Keys.clipboard: true, Keys.reverseScroll: true, Keys.receiveFiles: true])
+                                       Keys.peerToPeer: true, Keys.clipboard: true, Keys.reverseScroll: true, Keys.receiveFiles: true, Keys.notchDrop: true])
         preferHardwareEncoder = defaults.bool(forKey: Keys.hardware)
         startSharingAtLaunch = defaults.bool(forKey: Keys.autoShare)
         headless = defaults.bool(forKey: Keys.headless)
@@ -108,6 +111,7 @@ final class AppSettings: ObservableObject {
         shareClipboard = defaults.bool(forKey: Keys.clipboard)
         reverseScrollOnOthers = defaults.bool(forKey: Keys.reverseScroll)
         receiveFiles = defaults.bool(forKey: Keys.receiveFiles)
+        notchDrop = defaults.bool(forKey: Keys.notchDrop)
         extendByDefault = defaults.bool(forKey: Keys.extend)
         customDeviceName = defaults.string(forKey: Keys.name)
         quality = defaults.integer(forKey: Keys.quality)

@@ -25,6 +25,11 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
     /// The window became the one taking this Mac's keyboard.
     var onFocus: (() -> Void)?
+    /// Files dropped on the picture.
+    var onFiles: (([URL]) -> Void)? {
+        get { videoView.onFiles }
+        set { videoView.onFiles = newValue }
+    }
     var isFocused: Bool { window?.isKeyWindow == true }
 
     /// `title` names the other computer (or the code, until it's known).
@@ -301,9 +306,11 @@ final class VideoView: NSView {
     private let hud = HUDView()
     private var hudTimer: Timer?
     private var scrollRest = CGPoint.zero
+    var onFiles: (([URL]) -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = NSColor.black.cgColor
         layer = displayLayer
@@ -385,6 +392,20 @@ final class VideoView: NSView {
         scrollRest.x -= dx
         scrollRest.y -= dy
         if dx != 0 || dy != 0 { viewer?.sendScroll(dx: Int32(dx), dy: Int32(dy)) }
+    }
+
+    // MARK: Files
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        controlling && onFiles != nil ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                         options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        guard controlling, !urls.isEmpty else { return false }
+        onFiles?(urls)
+        return true
     }
 
     // MARK: Keyboard

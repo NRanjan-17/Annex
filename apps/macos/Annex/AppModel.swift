@@ -108,6 +108,7 @@ final class AppModel: ObservableObject {
     /// Viewer: the host's system ("macos", "windows", "linux"), for scroll direction.
     private var viewerPeerOS: String?
     private let clipboard = ClipboardSync()
+    let notch = NotchDrop()
     /// Viewer: something was copied on this Mac while the viewer window wasn't in front.
     private var copiedWhileAway = false
 
@@ -216,6 +217,8 @@ final class AppModel: ObservableObject {
                 core?.setDownloads(on ? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first : nil)
             }.store(in: &cancellables)
             clipboard.onCopy = { [weak self] mime, data in self?.copied(mime: mime, data: data) }
+            notch.onDrop = { [weak self] urls in self?.send(files: urls) }
+            settings.$notchDrop.sink { [weak self] _ in DispatchQueue.main.async { self?.updateNotch() } }.store(in: &cancellables)
             settings.$shareClipboard.sink { [weak self] on in
                 guard let self else { return }
                 if on { clipboard.start() } else { clipboard.stop(); copiedWhileAway = false }
@@ -398,6 +401,7 @@ final class AppModel: ObservableObject {
         let window = ViewerWindowController(title: "Code \(code.uppercased())")
         window.onClose = { [weak self] in self?.disconnectViewer() }
         window.onFocus = { [weak self] in self?.viewerFocused() }
+        window.onFiles = { [weak self] urls in self?.notch.dropped(urls) }
         do {
             let v = try ViewerHandle(
                 core: core, code: code, server: settings.server,
@@ -550,6 +554,7 @@ final class AppModel: ObservableObject {
         let window = ViewerWindowController(title: title)
         window.onClose = { [weak self] in self?.disconnectViewer() }
         window.onFocus = { [weak self] in self?.viewerFocused() }
+        window.onFiles = { [weak self] urls in self?.notch.dropped(urls) }
         do {
             let v = try ViewerHandle(
                 core: core, address: address, expectedFingerprint: expectedFingerprint, display: Displays.mainDisplayInfo(),
@@ -604,6 +609,7 @@ final class AppModel: ObservableObject {
     }
 
     private func handleViewerEvent(_ e: CoreEvent) {
+        defer { updateNotch() }
         switch e {
         case .sessionStarted(let s):
             let via = switch s.link {
@@ -797,6 +803,33 @@ final class AppModel: ObservableObject {
         host?.sendClipboard(mime: mime, data: data)
     }
 
+    // MARK: Files
+
+    /// Who dropped files go to: the host this Mac controls, else the viewers controlling it.
+    private func updateNotch() {
+        guard settings.notchDrop else { return notch.setTarget(nil) }
+        if viewer != nil, controllingHost {
+            notch.setTarget(label(viewerPeerName))
+        } else {
+            notch.setTarget(host?.controllingViewer.map(label))
+        }
+    }
+
+    private func send(files: [URL]) {
+        for url in files {
+            do {
+                if let viewer, controllingHost {
+                    _ = try viewer.sendFile(url)
+                } else {
+                    try host?.sendFile(url)
+                }
+            } catch {
+                Annex.log("couldn't send a file: \(error.localizedDescription)", error: true)
+                notify("Couldn't send \(url.lastPathComponent)", error.localizedDescription)
+            }
+        }
+    }
+
     private func viewerFocused() {
         guard copiedWhileAway, controllingHost else { return }
         copiedWhileAway = false
@@ -805,13 +838,18 @@ final class AppModel: ObservableObject {
     }
 
     private func handleSessionEvent(_ e: CoreEvent) {
+        defer { updateNotch() }
         switch e {
         case .clipboardReceived(_, let mime, let data):
             if settings.shareClipboard { clipboard.apply(mime: mime, data: data) }
         case .transferStarted(let t):
             Annex.log("transfer: \(t.incoming ? "receiving" : "sending") \(t.size) bytes")
-        case .transferEnded(_, let id, let incoming, let ok, _, let error):
+            notch.transferStarted(session: t.sessionId, id: t.id, incoming: t.incoming, name: t.name, size: t.size)
+        case .transferProgress(let session, let id, let incoming, let done):
+            notch.transferProgress(session: session, id: id, incoming: incoming, done: done)
+        case .transferEnded(let session, let id, let incoming, let ok, let path, let error):
             Annex.log("transfer \(id): \(incoming ? "received" : "sent") \(ok ? "ok" : error ?? "failed")", error: !ok)
+            notch.transferEnded(session: session, id: id, incoming: incoming, ok: ok, path: path, error: error)
         case .internetCode, .internetJoined, .internetRelay, .internetCodeEnded:
             handleInternetEvent(e)
         case .directLinkRequested(let session):

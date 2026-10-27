@@ -123,6 +123,14 @@ final class HostController {
         for id in inputSessions.keys { _ = host?.sendClipboard(session: id, mime: mime, data: data) }
     }
 
+    /// Sends a file to each viewer controlling this Mac.
+    func sendFile(_ url: URL) throws {
+        for id in inputSessions.keys { _ = try host?.sendFile(session: id, url: url) }
+    }
+
+    /// A viewer controlling this Mac, by name, if any.
+    var controllingViewer: String? { inputSessions.values.sorted().first }
+
     private func handle(_ event: CoreEvent) {
         if case .sessionStarted(let s) = event, s.input == true {
             inputSessions[s.sessionId] = s.peerName
