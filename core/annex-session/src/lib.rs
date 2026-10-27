@@ -33,7 +33,7 @@ pub use stats::LatencyStats;
 pub use transport::is_link_local;
 pub use viewer::{InternetSocket, JoinCode, ViewerConfig, ViewerHandle, connect_viewer};
 
-pub use annex_crypto::KeyStorage;
+pub use annex_crypto::{KeyStorage, TrustedPeer};
 pub use annex_proto::{Codec, DEFAULT_PORT, DisplayInfo, InputEvent, Mode, MouseButton, Quality, StreamConfig, keys};
 
 #[derive(Debug, thiserror::Error)]

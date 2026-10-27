@@ -10,6 +10,7 @@ desktop.ini
 
 # --- Rust ---
 /core/target/
+/apps/linux/target/
 **/*.rs.bk
 
 # --- Xcode / Swift ---
