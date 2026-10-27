@@ -94,6 +94,7 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-video",
  "gtk4",
+ "if-addrs",
  "ksni",
  "libc",
  "serde",

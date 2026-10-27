@@ -24,6 +24,7 @@ ashpd = { version = "0.12", default-features = false, features = ["tokio"] }
 async-channel = "2.5"
 futures-util = { version = "0.3", default-features = false }
 # Finding gtk4-layer-shell's functions once it's preloaded.
+if-addrs = "0.15"
 libc = "0.2"
 # GTK 4.6 and GStreamer 1.20 are the oldest supported (Ubuntu 22.04, JetPack 6, Debian 12, RHEL 9).
 gtk = { package = "gtk4", version = "0.10", features = ["v4_6"] }

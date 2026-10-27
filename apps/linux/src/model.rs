@@ -1299,52 +1299,31 @@ pub struct LocalAddress {
 /// cables. Loopback and container or VM bridges nobody would type are left out.
 pub fn local_addresses() -> Vec<LocalAddress> {
     const SKIP: [&str; 10] = ["docker", "br-", "veth", "virbr", "vnet", "lxc", "lxd", "podman", "cni", "flannel"];
-    let mut out = Vec::new();
-    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
-    // SAFETY: getifaddrs fills `list` with a list freed below with freeifaddrs.
-    if unsafe { libc::getifaddrs(&mut list) } != 0 {
-        return out;
-    }
-    let mut p = list;
-    while !p.is_null() {
-        // SAFETY: a node of the list getifaddrs returned, alive until freeifaddrs.
-        let ifa = unsafe { &*p };
-        p = ifa.ifa_next;
-        let flags = ifa.ifa_flags;
-        if ifa.ifa_addr.is_null()
-            || ifa.ifa_name.is_null()
-            || flags & libc::IFF_UP as libc::c_uint == 0
-            || flags & libc::IFF_LOOPBACK as libc::c_uint != 0
-        {
-            continue;
-        }
-        // SAFETY: checked non-null above.
-        if i32::from(unsafe { (*ifa.ifa_addr).sa_family }) != libc::AF_INET {
-            continue;
-        }
-        // SAFETY: a NUL-terminated name, checked non-null above.
-        let interface = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }.to_string_lossy().into_owned();
-        if SKIP.iter().any(|s| interface.starts_with(s)) {
-            continue;
-        }
-        // SAFETY: an AF_INET address is a sockaddr_in.
-        let sin = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in) };
-        let ip = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
-        let [a, b, ..] = ip.octets();
-        let link = if ip.is_link_local() {
-            LocalLink::Cable
-        } else if interface.starts_with("tailscale")
-            || interface.starts_with("zt")
-            || (a == 100 && (64..128).contains(&b))
-        {
-            LocalLink::Private
-        } else {
-            LocalLink::Network
-        };
-        out.push(LocalAddress { link, interface, ip });
-    }
-    // SAFETY: the list from getifaddrs, not used after this.
-    unsafe { libc::freeifaddrs(list) };
+    let Ok(interfaces) = if_addrs::get_if_addrs() else {
+        return Vec::new();
+    };
+    let mut out: Vec<LocalAddress> = interfaces
+        .into_iter()
+        .filter(|i| i.is_oper_up() && !i.is_loopback() && !SKIP.iter().any(|s| i.name.starts_with(s)))
+        .filter_map(|i| {
+            let if_addrs::IfAddr::V4(v4) = &i.addr else {
+                return None;
+            };
+            let ip = v4.ip;
+            let [a, b, ..] = ip.octets();
+            let link = if ip.is_link_local() {
+                LocalLink::Cable
+            } else if i.name.starts_with("tailscale")
+                || i.name.starts_with("zt")
+                || (a == 100 && (64..128).contains(&b))
+            {
+                LocalLink::Private
+            } else {
+                LocalLink::Network
+            };
+            Some(LocalAddress { link, interface: i.name, ip })
+        })
+        .collect();
     out.sort();
     out.dedup();
     out
