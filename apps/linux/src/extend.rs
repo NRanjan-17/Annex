@@ -66,12 +66,24 @@ pub fn add(kind: Wlr, w: u32, h: u32, hz: u32) -> Result<Display, String> {
             wait_for_output(&before, None)?
         }
         Wlr::Labwc => {
-            install_labwc_bindings()?;
-            let mut input = crate::inject::Wlr::new(None)?;
-            let mut keys = CHORD.to_vec();
-            keys.push(F11);
-            input.chord(&keys)?;
-            wait_for_output(&before, Some(LABWC_OUTPUT))?
+            let fresh = install_labwc_bindings()?;
+            let press = || -> Result<String, String> {
+                let mut input = crate::inject::Wlr::new(None)?;
+                let mut keys = CHORD.to_vec();
+                keys.push(F11);
+                input.chord(&keys)?;
+                wait_for_output(&before, Some(LABWC_OUTPUT))
+            };
+            match press() {
+                Ok(o) => o,
+                // Bindings added earlier but labwc not reloaded since (it was restarted with
+                // another config, or the reload was missed): reload and try again.
+                Err(_) if !fresh => {
+                    reload_labwc()?;
+                    press()?
+                }
+                Err(e) => return Err(e),
+            }
         }
         Wlr::Other => return Err("This desktop can't add a display yet.".into()),
     };
@@ -81,16 +93,51 @@ pub fn add(kind: Wlr, w: u32, h: u32, hz: u32) -> Result<Display, String> {
 }
 
 impl Display {
+    /// Sizes the display and puts it to the right of the others (new outputs start at 0,0,
+    /// on top of the main screen).
     fn set_mode(&self, w: u32, h: u32, hz: u32) {
+        let x = self.right_edge().unwrap_or(0).to_string();
         let r = match self.kind {
-            Wlr::Sway => run("swaymsg", &["output", &self.output, "mode", "--custom", &format!("{w}x{h}@{hz}Hz")]),
-            _ if which("wlr-randr") => {
-                run("wlr-randr", &["--output", &self.output, "--custom-mode", &format!("{w}x{h}@{hz}")])
-            }
+            Wlr::Sway => run("swaymsg", &["output", &self.output, "mode", "--custom", &format!("{w}x{h}@{hz}Hz")])
+                .and_then(|_| run("swaymsg", &["output", &self.output, "pos", &x, "0"])),
+            _ if which("wlr-randr") => run(
+                "wlr-randr",
+                &["--output", &self.output, "--custom-mode", &format!("{w}x{h}@{hz}"), "--pos", &format!("{x},0")],
+            ),
             _ => Err("wlr-randr isn't installed".into()),
         };
         if let Err(e) = r {
-            tracing::warn!("extend: couldn't size the display: {e}");
+            tracing::warn!("extend: couldn't size or place the display: {e}");
+        }
+    }
+
+    /// Where the other outputs end on the right, in layout coordinates.
+    fn right_edge(&self) -> Option<i64> {
+        let others = |name: &serde_json::Value| name.as_str() != Some(self.output.as_str());
+        let json = |cmd: &str, args: &[&str]| -> Option<serde_json::Value> {
+            let out = Command::new(cmd).args(args).output().ok()?;
+            serde_json::from_slice(&out.stdout).ok()
+        };
+        match self.kind {
+            Wlr::Sway => json("swaymsg", &["-r", "-t", "get_outputs"])?
+                .as_array()?
+                .iter()
+                .filter(|o| others(&o["name"]) && o["active"].as_bool() == Some(true))
+                .filter_map(|o| Some(o["rect"]["x"].as_i64()? + o["rect"]["width"].as_i64()?))
+                .max(),
+            _ => json("wlr-randr", &["--json"])?
+                .as_array()?
+                .iter()
+                .filter(|o| others(&o["name"]) && o["enabled"].as_bool() == Some(true))
+                .filter_map(|o| {
+                    let mode = o["modes"].as_array()?.iter().find(|m| m["current"].as_bool() == Some(true))?;
+                    let scale = o["scale"].as_f64().unwrap_or(1.0).max(0.1);
+                    let w = mode["width"].as_f64()?;
+                    let rotated = o["transform"].as_str().is_some_and(|t| t.contains("90") || t.contains("270"));
+                    let w = if rotated { mode["height"].as_f64()? } else { w };
+                    Some(o["position"]["x"].as_i64()? + (w / scale).round() as i64)
+                })
+                .max(),
         }
     }
 
@@ -118,12 +165,13 @@ fn run(cmd: &str, args: &[&str]) -> Result<(), String> {
     }
 }
 
-/// Adds Annex's two bindings to the user's labwc config once, then reloads labwc.
-fn install_labwc_bindings() -> Result<(), String> {
+/// Adds Annex's two bindings to the user's labwc config once, then reloads labwc. True when it
+/// added them now.
+fn install_labwc_bindings() -> Result<bool, String> {
     let path = crate::settings::config_dir().parent().map(|p| p.join("labwc/rc.xml")).ok_or("no config folder")?;
     let current = std::fs::read_to_string(&path).unwrap_or_default();
     if current.contains(MARKER) {
-        return Ok(());
+        return Ok(false);
     }
     let block = format!(
         "  {MARKER}\n  <keyboard>\n    <keybind key=\"{ADD_KEY}\"><action name=\"VirtualOutputAdd\" output_name=\"{LABWC_OUTPUT}\" /></keybind>\n    <keybind key=\"{REMOVE_KEY}\"><action name=\"VirtualOutputRemove\" output_name=\"{LABWC_OUTPUT}\" /></keybind>\n  </keyboard>\n"
@@ -140,11 +188,18 @@ fn install_labwc_bindings() -> Result<(), String> {
     }
     std::fs::write(&path, updated).map_err(|e| e.to_string())?;
     tracing::info!("extend: added Annex's display bindings to {}", path.display());
-    // labwc reloads its config on SIGHUP.
-    run("labwc", &["--reconfigure"]).or_else(|_| match std::env::var("LABWC_PID") {
-        Ok(pid) => run("kill", &["-HUP", &pid]),
-        Err(_) => Err("couldn't reload labwc".into()),
-    })?;
+    reload_labwc()?;
+    Ok(true)
+}
+
+/// labwc reloads its config on SIGHUP (what `labwc --reconfigure` sends).
+fn reload_labwc() -> Result<(), String> {
+    let pid = std::env::var("LABWC_PID")
+        .ok()
+        .and_then(|p| p.parse::<u32>().ok())
+        .or_else(|| crate::desktop::process("labwc"))
+        .ok_or("couldn't find labwc to reload it")?;
+    run("kill", &["-HUP", &pid.to_string()])?;
     std::thread::sleep(Duration::from_millis(300));
     Ok(())
 }

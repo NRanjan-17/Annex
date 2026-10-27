@@ -131,7 +131,7 @@ impl Pipeline {
         };
         let desc = format!(
             "{source} ! queue max-size-buffers=1 leaky=downstream \
-             ! videorate drop-only=true max-rate={fps} ! {convert} \
+             ! {convert} \
              ! {enc} name=enc ! h264parse config-interval=-1 \
              ! video/x-h264,stream-format=byte-stream,alignment=au \
              ! appsink name=out sync=false max-buffers=2 drop=true",

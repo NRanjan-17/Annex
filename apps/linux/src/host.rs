@@ -131,7 +131,9 @@ impl Host {
         // The graphics chip handles 1440p60; the software encoders are sized for 1080p.
         let (max_w, max_h) = if encode::hardware(prefer_hardware) { (2560, 1600) } else { (1920, 1200) };
         let (width, height) = stream_size(sw, sh, max_w, max_h);
-        let fps = display.refresh_hz.clamp(30, 60);
+        // Software encoders keep up with 1080p at 30 fps on a Raspberry Pi 5 (at 60, frames
+        // queue up and the delay jumps).
+        let fps = if encode::hardware(prefer_hardware) { display.refresh_hz.clamp(30, 60) } else { 30 };
         let stream = StreamConfig { codec: Codec::H264, width, height, fps };
 
         let state = Arc::new(State {
@@ -379,6 +381,8 @@ impl State {
     fn start_extend(self: &Arc<Self>, id: u64, display: DisplayInfo) {
         let Some(host) = self.host() else { return };
         let hz = if display.refresh_hz == 0 { 60 } else { display.refresh_hz.clamp(24, 120) };
+        // The display runs at the viewer's rate; the software encoders stream it at 30 fps.
+        let rate = if encode::hardware(self.prefer_hardware) { hz } else { hz.min(30) };
         let (w, h) = stream_size(display.width_px.max(640), display.height_px.max(480), MAX_H264.0, MAX_H264.1);
         let (w, h) = (w & !1, h & !1);
         let (stop, running, injector) = {
@@ -456,8 +460,11 @@ impl State {
                 break;
             }
             let (sw, sh) = stream_size(size.0, size.1, MAX_H264.0, MAX_H264.1);
-            host.set_session_stream(id, StreamConfig { codec: Codec::H264, width: sw & !1, height: sh & !1, fps: hz });
-            match self.run(source.clone(), sw, sh, hz, self.output(Some(id))) {
+            host.set_session_stream(
+                id,
+                StreamConfig { codec: Codec::H264, width: sw & !1, height: sh & !1, fps: rate },
+            );
+            match self.run(source.clone(), sw, sh, rate, self.output(Some(id))) {
                 Ok(r) => {
                     tracing::info!(id, sw, sh, "extend: capturing the new display");
                     *running.lock().unwrap() = Some(r);

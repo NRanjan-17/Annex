@@ -41,8 +41,37 @@ pub fn session() -> Session {
     } else if has("wayfire") || has("hyprland") || has("river") || has("wlroots") {
         Session::Wlroots(Wlr::Other)
     } else {
-        Session::OtherWayland
+        // Started outside the desktop's environment (a terminal over SSH, some autostarts):
+        // the compositor this user runs says which desktop it is.
+        match running_compositor().as_deref() {
+            Some("gnome-shell") => Session::Gnome,
+            Some("kwin_wayland") => Session::Kde,
+            Some("labwc") => Session::Wlroots(Wlr::Labwc),
+            Some("sway") => Session::Wlroots(Wlr::Sway),
+            Some(_) => Session::Wlroots(Wlr::Other),
+            None => Session::OtherWayland,
+        }
     }
+}
+
+/// The first Wayland compositor found among this user's processes.
+fn running_compositor() -> Option<String> {
+    const KNOWN: [&str; 7] = ["gnome-shell", "kwin_wayland", "labwc", "sway", "wayfire", "Hyprland", "river"];
+    KNOWN.iter().find(|k| process(k).is_some()).map(|k| k.to_string())
+}
+
+/// The id of this user's process called `name`.
+pub fn process(name: &str) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let me = std::fs::metadata("/proc/self").ok()?.uid();
+    std::fs::read_dir("/proc").ok()?.flatten().find_map(|e| {
+        let pid: u32 = e.file_name().to_str()?.parse().ok()?;
+        if e.metadata().ok()?.uid() != me {
+            return None;
+        }
+        let comm = std::fs::read_to_string(e.path().join("comm")).ok()?;
+        (comm.trim() == name).then_some(pid)
+    })
 }
 
 impl Session {

@@ -138,7 +138,43 @@ pub struct Wlr {
     wl: Wayland,
     pointer: ZwlrVirtualPointerV1,
     keyboard: Option<ZwpVirtualKeyboardV1>,
+    mods: Mods,
     start: std::time::Instant,
+}
+
+/// Modifier state for the virtual keyboard. wlroots doesn't work it out from the keys a
+/// virtual keyboard presses, so Shift+A and labwc's key bindings need it sent.
+#[derive(Default)]
+struct Mods {
+    /// The keymap's mask for each modifier key's usage.
+    masks: Vec<(u16, u32)>,
+    caps_mask: u32,
+    down: Vec<u16>,
+    held: u32,
+    locked: u32,
+}
+
+impl Mods {
+    /// Updates the state for a key; true when the modifiers changed.
+    fn key(&mut self, usage: u16, down: bool) -> bool {
+        const CAPS_LOCK: u16 = 0x39;
+        if usage == CAPS_LOCK {
+            if down {
+                self.locked ^= self.caps_mask;
+            }
+            return down;
+        }
+        if !self.masks.iter().any(|(u, _)| *u == usage) {
+            return false;
+        }
+        self.down.retain(|u| *u != usage);
+        if down {
+            self.down.push(usage);
+        }
+        let before = self.held;
+        self.held = self.masks.iter().filter(|(u, _)| self.down.contains(u)).fold(0, |m, (_, mask)| m | mask);
+        self.held != before
+    }
 }
 
 impl Wlr {
@@ -155,16 +191,18 @@ impl Wlr {
         } else {
             pm.create_virtual_pointer(s.seat.as_ref(), &qh, ())
         };
+        let mut mods = Mods::default();
         let keyboard = match (&s.keyboard_manager, &s.seat) {
             (Some(km), Some(seat)) => {
                 let kb = km.create_virtual_keyboard(seat, &qh, ());
                 match keymap() {
-                    Ok((file, size)) => {
+                    Ok((file, size, m)) => {
                         kb.keymap(
                             wayland_client::protocol::wl_keyboard::KeymapFormat::XkbV1.into(),
                             file.as_fd(),
                             size,
                         );
+                        mods = m;
                         Some(kb)
                     }
                     Err(e) => {
@@ -176,7 +214,7 @@ impl Wlr {
             _ => None,
         };
         wl.conn.flush().map_err(|e| e.to_string())?;
-        Ok(Wlr { wl, pointer, keyboard, start: std::time::Instant::now() })
+        Ok(Wlr { wl, pointer, keyboard, mods, start: std::time::Instant::now() })
     }
 
     fn time(&self) -> u32 {
@@ -217,7 +255,15 @@ impl Wlr {
             InputEvent::Key { usage, down } => {
                 let kb = self.keyboard.as_ref().ok_or("this desktop has no virtual keyboard")?;
                 let code = keys::linux_from_hid(usage).ok_or("unknown key")?;
+                // Modifiers go down before the key and come up after it.
+                let changed = self.mods.key(usage, down);
+                if changed && down {
+                    kb.modifiers(self.mods.held, 0, self.mods.locked, 0);
+                }
                 kb.key(t, code.into(), if down { 1 } else { 0 });
+                if changed && !down {
+                    kb.modifiers(self.mods.held, 0, self.mods.locked, 0);
+                }
             }
         }
         self.wl.conn.flush().map_err(|e| e.to_string())
@@ -237,17 +283,35 @@ impl Wlr {
 }
 
 /// The desktop's keyboard layout (from `XKB_DEFAULT_*`, else the system default), as text in a
-/// file the compositor can read.
-fn keymap() -> Result<(std::fs::File, u32), String> {
+/// file the compositor can read, and its modifier masks.
+fn keymap() -> Result<(std::fs::File, u32, Mods), String> {
     use xkbcommon::xkb;
     let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
     let km = xkb::Keymap::new_from_names(&ctx, "", "", "", "", None, xkb::KEYMAP_COMPILE_NO_FLAGS)
         .ok_or("couldn't compile the keyboard layout")?;
+    let mask = |name: &str| match km.mod_get_index(name) {
+        xkb::MOD_INVALID => 0,
+        i => 1u32 << i,
+    };
+    let (shift, ctrl, alt, logo) =
+        (mask(xkb::MOD_NAME_SHIFT), mask(xkb::MOD_NAME_CTRL), mask(xkb::MOD_NAME_ALT), mask(xkb::MOD_NAME_LOGO));
+    // Left and right Ctrl, Shift, Alt, Super (USB HID usages E0–E7).
+    let masks = vec![
+        (0xE0, ctrl),
+        (0xE1, shift),
+        (0xE2, alt),
+        (0xE3, logo),
+        (0xE4, ctrl),
+        (0xE5, shift),
+        (0xE6, alt),
+        (0xE7, logo),
+    ];
+    let mods = Mods { masks, caps_mask: mask(xkb::MOD_NAME_CAPS), ..Default::default() };
     let mut text = km.get_as_string(xkb::KEYMAP_FORMAT_TEXT_V1).into_bytes();
     text.push(0);
     let mut f = crate::wl::shm_file(text.len() as u64).map_err(|e| e.to_string())?;
     f.write_all(&text).map_err(|e| e.to_string())?;
-    Ok((f, text.len() as u32))
+    Ok((f, text.len() as u32, mods))
 }
 
 // ---- Portal (GNOME, KDE) -----------------------------------------------------------------
