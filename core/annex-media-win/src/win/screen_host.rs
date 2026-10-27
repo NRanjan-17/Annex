@@ -209,8 +209,4 @@ impl HostPipeline {
     }
 }
 
-/// Stream size for a monitor: its aspect ratio, at most `max_w`×`max_h`, even dimensions.
-pub fn stream_size(width: u32, height: u32, max_w: u32, max_h: u32) -> (u32, u32) {
-    let r = crate::geometry::fit_rect(width, height, max_w.min(width), max_h.min(height));
-    ((r.w as u32).max(2) & !1, (r.h as u32).max(2) & !1)
-}
+pub use crate::geometry::stream_size;

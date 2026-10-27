@@ -1,4 +1,5 @@
-//! Pure helpers shared by the renderer (letterboxing, NV12 plane copies).
+//! Pure helpers shared by the renderers and hosts (letterboxing, pointer coordinates, NV12 plane
+//! copies, stream sizes).
 
 /// A rectangle in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +76,12 @@ pub fn copy_nv12(
     true
 }
 
+/// Stream size for a monitor: its aspect ratio, at most `max_w`×`max_h`, even dimensions.
+pub fn stream_size(width: u32, height: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    let r = fit_rect(width, height, max_w.min(width), max_h.min(height));
+    ((r.w as u32).max(2) & !1, (r.h as u32).max(2) & !1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +121,14 @@ mod tests {
         assert_eq!(&dst[48..52], &[16, 17, 18, 19]);
         assert_eq!(&dst[56..60], &[20, 21, 22, 23]);
         assert!(!copy_nv12(&src, 4, 16, &mut dst[..10], 8, 48, w, h));
+    }
+
+    #[test]
+    fn stream_size_keeps_the_aspect_and_even_sides() {
+        assert_eq!(stream_size(1920, 1080, 4096, 2304), (1920, 1080));
+        assert_eq!(stream_size(5120, 2880, 4096, 2304), (4096, 2304));
+        assert_eq!(stream_size(2704, 1756, 1920, 1080), (1662, 1080));
+        let (w, h) = stream_size(1366, 767, 4096, 2304);
+        assert!(w % 2 == 0 && h % 2 == 0);
     }
 }

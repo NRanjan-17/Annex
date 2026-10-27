@@ -602,18 +602,30 @@ pub unsafe extern "C" fn annex_core_set_allow_input(
 }
 
 /// This platform's key code (macOS virtual key code, Windows scancode with 0xE0xx for extended
-/// keys) for a HID usage from an `input` event, or -1 if it has no such key.
+/// keys, Linux evdev code) for a HID usage from an `input` event, or -1 if it has no such key.
 #[unsafe(no_mangle)]
 pub extern "C" fn annex_key_native_from_hid(usage: u16) -> i32 {
     native_from_hid(usage).map_or(-1, i32::from)
 }
 
 fn native_from_hid(usage: u16) -> Option<u16> {
-    if cfg!(windows) { keys::windows_from_hid(usage) } else { keys::mac_from_hid(usage) }
+    if cfg!(windows) {
+        keys::windows_from_hid(usage)
+    } else if cfg!(target_os = "linux") {
+        keys::linux_from_hid(usage)
+    } else {
+        keys::mac_from_hid(usage)
+    }
 }
 
 fn hid_from_native(code: u16) -> Option<u16> {
-    if cfg!(windows) { keys::hid_from_windows(code) } else { keys::hid_from_mac(code) }
+    if cfg!(windows) {
+        keys::hid_from_windows(code)
+    } else if cfg!(target_os = "linux") {
+        keys::hid_from_linux(code)
+    } else {
+        keys::hid_from_mac(code)
+    }
 }
 
 /// Answers a `pairing_pin_required` event with the PIN the user typed.

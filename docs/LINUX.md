@@ -18,7 +18,7 @@ The same Linux systems Tailscale installs on (tailscale.com/docs/install/linux):
 | CPU | Builds | Typical computers |
 |---|---|---|
 | x86_64 | yes | PCs, laptops, NVIDIA desktop GPUs |
-| arm64 (aarch64) | yes | Raspberry Pi 3/4/5 (64-bit OS), NVIDIA Jetson (Orin, Thor), ARM laptops |
+| arm64 (aarch64) | yes | Raspberry Pi 3/4/5 (64-bit OS), NVIDIA Jetson (Orin, Thor), NVIDIA DGX Spark, ARM laptops |
 | armhf (32-bit ARMv7) | yes | Raspberry Pi 2/3/4/5 on 32-bit Raspberry Pi OS |
 | riscv64 | yes, tier 2 (built and smoke-tested, not hand-tested) | RISC-V boards |
 
@@ -27,6 +27,10 @@ Not targeted: Pi Zero/Pi 1 (ARMv6, too slow for live video) and 32-bit x86.
 **Oldest systems:** GTK 4.6 and GStreamer 1.20 (Ubuntu 22.04, JetPack 6, Debian 12, RHEL 9). So the app uses plain GTK4 with Annex's own black-and-white styling, not libadwaita, which isn't on all of these.
 
 **Desktops:** GNOME and KDE (Wayland and X11), wlroots compositors (Raspberry Pi OS's labwc, Sway) and other X11 desktops (Xfce, MATE, Cinnamon, LXQt).
+
+---
+
+**Test computers we have:** NVIDIA DGX Spark (arm64, DGX OS on Ubuntu, NVENC), Jetson AGX Thor (arm64, JetPack), Raspberry Pi 5 and Pi 4, and Ubuntu laptops (x86_64).
 
 ---
 
