@@ -630,6 +630,32 @@ pub unsafe extern "C" fn annex_core_set_headless(core: *const AnnexCore, on: boo
     })
 }
 
+/// Where files from the other computer are saved (usually Downloads); NULL refuses them (the
+/// default). Applies to sessions that start afterwards.
+///
+/// # Safety
+/// `core` must be valid; `dir` a NUL-terminated string or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_set_downloads(core: *const AnnexCore, dir: *const c_char) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        let dir = unsafe { opt_str_arg(dir, "dir") }?.filter(|d| !d.is_empty()).map(PathBuf::from);
+        c.core.set_downloads(dir);
+        Ok(0)
+    })
+}
+
+/// `data`/`len` as bytes (empty allowed).
+unsafe fn bytes_arg<'a>(data: *const u8, len: usize) -> Result<&'a [u8], (i32, String)> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if data.is_null() {
+        return Err(invalid("data is null"));
+    }
+    Ok(unsafe { std::slice::from_raw_parts(data, len) })
+}
+
 /// This platform's key code (macOS virtual key code, Windows scancode with 0xE0xx for extended
 /// keys, Linux evdev code) for a HID usage from an `input` event, or -1 if it has no such key.
 #[unsafe(no_mangle)]
@@ -835,6 +861,62 @@ pub unsafe extern "C" fn annex_host_set_session_stream(
 pub unsafe extern "C" fn annex_host_end_session(host: *const AnnexHost, session_id: u64) {
     if let Some(h) = unsafe { host.as_ref() } {
         h.handle.end_session(session_id);
+    }
+}
+
+/// Puts a clipboard item (`mime` "text/plain;charset=utf-8" or "image/png") on one viewer's
+/// clipboard. Returns 1 if it's on its way; 0 if that viewer can't take it (older Annex, TCP
+/// session) or it's too big for the link (32 MB, 1 MB through our relay).
+///
+/// # Safety
+/// `host` must be valid; `mime` a NUL-terminated string; `data` `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_send_clipboard(
+    host: *const AnnexHost,
+    session_id: u64,
+    mime: *const c_char,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    guard(|| {
+        let h = unsafe { host.as_ref() }.ok_or_else(|| invalid("host is null"))?;
+        let mime = unsafe { str_arg(mime, "mime") }?;
+        let data = unsafe { bytes_arg(data, len) }?.to_vec();
+        Ok(i32::from(h.handle.send_clipboard(session_id, mime, data)))
+    })
+}
+
+/// Sends a file to one viewer. `*out_id` is the id in its `transfer_*` events. Fails (with
+/// `annex_last_error`) if the viewer can't take files.
+///
+/// # Safety
+/// `host` must be valid; `path` a NUL-terminated string; `out_id` writable or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_send_file(
+    host: *const AnnexHost,
+    session_id: u64,
+    path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
+    guard(|| {
+        let h = unsafe { host.as_ref() }.ok_or_else(|| invalid("host is null"))?;
+        let path = unsafe { str_arg(path, "path") }?;
+        let id = h.handle.send_file(session_id, std::path::Path::new(path)).map_err(failed)?;
+        if let Some(out) = unsafe { out_id.as_mut() } {
+            *out = id;
+        }
+        Ok(0)
+    })
+}
+
+/// Stops a file going either way (`incoming`: from the viewer).
+///
+/// # Safety
+/// `host` must be valid or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_cancel_transfer(host: *const AnnexHost, session_id: u64, incoming: bool, id: u64) {
+    if let Some(h) = unsafe { host.as_ref() } {
+        h.handle.cancel_transfer(session_id, incoming, id);
     }
 }
 
@@ -1763,6 +1845,59 @@ pub unsafe extern "C" fn annex_viewer_send_mouse_button(viewer: *const AnnexView
 pub unsafe extern "C" fn annex_viewer_send_scroll(viewer: *const AnnexViewer, dx: i32, dy: i32) {
     if let Some(v) = unsafe { viewer.as_ref() } {
         v.handle.send_input(InputEvent::Scroll { dx: dx.clamp(-100_000, 100_000), dy: dy.clamp(-100_000, 100_000) });
+    }
+}
+
+/// Puts a clipboard item on the host's clipboard (see `annex_host_send_clipboard`). Returns 1 if
+/// it's on its way, 0 if the host can't take it or it's too big for the link.
+///
+/// # Safety
+/// `viewer` must be valid; `mime` a NUL-terminated string; `data` `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_send_clipboard(
+    viewer: *const AnnexViewer,
+    mime: *const c_char,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    guard(|| {
+        let v = unsafe { viewer.as_ref() }.ok_or_else(|| invalid("viewer is null"))?;
+        let mime = unsafe { str_arg(mime, "mime") }?;
+        let data = unsafe { bytes_arg(data, len) }?.to_vec();
+        Ok(i32::from(v.handle.send_clipboard(mime, data)))
+    })
+}
+
+/// Sends a file to the host. `*out_id` is the id in its `transfer_*` events. The host takes
+/// files only while this viewer has control.
+///
+/// # Safety
+/// `viewer` must be valid; `path` a NUL-terminated string; `out_id` writable or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_send_file(
+    viewer: *const AnnexViewer,
+    path: *const c_char,
+    out_id: *mut u64,
+) -> i32 {
+    guard(|| {
+        let v = unsafe { viewer.as_ref() }.ok_or_else(|| invalid("viewer is null"))?;
+        let path = unsafe { str_arg(path, "path") }?;
+        let id = v.handle.send_file(std::path::Path::new(path)).map_err(failed)?;
+        if let Some(out) = unsafe { out_id.as_mut() } {
+            *out = id;
+        }
+        Ok(0)
+    })
+}
+
+/// Stops a file going either way (`incoming`: from the host).
+///
+/// # Safety
+/// `viewer` must be valid or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_viewer_cancel_transfer(viewer: *const AnnexViewer, incoming: bool, id: u64) {
+    if let Some(v) = unsafe { viewer.as_ref() } {
+        v.handle.cancel_transfer(incoming, id);
     }
 }
 
