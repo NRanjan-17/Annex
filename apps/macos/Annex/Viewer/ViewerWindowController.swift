@@ -74,9 +74,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func disconnect() { window?.performClose(nil) }
 
-    /// The other computer's name, and how it's reached ("Over the internet", "Through a relay").
-    func setPeer(_ name: String, detail: String) {
-        window?.title = name
+    /// What the window shows ("Viewing Name"), and how it's reached ("Over the internet").
+    func setPeer(_ title: String, detail: String) {
+        window?.title = title
         window?.subtitle = detail
     }
 
