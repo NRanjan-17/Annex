@@ -1,0 +1,38 @@
+name: Download chart
+
+# Redraws the README's download chart once a day and after each release, onto the `stats` branch
+# (so main's history stays free of it). The README shows the files from that branch.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stats
+  cancel-in-progress: true
+
+jobs:
+  chart:
+    if: github.repository == 'NRanjan-17/Annex'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Draw
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/download-chart.py "$RUNNER_TEMP/stats"
+      - name: Publish to the stats branch
+        run: |
+          cd "$RUNNER_TEMP/stats"
+          git init -q -b stats
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add downloads-light.svg downloads-dark.svg
+          git commit -q -m "Download chart"
+          git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" stats
