@@ -34,6 +34,7 @@ public sealed partial class MainWindow : Window
     /// <summary>Viewer: something was copied while the viewer window wasn't in front.</summary>
     private bool _copiedWhileAway;
     private DispatcherQueueTimer? _clipboardTimer;
+    private DropTray? _drop;
     private IReadOnlyList<MonitorInfo> _monitors = [];
     private int _monitorIndex;
     private ContentDialog? _pinDialog;
@@ -166,6 +167,8 @@ public sealed partial class MainWindow : Window
             _core.SetHeadless(_settings.Headless);
             _core.SetDownloads(_settings.ReceiveFiles ? DownloadsFolder : null);
             _clipboard.Copied += OnCopied;
+            _drop = new DropTray(_ui);
+            _drop.Dropped += SendFiles;
             if (_settings.ShareClipboard) _clipboard.Start();
             _extendStatus = TryExtendStatus();
             _ = CheckFirewallAsync();
@@ -1663,6 +1666,9 @@ public sealed partial class MainWindow : Window
                 _settings.Save();
                 if (on) _clipboard.Start(); else { _clipboard.Stop(); _copiedWhileAway = false; }
             })));
+        p.Children.Add(Ui.Card("", "Drop files at the top of the screen",
+            "While connected, drag files to the top of the screen to send them.",
+            Ui.Switch(_settings.DropAtTop, on => { _settings.DropAtTop = on; _settings.Save(); UpdateDropTarget(); })));
         p.Children.Add(Ui.Card("", "Receive files", "Files the other computer sends go to Downloads.",
             Ui.Switch(_settings.ReceiveFiles, on =>
             {
@@ -1673,6 +1679,50 @@ public sealed partial class MainWindow : Window
     }
 
     // Clipboard and files.
+
+    /// <summary>Who dropped files go to: the host this PC controls, else a viewer controlling this PC.</summary>
+    private void UpdateDropTarget()
+    {
+        string? peer = null;
+        if (_settings.DropAtTop)
+        {
+            if (_viewer is not null && _controlling) peer = Label(_viewingName);
+            else if (_sessions.Values.FirstOrDefault(s => s.Input) is { Name: { } name } && _sessions.Values.Any(s => s.Input))
+                peer = Label(name);
+        }
+        _drop?.SetTarget(peer);
+    }
+
+    /// <summary>After the event has updated the session state.</summary>
+    private void UpdateDropTargetSoon() => _ui.TryEnqueue(UpdateDropTarget);
+
+    private void SendFiles(IReadOnlyList<string> files)
+    {
+        foreach (var file in files)
+        {
+            try
+            {
+                if (_viewer is not null && _controlling) _viewer.SendFile(file);
+                else
+                    foreach (var (id, s) in _sessions)
+                        if (s.Input) _host?.SendFile(id, file);
+            }
+            catch (AnnexException e)
+            {
+                _hostError = $"Couldn't send {Path.GetFileName(file)}: {e.Message}";
+            }
+        }
+    }
+
+    private void OnTransfer(CoreEvent e)
+    {
+        switch (e)
+        {
+            case CoreEvent.TransferStarted t: _drop?.Started(t.SessionId, t.Id, t.Incoming, t.Name, t.Size); break;
+            case CoreEvent.TransferProgress p: _drop?.Progress(p.SessionId, p.Id, p.Incoming, p.Done); break;
+            case CoreEvent.TransferEnded d: _drop?.Ended(d.SessionId, d.Id, d.Incoming, d.Ok, d.Path, d.Problem); break;
+        }
+    }
 
     private static string DownloadsFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
 
@@ -2133,10 +2183,14 @@ public sealed partial class MainWindow : Window
 
     private async void OnHostEvent(CoreEvent e)
     {
+        UpdateDropTargetSoon();
         switch (e)
         {
             case CoreEvent.ClipboardReceived c:
                 if (_settings.ShareClipboard) _clipboard.Apply(c.Mime, c.Data);
+                return;
+            case CoreEvent.TransferStarted or CoreEvent.TransferProgress or CoreEvent.TransferEnded:
+                OnTransfer(e);
                 return;
             case CoreEvent.PairingPin pin:
                 await ShowPin(pin);
@@ -2335,10 +2389,14 @@ public sealed partial class MainWindow : Window
 
     private async void OnViewerEvent(CoreEvent e)
     {
+        UpdateDropTargetSoon();
         switch (e)
         {
             case CoreEvent.ClipboardReceived c:
                 if (_settings.ShareClipboard) _clipboard.Apply(c.Mime, c.Data);
+                return;
+            case CoreEvent.TransferStarted or CoreEvent.TransferProgress or CoreEvent.TransferEnded:
+                OnTransfer(e);
                 return;
             case CoreEvent.PairingPinRequired req:
                 await PromptForPin(req);
