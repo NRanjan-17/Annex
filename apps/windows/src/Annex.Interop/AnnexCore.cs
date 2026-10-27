@@ -143,6 +143,9 @@ public sealed class CoreClient : IDisposable
     /// folder, and paired devices may use the mouse and keyboard without being allowed one by one.</summary>
     public void SetHeadless(bool on) => NativeMethods.Check(NativeMethods.annex_core_set_headless(Raw, on));
 
+    /// <summary>Where files from the other computer go; null refuses them.</summary>
+    public void SetDownloads(string? folder) => NativeMethods.Check(NativeMethods.annex_core_set_downloads(Raw, folder));
+
     /// <summary>Answers a <see cref="CoreEvent.PairingPinRequired"/> with the PIN the user typed.</summary>
     public bool SubmitPin(ulong requestId, string pin) => NativeMethods.annex_core_submit_pin(Raw, requestId, pin) == 1;
 
@@ -236,6 +239,27 @@ public sealed unsafe class HostHandle : IDisposable
     public void ShareCode(string rendezvous, string? turnUrl = null, string? turnUsername = null, string? turnPassword = null)
     {
         if (_raw != 0) NativeMethods.Check(NativeMethods.annex_host_share_code(_raw, rendezvous, null, turnUrl, turnUsername, turnPassword));
+    }
+
+    /// <summary>Puts text ("text/plain;charset=utf-8") or a PNG ("image/png") on one viewer's clipboard.
+    /// False if it can't take it (older version, or too big for the link).</summary>
+    public bool SendClipboard(ulong sessionId, string mime, ReadOnlySpan<byte> data)
+    {
+        if (_raw == 0) return false;
+        fixed (byte* p = data)
+            return NativeMethods.Check(NativeMethods.annex_host_send_clipboard(_raw, sessionId, mime, p, (nuint)data.Length)) == 1;
+    }
+
+    /// <summary>Sends a file to one viewer; progress comes as transfer events with the returned id.</summary>
+    public ulong SendFile(ulong sessionId, string path)
+    {
+        NativeMethods.Check(NativeMethods.annex_host_send_file(_raw, sessionId, path, out var id));
+        return id;
+    }
+
+    public void CancelTransfer(ulong sessionId, bool incoming, ulong id)
+    {
+        if (_raw != 0) NativeMethods.annex_host_cancel_transfer(_raw, sessionId, incoming, id);
     }
 
     /// <summary>Stops the code (InternetCodeEnded "stopped"); connected sessions carry on.</summary>
@@ -356,6 +380,26 @@ public sealed unsafe class ViewerHandle : IDisposable
     public void RefuseDirectLink(string reason)
     {
         if (_raw != 0) NativeMethods.Check(NativeMethods.annex_viewer_refuse_direct_link(_raw, reason));
+    }
+
+    /// <summary>Puts text or a PNG on the host's clipboard. The host takes it only while this PC controls it.</summary>
+    public bool SendClipboard(string mime, ReadOnlySpan<byte> data)
+    {
+        if (_raw == 0) return false;
+        fixed (byte* p = data)
+            return NativeMethods.Check(NativeMethods.annex_viewer_send_clipboard(_raw, mime, p, (nuint)data.Length)) == 1;
+    }
+
+    /// <summary>Sends a file to the host; progress comes as transfer events with the returned id.</summary>
+    public ulong SendFile(string path)
+    {
+        NativeMethods.Check(NativeMethods.annex_viewer_send_file(_raw, path, out var id));
+        return id;
+    }
+
+    public void CancelTransfer(bool incoming, ulong id)
+    {
+        if (_raw != 0) NativeMethods.annex_viewer_cancel_transfer(_raw, incoming, id);
     }
 
     public void FramePresented(uint frameId)

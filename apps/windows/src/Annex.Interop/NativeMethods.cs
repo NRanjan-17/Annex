@@ -172,6 +172,27 @@ internal static unsafe partial class NativeMethods
     public static partial int annex_update_verify(string sumsPath, string sigPath, string filePath, string assetName);
     [LibraryImport(Lib)] public static partial void annex_discovery_free(nint discovery);
 
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_core_set_downloads(nint core, string? dir);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_host_send_clipboard(nint host, ulong sessionId, string mime, byte* data, nuint len);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_host_send_file(nint host, ulong sessionId, string path, out ulong id);
+
+    [LibraryImport(Lib)]
+    public static partial void annex_host_cancel_transfer(nint host, ulong sessionId, [MarshalAs(UnmanagedType.U1)] bool incoming, ulong id);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_viewer_send_clipboard(nint viewer, string mime, byte* data, nuint len);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    public static partial int annex_viewer_send_file(nint viewer, string path, out ulong id);
+
+    [LibraryImport(Lib)]
+    public static partial void annex_viewer_cancel_transfer(nint viewer, [MarshalAs(UnmanagedType.U1)] bool incoming, ulong id);
+
     public static string TakeString(nint p)
     {
         if (p == 0) return "";

@@ -30,6 +30,10 @@ public sealed partial class MainWindow : Window
     private DiscoveryHandle? _discovery;
     private ViewerHandle? _viewer;
     private HostHandle? _host;
+    private readonly ClipboardSync _clipboard = new();
+    /// <summary>Viewer: copied while the viewer window wasn't in front; sent once it is.</summary>
+    private (string Mime, byte[] Data)? _clipboardForHost;
+    private DispatcherQueueTimer? _clipboardTimer;
     private IReadOnlyList<MonitorInfo> _monitors = [];
     private int _monitorIndex;
     private ContentDialog? _pinDialog;
@@ -160,6 +164,9 @@ public sealed partial class MainWindow : Window
             // Show up under Nearby on other computers as soon as Annex is open.
             _core.SetPresence(true);
             _core.SetHeadless(_settings.Headless);
+            _core.SetDownloads(_settings.ReceiveFiles ? DownloadsFolder : null);
+            _clipboard.Copied += OnCopied;
+            if (_settings.ShareClipboard) _clipboard.Start();
             _extendStatus = TryExtendStatus();
             _ = CheckFirewallAsync();
             StartUpdateChecks();
@@ -1648,7 +1655,86 @@ public sealed partial class MainWindow : Window
         p.Children.Add(Ui.Card("", "Extend display by default", null,
             Ui.Switch(_settings.ExtendByDefault, on => { _settings.ExtendByDefault = on; _extend = on; _settings.Save(); })));
         DirectWifiOption(p);
+        p.Children.Add(Ui.Card("", "Share the clipboard",
+            "Copy on one computer, paste on the other, while one controls the other. Passwords copied from a password manager stay here.",
+            Ui.Switch(_settings.ShareClipboard, on =>
+            {
+                _settings.ShareClipboard = on;
+                _settings.Save();
+                if (on) _clipboard.Start(); else { _clipboard.Stop(); _clipboardForHost = null; }
+            })));
+        p.Children.Add(Ui.Card("", "Receive files", "Files the other computer sends go to Downloads.",
+            Ui.Switch(_settings.ReceiveFiles, on =>
+            {
+                _settings.ReceiveFiles = on;
+                _settings.Save();
+                _core?.SetDownloads(on ? DownloadsFolder : null);
+            })));
     }
+
+    // Clipboard and files.
+
+    private static string DownloadsFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+
+    /// <summary>Copied on this PC: to the host this PC controls (once its window is in front, so what's
+    /// copied in other apps meanwhile stays here unless it's still on the clipboard), and to the
+    /// viewers controlling this PC.</summary>
+    private void OnCopied(string mime, byte[] data)
+    {
+        try
+        {
+            foreach (var (id, s) in _sessions)
+                if (s.Input) _host?.SendClipboard(id, mime, data);
+            if (_viewer is not null && _controlling)
+            {
+                if (ViewerInFront()) _viewer.SendClipboard(mime, data);
+                else WaitForViewer(mime, data);
+            }
+        }
+        catch (AnnexException)
+        {
+            // The session just ended.
+        }
+    }
+
+    private void WaitForViewer(string mime, byte[] data)
+    {
+        _clipboardForHost = (mime, data);
+        if (_clipboardTimer is null)
+        {
+            _clipboardTimer = _ui.CreateTimer();
+            _clipboardTimer.Interval = TimeSpan.FromMilliseconds(500);
+            _clipboardTimer.Tick += (t, _) =>
+            {
+                if (_clipboardForHost is not { } item || _viewer is null || !_controlling)
+                {
+                    _clipboardForHost = null;
+                    t.Stop();
+                }
+                else if (ViewerInFront())
+                {
+                    _clipboardForHost = null;
+                    t.Stop();
+                    try { _viewer.SendClipboard(item.Mime, item.Data); } catch (AnnexException) { }
+                }
+            };
+        }
+        _clipboardTimer.Start();
+    }
+
+    /// <summary>The viewer window (the core's, in this process) is the one in front.</summary>
+    private bool ViewerInFront()
+    {
+        var front = GetForegroundWindow();
+        return front != 0 && front != WinRT.Interop.WindowNative.GetWindowHandle(this)
+            && GetWindowThreadProcessId(front, out var pid) != 0 && pid == (uint)Environment.ProcessId;
+    }
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    private static partial nint GetForegroundWindow();
+
+    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
+    private static partial uint GetWindowThreadProcessId(nint hwnd, out uint processId);
 
     private void DevicesPage(StackPanel p)
     {
@@ -2046,6 +2132,9 @@ public sealed partial class MainWindow : Window
     {
         switch (e)
         {
+            case CoreEvent.ClipboardReceived c:
+                if (_settings.ShareClipboard) _clipboard.Apply(c.Mime, c.Data);
+                return;
             case CoreEvent.PairingPin pin:
                 await ShowPin(pin);
                 break;
@@ -2245,6 +2334,9 @@ public sealed partial class MainWindow : Window
     {
         switch (e)
         {
+            case CoreEvent.ClipboardReceived c:
+                if (_settings.ShareClipboard) _clipboard.Apply(c.Mime, c.Data);
+                return;
             case CoreEvent.PairingPinRequired req:
                 await PromptForPin(req);
                 return;
@@ -2360,6 +2452,7 @@ public sealed partial class MainWindow : Window
         _viewer = null;
         _viewerLive = false;
         _viewerToken = null;
+        _clipboardForHost = null;
         FreeLater(v);
     }
 

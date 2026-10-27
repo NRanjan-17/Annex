@@ -22,6 +22,10 @@ public sealed class AppSettings
     /// sharing computer still decides per device (Paired devices), so asking is harmless.</summary>
     public bool UseMouseAndKeyboard { get; set; } = true;
     public bool ExtendByDefault { get; set; }
+    /// <summary>Copy on one computer, paste on the other, while one controls the other.</summary>
+    public bool ShareClipboard { get; set; } = true;
+    /// <summary>Take files the other computer sends, into Downloads.</summary>
+    public bool ReceiveFiles { get; set; } = true;
     /// <summary>Viewer: move each new session onto this PC's hotspot right after it connects.</summary>
     public bool ConnectOverDirectWifi { get; set; }
     /// <summary>Show identity codes, addresses and connection figures (Settings → Developer).</summary>
