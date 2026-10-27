@@ -318,7 +318,7 @@ impl std::io::Write for LogSink {
             if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX) {
                 let _ = std::fs::rename(&path, path.with_file_name("annex.old.log"));
             }
-            *file = std::fs::OpenOptions::new().create(true).append(true).open(&path).ok().map(|f| {
+            *file = open_private(&path).map(|f| {
                 let len = f.metadata().map_or(0, |m| m.len());
                 (f, len)
             });
@@ -336,6 +336,21 @@ impl std::io::Write for LogSink {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// Opens the log for appending, readable only by this account: it names the devices and addresses
+/// Annex talks to, and other accounts on a shared computer shouldn't see them.
+fn open_private(path: &std::path::Path) -> Option<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        opts.mode(0o600);
+        // Logs from before 0.3.1 were created readable by everyone.
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    opts.open(path).ok()
 }
 
 /// Points the log at `<data_dir>/annex.log` and installs the logger (once per process): debug

@@ -4,6 +4,7 @@
 
 use std::fs::File;
 use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -36,7 +37,7 @@ impl Write for Sink {
             if std::fs::metadata(&log.path).is_ok_and(|m| m.len() > MAX) {
                 let _ = std::fs::rename(&log.path, log.path.with_file_name("annex.old.log"));
             }
-            log.file = std::fs::OpenOptions::new().create(true).append(true).open(&log.path).ok().map(|f| {
+            log.file = open_private(&log.path).map(|f| {
                 let len = f.metadata().map_or(0, |m| m.len());
                 (f, len)
             });
@@ -52,6 +53,16 @@ impl Write for Sink {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// Opens the log for appending, readable only by this account: it names the devices and addresses
+/// Annex talks to, and other accounts on a shared computer shouldn't see them.
+fn open_private(path: &Path) -> Option<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true).mode(0o600);
+    // Logs from before 0.3.1 were created readable by everyone.
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    opts.open(path).ok()
 }
 
 pub fn init(data_dir: &Path) {

@@ -182,6 +182,12 @@ fn host_and_viewer_through_c_abi() {
         // The log is on without anyone turning it on.
         let log = std::fs::read_to_string(dir.path().join("annex.log")).unwrap();
         assert!(log.contains("annex core started"), "{log}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path().join("annex.log")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "only this account reads the log");
+        }
     }
 }
 
