@@ -339,6 +339,9 @@ final class NotchDrop: ObservableObject {
         p.becomesKeyOnlyIfNeeded = true
         let drop = TrayDropView(owner: self)
         let host = NSHostingView(rootView: NotchDropView(model: self))
+        // The panel sits over the notch, whose safe area would push the island down and leave a
+        // gap under the camera. The island belongs right up against it.
+        host.safeAreaRegions = []
         host.translatesAutoresizingMaskIntoConstraints = false
         drop.addSubview(host)
         NSLayoutConstraint.activate([
@@ -388,6 +391,9 @@ private final class TrayDropView: NSView {
 /// the menu bar like the hardware notch.
 private struct NotchShape: Shape {
     var bottomRadius: CGFloat
+    /// Leaves out the flat top edge, for outlines: a line there would split the island from the
+    /// camera housing it hangs from.
+    var openTop = false
     var animatableData: CGFloat {
         get { bottomRadius }
         set { bottomRadius = newValue }
@@ -397,8 +403,12 @@ private struct NotchShape: Shape {
         let flare: CGFloat = 6
         let br = min(bottomRadius, r.height / 2, r.width / 2)
         var p = Path()
-        p.move(to: CGPoint(x: r.minX - flare, y: r.minY))
-        p.addLine(to: CGPoint(x: r.maxX + flare, y: r.minY))
+        if openTop {
+            p.move(to: CGPoint(x: r.maxX + flare, y: r.minY))
+        } else {
+            p.move(to: CGPoint(x: r.minX - flare, y: r.minY))
+            p.addLine(to: CGPoint(x: r.maxX + flare, y: r.minY))
+        }
         p.addQuadCurve(to: CGPoint(x: r.maxX, y: r.minY + flare), control: CGPoint(x: r.maxX, y: r.minY))
         p.addLine(to: CGPoint(x: r.maxX, y: r.maxY - br))
         p.addQuadCurve(to: CGPoint(x: r.maxX - br, y: r.maxY), control: CGPoint(x: r.maxX, y: r.maxY))
@@ -406,7 +416,7 @@ private struct NotchShape: Shape {
         p.addQuadCurve(to: CGPoint(x: r.minX, y: r.maxY - br), control: CGPoint(x: r.minX, y: r.maxY))
         p.addLine(to: CGPoint(x: r.minX, y: r.minY + flare))
         p.addQuadCurve(to: CGPoint(x: r.minX - flare, y: r.minY), control: CGPoint(x: r.minX, y: r.minY))
-        p.closeSubpath()
+        if !openTop { p.closeSubpath() }
         return p
     }
 }
@@ -438,7 +448,9 @@ private struct NotchDropView: View {
     private var hasContent: Bool { model.phase == .open || model.phase == .transfers }
 
     var body: some View {
-        let shape = NotchShape(bottomRadius: model.phase == .glowing || model.phase == .hidden ? 10 : 22)
+        let radius: CGFloat = model.phase == .glowing || model.phase == .hidden ? 10 : 22
+        let shape = NotchShape(bottomRadius: radius)
+        let edge = NotchShape(bottomRadius: radius, openTop: true)
         ZStack(alignment: .top) {
             shape.fill(.black)
             content
@@ -453,16 +465,17 @@ private struct NotchDropView: View {
         // only the outer half and the halo show and the inside stays black.
         .background {
             // Brighter and wider as the files come closer.
-            shape.stroke(glow(spin), lineWidth: 4 + 2 * near)
+            edge.stroke(glow(spin), lineWidth: 4 + 2 * near)
                 .shadow(color: .white.opacity(0.6 + 0.35 * near), radius: 4 + 6 * near)
                 .shadow(color: .white.opacity(0.3 + 0.4 * near), radius: 12 + 16 * near)
                 .opacity(isGlowing ? 0.75 + 0.25 * near : 0)
         }
         .animation(.easeOut(duration: 0.15), value: model.nearness)
-        .overlay { shape.stroke(.white.opacity(isGlowing ? 0.85 : 0), lineWidth: 1) }
+        .overlay { edge.stroke(.white.opacity(isGlowing ? 0.85 : 0), lineWidth: 1) }
         .scaleEffect(x: shown ? 1 : 0.8, y: shown ? 1 : 0.5, anchor: .top)
         .opacity(shown ? 1 : 0)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .ignoresSafeArea()
         .onHover { model.setHovering($0) }
         .onAppear {
             withAnimation(.linear(duration: 2.4).repeatForever(autoreverses: false)) { spin = true }
