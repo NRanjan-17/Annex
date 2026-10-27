@@ -10,8 +10,7 @@ publish.workspace = true
 
 [dependencies]
 cpal = "0.18"
-opus = "0.3"
-audiopus_sys = { version = "0.2", features = ["static"] }
+opus2 = { version = "0.4", default-features = false, features = ["backend-libopus", "bundled"] }
 tracing = "0.1.44"
 
 [lints]

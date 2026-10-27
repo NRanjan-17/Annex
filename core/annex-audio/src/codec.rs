@@ -1,8 +1,8 @@
-use opus::{Application, Bitrate, Channels};
+use opus2::{Application, Bitrate, Channels};
 
 /// Compresses 20 ms frames with Opus.
 pub struct Encoder {
-    inner: opus::Encoder,
+    inner: opus2::Encoder,
     buf: Vec<u8>,
 }
 
@@ -10,7 +10,7 @@ impl Encoder {
     /// `voice` tunes it for speech (the microphone); otherwise for any sound.
     pub fn new(voice: bool, bits_per_second: i32) -> Result<Encoder, String> {
         let app = if voice { Application::Voip } else { Application::Audio };
-        let mut inner = opus::Encoder::new(crate::RATE, Channels::Mono, app).map_err(|e| e.to_string())?;
+        let mut inner = opus2::Encoder::new(crate::RATE, Channels::Mono, app).map_err(|e| e.to_string())?;
         inner.set_bitrate(Bitrate::Bits(bits_per_second)).map_err(|e| e.to_string())?;
         Ok(Encoder { inner, buf: vec![0; 1500] })
     }
@@ -24,7 +24,7 @@ impl Encoder {
 
 /// Expands Opus packets back to 20 ms frames, filling in for lost ones.
 pub struct Decoder {
-    inner: opus::Decoder,
+    inner: opus2::Decoder,
     next_seq: Option<u32>,
     pcm: Vec<f32>,
 }
@@ -32,7 +32,7 @@ pub struct Decoder {
 impl Decoder {
     pub fn new() -> Result<Decoder, String> {
         Ok(Decoder {
-            inner: opus::Decoder::new(crate::RATE, Channels::Mono).map_err(|e| e.to_string())?,
+            inner: opus2::Decoder::new(crate::RATE, Channels::Mono).map_err(|e| e.to_string())?,
             next_seq: None,
             pcm: vec![0.0; crate::FRAME * 6],
         })
