@@ -200,13 +200,15 @@ final class NotchDrop: ObservableObject {
         }
         panel.ignoresMouseEvents = false
         panel.orderFrontRegardless()
-        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { self.phase = phase }
+        // Pops out of the notch with a little overshoot.
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.66)) { self.phase = phase }
     }
 
     private func hide() {
         hideWork?.cancel()
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) { phase = .hidden }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+        // Pops back in, quicker and without the bounce.
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { phase = .hidden }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
             guard let self, self.phase == .hidden else { return }
             self.panel?.ignoresMouseEvents = true
             self.panel?.orderOut(nil)
@@ -330,11 +332,15 @@ private struct NotchDropView: View {
         }
     }
 
-    /// Annex's look: white light with the live green, sweeping round the edge.
+    /// Bright silver flowing round the edge.
     private func glow(_ turn: Bool) -> AngularGradient {
-        AngularGradient(colors: [.white.opacity(0.15), .white, Color.annexLive, .white.opacity(0.15), .white.opacity(0.15)],
+        AngularGradient(colors: [Color(white: 0.62), .white, Color(white: 0.84), .white, Color(white: 0.7), .white, Color(white: 0.62)],
                         center: .center, angle: .degrees(turn ? 360 : 0))
     }
+
+    private var shown: Bool { model.phase != .hidden }
+    private var isGlowing: Bool { model.phase == .glowing || model.phase == .open }
+    private var hasContent: Bool { model.phase == .open || model.phase == .transfers }
 
     var body: some View {
         let shape = NotchShape(bottomRadius: model.phase == .glowing || model.phase == .hidden ? 10 : 22)
@@ -343,16 +349,22 @@ private struct NotchDropView: View {
             content
                 .padding(.top, model.notchSize.height + 6)
                 .padding(.horizontal, 18)
-                .opacity(model.phase == .open || model.phase == .transfers ? 1 : 0)
+                .opacity(hasContent ? 1 : 0)
+                .scaleEffect(hasContent ? 1 : 0.9, anchor: .top)
+                .blur(radius: hasContent ? 0 : 6)
         }
         .frame(width: size.width, height: size.height)
-        .overlay {
-            // The light: a white and green sweep round the edge while files are dragged.
-            shape.stroke(glow(spin), lineWidth: model.phase == .open ? 2 : 3)
-                .blur(radius: 1)
-                .shadow(color: Color.annexLive.opacity(0.55), radius: model.phase == .open ? 10 : 14)
-                .opacity(model.phase == .glowing || model.phase == .open ? 1 : 0)
+        // The light: silver flowing round the edge while files are dragged. Behind the black, so
+        // only the outer half and the halo show and the inside stays black.
+        .background {
+            shape.stroke(glow(spin), lineWidth: 5)
+                .shadow(color: .white.opacity(0.9), radius: 6)
+                .shadow(color: .white.opacity(0.5), radius: 18)
+                .opacity(isGlowing ? 1 : 0)
         }
+        .overlay { shape.stroke(.white.opacity(isGlowing ? 0.85 : 0), lineWidth: 1) }
+        .scaleEffect(x: shown ? 1 : 0.8, y: shown ? 1 : 0.5, anchor: .top)
+        .opacity(shown ? 1 : 0)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onHover { model.setHovering($0) }
         .onAppear {
