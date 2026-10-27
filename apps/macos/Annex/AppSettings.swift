@@ -131,7 +131,8 @@ final class AppSettings: ObservableObject {
         usedBefore = !saved.isEmpty || !data.isEmpty
         defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true, Keys.updates: true,
                                        Keys.peerToPeer: true, Keys.clipboard: true, Keys.reverseScroll: true, Keys.receiveFiles: true, Keys.notchDrop: true,
-                                       Keys.shareSound: true, Keys.hearSound: true, Keys.virtualMicrophone: true])
+                                       Keys.shareSound: true, Keys.hearSound: true, Keys.virtualMicrophone: true,
+                                       Keys.verboseLogging: true])
         preferHardwareEncoder = defaults.bool(forKey: Keys.hardware)
         startSharingAtLaunch = defaults.bool(forKey: Keys.autoShare)
         headless = defaults.bool(forKey: Keys.headless)

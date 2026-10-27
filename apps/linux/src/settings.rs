@@ -57,6 +57,8 @@ pub struct Settings {
     pub screen_token: Option<String>,
     /// The release whose "What's new" was last shown (or skipped on a first install).
     pub last_seen_version: Option<String>,
+    /// Verbose logging was switched on once for installs from before it was the default.
+    pub verbose_logging_defaulted: bool,
 }
 
 impl Default for Settings {
@@ -80,7 +82,7 @@ impl Default for Settings {
             send_mic: false,
             virtual_mic: true,
             show_technical_details: false,
-            verbose_logging: false,
+            verbose_logging: true,
             check_for_updates: true,
             beta_updates: false,
             rendezvous_server: String::new(),
@@ -89,6 +91,7 @@ impl Default for Settings {
             relay_password: String::new(),
             screen_token: None,
             last_seen_version: None,
+            verbose_logging_defaulted: false,
         }
     }
 }
@@ -99,10 +102,15 @@ impl Settings {
             tracing::info!("settings: none saved yet, using the defaults");
             return Settings::default();
         };
-        serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+        let mut s: Settings = serde_json::from_slice(&bytes).unwrap_or_else(|e| {
             tracing::warn!("settings: {} couldn't be read ({e}); using the defaults", path().display());
             Settings::default()
-        })
+        });
+        if !s.verbose_logging_defaulted {
+            s.verbose_logging = true;
+            s.verbose_logging_defaulted = true;
+        }
+        s
     }
 
     pub fn save(&self) {
@@ -240,7 +248,7 @@ mod tests {
         assert_eq!(s.quality, 2);
         assert!(s.use_mouse_and_keyboard);
         assert_eq!(s.server(), ANNEX_SERVER);
-        assert!(!s.verbose_logging);
+        assert!(s.verbose_logging);
         assert!(s.last_seen_version.is_none());
         assert!(s.share_sound && s.hear_sound && !s.send_mic && s.virtual_mic);
     }

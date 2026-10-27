@@ -40,8 +40,11 @@ public sealed class AppSettings
     public bool ConnectOverDirectWifi { get; set; }
     /// <summary>Show identity codes, addresses and connection figures (Settings → Developer).</summary>
     public bool ShowTechnicalDetails { get; set; }
-    /// <summary>Settings → Developer: also log each input event and progress step (annex.log grows faster).</summary>
-    public bool VerboseLogging { get; set; }
+    /// <summary>Settings → Developer: also log each input event and progress step (annex.log grows faster). On by
+    /// default, so a first report already says what broke.</summary>
+    public bool VerboseLogging { get; set; } = true;
+    /// <summary>Verbose logging was switched on once for installs from before it was the default.</summary>
+    public bool VerboseLoggingDefaulted { get; set; }
     /// <summary>Look for updates at launch and once a day.</summary>
     public bool CheckForUpdates { get; set; } = true;
     /// <summary>Include pre-releases; off goes back to the latest normal release. Until the user flips
@@ -118,6 +121,11 @@ public sealed class AppSettings
             };
         }
         if (!settings.BetaUpdatesChosen) settings.BetaUpdates = RunningBeta;
+        if (!settings.VerboseLoggingDefaulted)
+        {
+            settings.VerboseLogging = true;
+            settings.VerboseLoggingDefaulted = true;
+        }
         // Checked before the core opens, which creates the identity and the log.
         settings.UsedBefore = File.Exists(FilePath)
             || File.Exists(Path.Combine(MainWindow.DataDirectory, "identity.cert.der"))
