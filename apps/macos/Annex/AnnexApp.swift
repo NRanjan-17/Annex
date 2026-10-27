@@ -97,9 +97,10 @@ final class DockPresence {
     }
 
     private func update() {
-        // Real windows only: not the menu bar panel, PIN panels or alerts.
+        // Real windows only: not the menu bar panel, PIN panels or alerts. A full-screen viewer has
+        // no title bar but counts.
         let open = NSApp.windows.contains { w in
-            w.isVisible && w.styleMask.contains(.titled) && !(w is NSPanel) && w.level == .normal
+            w.isVisible && (w.styleMask.contains(.titled) || w is ViewerWindow) && !(w is NSPanel) && w.level == .normal
         }
         let policy: NSApplication.ActivationPolicy = open ? .regular : .accessory
         // Switching policy (or a window opening while Annex is menu-bar only) takes full screen

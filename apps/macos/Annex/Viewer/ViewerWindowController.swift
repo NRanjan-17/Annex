@@ -15,6 +15,12 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private var loggedFirstFrame = false
     private var loggedBadFrame = false
     private var sized = false
+    /// Full screen, Annex's own: the window covers its screen with the menu bar and Dock hidden.
+    /// macOS full screen moves the window to a Space of its own, and closing it slid back to the
+    /// desktop for over half a second; this opens and closes at once.
+    private(set) var covering = false
+    private var windowedFrame: NSRect?
+    private static let windowedStyle: NSWindow.StyleMask = [.titled, .closable, .resizable, .miniaturizable]
 
     var onClose: (() -> Void)?
 
@@ -22,9 +28,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     init(title: String) {
         // The title bar sits above the picture, not over it: the other computer's top edge (its
         // menu bar, its title bars) stays visible and clickable.
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
-                              styleMask: [.titled, .closable, .resizable, .miniaturizable],
-                              backing: .buffered, defer: false)
+        let window = ViewerWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 720),
+                                  styleMask: Self.windowedStyle, backing: .buffered, defer: false)
         window.title = title
         window.titlebarAppearsTransparent = true
         window.appearance = NSAppearance(named: .darkAqua)
@@ -32,13 +37,18 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         window.collectionBehavior = [.fullScreenPrimary]
         window.backgroundColor = .black
         window.isReleasedWhenClosed = false
+        // No fade: opening and closing are instant (the fade alone was over a quarter of a second).
+        window.animationBehavior = .none
         window.acceptsMouseMovedEvents = true
         window.center()
         super.init(window: window)
+        window.toggle = { [weak self] in self.map { $0.setCovering(!$0.covering) } }
         window.delegate = self
-        window.addTitlebarAccessoryViewController(disconnectAccessory())
+        window.addTitlebarAccessoryViewController(disconnectButton)
         videoView.onLeave = { [weak window] in window?.performClose(nil) }
     }
+
+    private lazy var disconnectButton = disconnectAccessory()
 
     private func disconnectAccessory() -> NSTitlebarAccessoryViewController {
         let button = PointingButton(title: "Disconnect", target: self, action: #selector(disconnect))
@@ -79,17 +89,58 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func show(fullScreen: Bool) {
+        // Become a regular app first: switching while the borderless window is up hides it.
+        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
+        if fullScreen { setCovering(true) }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(videoView)
         NSApp.activate(ignoringOtherApps: true)
-        if fullScreen { window?.toggleFullScreen(nil) }
+    }
+
+    /// In and out of full screen (the green button, ⌃⌘F and View → Enter Full Screen come here).
+    func setCovering(_ on: Bool) {
+        guard let window, on != covering else { return }
+        covering = on
+        if on {
+            windowedFrame = window.frame
+            window.styleMask = [.borderless]
+            window.setFrame((window.screen ?? NSScreen.main)?.frame ?? window.frame, display: true)
+            // There's no title bar, so no Disconnect button: say how to leave.
+            if window.isVisible {
+                videoView.showHUD("Full screen", detail: videoView.controlling ? "Press ⌃⌥⇧Q to disconnect" : "Press Esc to disconnect")
+            }
+        } else {
+            window.styleMask = Self.windowedStyle
+            window.titlebarAppearsTransparent = true
+            // Going borderless drops the title bar's Disconnect button.
+            if !window.titlebarAccessoryViewControllers.contains(disconnectButton) {
+                window.addTitlebarAccessoryViewController(disconnectButton)
+            }
+            if let windowedFrame { window.setFrame(windowedFrame, display: true) }
+        }
+        window.makeFirstResponder(videoView)
+        updatePresentation()
+    }
+
+    /// Hides the menu bar and Dock while the covering window is in front; they come back on hover.
+    /// Auto-hide alone leaves the menu bar showing for a few seconds, so it's hidden first.
+    private func updatePresentation() {
+        guard covering && window?.isKeyWindow == true else {
+            NSApp.presentationOptions = []
+            return
+        }
+        NSApp.presentationOptions = [.hideDock, .hideMenuBar]
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, self.covering, self.window?.isKeyWindow == true else { return }
+            NSApp.presentationOptions = [.autoHideDock, .autoHideMenuBar]
+        }
     }
 
     /// The stream's size, for mapping the pointer through the letterbox.
     func setStreamSize(width: Int, height: Int) {
         videoView.streamSize = CGSize(width: width, height: height)
-        guard let window, width > 0, height > 0, !window.styleMask.contains(.fullScreen) else { return }
+        guard let window, width > 0, height > 0, !covering else { return }
         // Shape the window to the picture, so there are no black bars to resize away. Sized once:
         // a later resolution change keeps the size the user picked.
         let size = NSSize(width: width, height: height)
@@ -112,9 +163,9 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     func setControlling(_ on: Bool, hostName: String) {
         videoView.controlling = on
         if on {
-            videoView.showHUD("Controlling \(hostName)", detail: "Press ⌃⌥⇧Q to leave")
+            videoView.showHUD("Controlling \(hostName)", detail: "Press ⌃⌥⇧Q to disconnect")
         } else {
-            videoView.showHUD("View only", detail: "\(hostName) isn't sharing its keyboard and mouse")
+            videoView.showHUD("View only", detail: "\(hostName) isn't sharing its keyboard and mouse. Esc disconnects.")
         }
     }
 
@@ -153,6 +204,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidBecomeKey(_ notification: Notification) {
         videoView.updatePointerLock()
+        updatePresentation()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -161,6 +213,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         }
         videoView.releaseHeldInput()
         videoView.relative = false  // frees this Mac's pointer
+        covering = false
+        updatePresentation()
         onClose?()
     }
 
@@ -168,6 +222,26 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         // Keys released while another window has focus would otherwise stay down on the host.
         videoView.releaseHeldInput()
         videoView.updatePointerLock()
+        updatePresentation()
+    }
+}
+
+/// The viewer's window. Borderless while covering the screen, so it must say it can take keys,
+/// and full screen means Annex's own (see ViewerWindowController.setCovering).
+final class ViewerWindow: NSWindow {
+    var toggle: (() -> Void)?
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+    override func toggleFullScreen(_ sender: Any?) { toggle?() }
+    /// A borderless window has no close button, and AppKit ignores performClose without one.
+    override func performClose(_ sender: Any?) {
+        if styleMask.contains(.closable) {
+            super.performClose(sender)
+        } else {
+            orderOut(nil)
+            close()
+        }
     }
 }
 
