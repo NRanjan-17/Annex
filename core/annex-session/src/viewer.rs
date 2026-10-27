@@ -429,6 +429,8 @@ async fn run(
         let mut ping = tokio::time::interval(Duration::from_millis(250));
         let mut stats = tokio::time::interval(STATS_INTERVAL);
         stats.tick().await;
+        // annex.log gets one line in five (every 10 s): enough to see where lag came from.
+        let mut stats_ticks = 0u32;
         let mut report = tokio::time::interval(Duration::from_secs(1));
         report.tick().await;
         loop {
@@ -446,6 +448,17 @@ async fn run(
                     let rtt = l.clock.rtt_us().map(|r| r as f64 / 1000.0);
                     if let Some(s) = l.window.take() {
                         drop(l);
+                        stats_ticks += 1;
+                        if stats_ticks % 5 == 1 {
+                            tracing::debug!(
+                                fps = s.fps.round(),
+                                p50_ms = s.p50_ms.round(),
+                                p95_ms = s.p95_ms.round(),
+                                max_ms = s.max_ms.round(),
+                                rtt_ms = rtt.map(f64::round),
+                                "viewer: picture delay"
+                            );
+                        }
                         events(Event::LatencyStats { stats: s, clock_rtt_ms: rtt });
                     }
                 }

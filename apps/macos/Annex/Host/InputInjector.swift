@@ -89,6 +89,9 @@ final class InputInjector: @unchecked Sendable {
             post(mouseType(button, down: down), button: button, clickState: down ? clickCount(button) : lastClick?.count ?? 1)
         case .scroll(let dx, let dy):
             guard let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { return }
+            // Trackpad-style: apps scroll by exactly these pixels instead of animating each event
+            // as a mouse-wheel step, which turns a stream of small scrolls into a laggy judder.
+            e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
             e.flags = flags
             e.post(tap: .cghidEventTap)
         case .key(let usage, let down):
