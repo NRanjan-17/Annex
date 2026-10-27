@@ -1,6 +1,6 @@
-# Annex for Linux: Plan
+# Annex for Linux
 
-Status: **Phase 1 (core) done; Phase 0 under way (Pi 5 done, section 4a); no Linux app yet, so releases don't include Linux.** Scope agreed: View, Share (Mirror, with mouse and keyboard) and Extend, on Wayland and X11, everywhere Tailscale runs on Linux, including NVIDIA (desktop GPUs and Jetson) and Raspberry Pi. Items marked **[VERIFY]** get checked before anything depends on them.
+Status: **The app is built (`apps/linux`): View, Share (Mirror) and Extend. Releases include `.deb`, `.rpm` and `.tar.gz` for x86_64 and arm64.** Tested on a Jetson AGX Thor (GNOME 50) and a Raspberry Pi 5 (labwc); results in section 4a. Scope agreed: View, Share (Mirror, with mouse and keyboard) and Extend, on Wayland and X11, everywhere Tailscale runs on Linux, including NVIDIA (desktop GPUs and Jetson) and Raspberry Pi. Items marked **[VERIFY]** get checked before anything depends on them.
 
 ---
 
@@ -13,14 +13,14 @@ The same Linux systems Tailscale installs on (tailscale.com/docs/install/linux):
 | Debian | Ubuntu, Debian, Raspberry Pi OS, Pop!_OS, Mint, NVIDIA JetPack (Ubuntu) | `.deb` |
 | Red Hat | Fedora, RHEL, CentOS Stream, Rocky, Alma, Oracle Linux, Amazon Linux | `.rpm` |
 | SUSE | openSUSE, SUSE Linux Enterprise | `.rpm` |
-| Others | Arch, NixOS, VMware Photon | Arch `PKGBUILD`, Nix package, `.tar.gz` |
+| Others | Arch, NixOS, VMware Photon | `.tar.gz` (a `PKGBUILD` and Nix package later) |
 
 | CPU | Builds | Typical computers |
 |---|---|---|
 | x86_64 | yes | PCs, laptops, NVIDIA desktop GPUs |
 | arm64 (aarch64) | yes | Raspberry Pi 3/4/5 (64-bit OS), NVIDIA Jetson (Orin, Thor), NVIDIA DGX Spark, ARM laptops |
-| armhf (32-bit ARMv7) | yes | Raspberry Pi 2/3/4/5 on 32-bit Raspberry Pi OS |
-| riscv64 | yes, tier 2 (built and smoke-tested, not hand-tested) | RISC-V boards |
+| armhf (32-bit ARMv7) | from source (section 6a) | Raspberry Pi 2/3/4/5 on 32-bit Raspberry Pi OS |
+| riscv64 | from source, tier 2 | RISC-V boards |
 
 Not targeted: Pi Zero/Pi 1 (ARMv6, too slow for live video) and 32-bit x86.
 
@@ -42,9 +42,9 @@ The Linux app is written in **Rust**, so it uses the core crates directly. There
 ┌──────────────────────── apps/linux (Rust) ─────────────────────────┐
 │  GTK4 window · tray (StatusNotifierItem)                            │
 │        │ Rust calls                                                 │
-│  annex-session · annex-discovery · annex-crypto · annex-update      │
+│  annex-session · annex-discovery · annex-crypto                     │
 │        │ encoded H.264 (Annex B)                                    │
-│  annex-media-linux: GStreamer pipelines, portals, input             │
+│  GStreamer pipelines, Mutter/portals, wlroots protocols, XTest      │
 │    Share:  PipeWire (Wayland) / XShm (X11) → H.264 encoder          │
 │    View:   H.264 decoder → GTK4 paintable                           │
 │    Input:  RemoteDesktop portal (Wayland) / XTest (X11)             │
@@ -66,11 +66,13 @@ The Linux app is written in **Rust**, so it uses the core crates directly. There
 1. **Hardware:**
    - Intel and AMD: VA-API (`vah264enc`/`vah264dec`, or the older `vaapih264enc`).
    - NVIDIA desktop GPUs: NVENC/NVDEC (`nvh264enc`/`nvh264dec`; GStreamer loads the driver's libraries at run time).
-   - NVIDIA Jetson: JetPack's own plugins (`nvv4l2h264enc`/`nvv4l2decoder`). **[VERIFY]** on Thor (JetPack 7).
+   - NVIDIA Jetson: JetPack 6's plugins (`nvv4l2h264enc`/`nvv4l2decoder`). On Thor (JetPack 7) the GPU is a desktop-style one: `nvh264enc` works and `nvv4l2decoder` doesn't.
    - Raspberry Pi 3/4: the V4L2 codec (`v4l2h264enc`/`v4l2h264dec`), up to 1080p. **The Pi 5 has no H.264 hardware at all**, so it encodes and decodes in software.
 2. **Software, if installed:** `openh264enc`/`openh264dec` (Fedora enables Cisco's OpenH264 repository by default), `x264enc`, `avdec_h264`.
 
-Annex links none of these; it loads whatever plugin is there at run time, which is not distribution.
+Annex links none of these; it loads whatever plugin is there at run time, which is not distribution. `ANNEX_ENCODER` / `ANNEX_DECODER` force one by name.
+
+**Decoding prefers `avdec_h264` (slice threads) over hardware when it's installed:** on the Thor it showed frames in p50 12.5 ms against 33 ms for `nvh264dec`, which holds frames back. Hardware decoders follow, then OpenH264. Software encoders stream at 30 fps.
 
 - Fedora's standard Mesa drivers have H.264 turned off for patent reasons. Without RPM Fusion's drivers, a Fedora computer encodes in software: more processor load, so Share and Extend cap at 60 fps and 1080p-class sizes there.
 - Each device gets a size and rate cap from what its encoder manages (for example 1080p30 on a Pi 4 sharing, 1080p60 on a Pi 5 viewing in software). Phase 0 measures these.
@@ -81,9 +83,9 @@ Annex links none of these; it loads whatever plugin is there at run time, which 
 
 | | Wayland: GNOME, KDE | Wayland: wlroots (labwc, Sway) | X11 |
 |---|---|---|---|
-| Capture | ScreenCast portal → PipeWire (`pipewiresrc`) | The compositor's screencopy protocol (`ext-image-copy-capture`, `wlr-screencopy`) for a named output: no picker dialog. The portal (`xdg-desktop-portal-wlr`) only as a fallback | XShm (`ximagesrc`) |
-| Input on the shared screen | RemoteDesktop portal, in the **same** session as capture | wlroots virtual pointer and virtual keyboard protocols (the portal has no RemoteDesktop there); both present in labwc 0.9 | XTest |
-| Permission | One system dialog the first time; Annex keeps the restore token so it doesn't ask again | None | None |
+| Capture | GNOME: Mutter's own ScreenCast D-Bus API (no dialog). KDE and others: ScreenCast portal → PipeWire (`pipewiresrc`) | The compositor's screencopy protocol (`ext-image-copy-capture`, `wlr-screencopy`) for a named output: no picker dialog. The portal (`xdg-desktop-portal-wlr`) only as a fallback | XShm (`ximagesrc`) |
+| Input on the shared screen | GNOME: Mutter RemoteDesktop, same session as capture. Others: RemoteDesktop portal | wlroots virtual pointer and virtual keyboard protocols (the portal has no RemoteDesktop there); both present in labwc 0.9 | XTest |
+| Permission | GNOME none; portal: one system dialog the first time, then the saved restore token | None | None |
 
 Viewer side, both: keys come from GTK as evdev codes and map to USB HID through a new Linux column in `annex-proto/src/keys.rs`. ⌃⌥⇧Q (Ctrl+Alt+Shift+Q) leaves, as on Mac and Windows.
 
@@ -93,15 +95,19 @@ Extend needs a virtual monitor at the viewer's size and refresh rate. Linux has 
 
 | Desktop | Route | Status |
 |---|---|---|
-| KDE Plasma 6, Wayland | ScreenCast portal, source type `VIRTUAL` (4) | **[VERIFY]** |
-| GNOME, Wayland | Portal `VIRTUAL` if offered; otherwise Mutter's `org.gnome.Mutter.ScreenCast` `RecordVirtual` (what GNOME Remote Desktop uses; works outside Flatpak only) | **[VERIFY]** |
-| wlroots (labwc, Sway), Wayland | A headless output, sized with `wlr-output-management` and captured with screencopy. Sway: `swaymsg create_output`. labwc has no IPC: its `VirtualOutputAdd`/`VirtualOutputRemove` actions only run from a key binding, so Annex adds two bindings in `~/.config/labwc/rc.xml` (labwc runs with `-m`, which merges it with the system config) and presses them with a virtual keyboard | **Works on labwc 0.9.7** (Pi 5); Sway **[VERIFY]** |
-| X11 | A real extra output from the `evdi` kernel module (DisplayLink's), set up with xrandr; or a driver's own `VIRTUAL` outputs | **[VERIFY]**; needs `evdi` installed |
+| KDE Plasma 6, Wayland | ScreenCast portal, source type `VIRTUAL` (4) | Built; **[VERIFY]** on a KDE computer |
+| GNOME, Wayland | Mutter's `org.gnome.Mutter.ScreenCast` `RecordVirtual` (what GNOME Remote Desktop uses; works outside Flatpak only) | Built. On the Thor's headless GNOME the display is added but Mutter sends no frames; **[VERIFY]** on a logged-in Ubuntu desktop |
+| wlroots (labwc, Sway), Wayland | A headless output, sized with `wlr-output-management` and captured with screencopy. Sway: `swaymsg create_output`. labwc has no IPC: its `VirtualOutputAdd`/`VirtualOutputRemove` actions only run from a key binding, so Annex adds two bindings in `~/.config/labwc/rc.xml` (labwc runs with `-m`, which merges it with the system config) and presses them with a virtual keyboard | **Works on labwc 0.9.7** (Pi 5); Sway built, **[VERIFY]** |
+| X11 | A real extra output from the `evdi` kernel module (DisplayLink's), set up with xrandr; or a driver's own `VIRTUAL` outputs | **Not built yet**: Share says Extend isn't available |
 | Anything else | Extend off, with a message saying why | n/a |
 
-Phase 0 settles every **[VERIFY]** above before the app is built around it.
+Where Extend isn't available, the Share page says so and viewers get Mirror.
 
-## 4a. Phase 0 results so far
+labwc notes: the virtual keyboard must send the modifier state itself (`wl_keyboard.modifiers`) or labwc ignores the chord; Annex reloads labwc with SIGHUP to its PID (`XDG_CURRENT_DESKTOP` is often empty there, so Annex finds labwc by its process); new outputs start at 0,0, so Annex moves `ANNEX-1` to the right with `wlr-randr --pos`. On a Pi with no monitor attached, labwc drops its placeholder `NOOP-1` once `ANNEX-1` exists, so the Annex display becomes the only screen.
+
+Not built yet: pointer lock in the viewer for Extend (the viewer sends absolute positions), and the update notice.
+
+## 4a. Test results
 
 **Raspberry Pi 5** (Raspberry Pi OS on Debian 13, labwc 0.9.7 on Wayland, GStreamer 1.26, 16 GB):
 
@@ -118,35 +124,65 @@ Phase 0 settles every **[VERIFY]** above before the app is built around it.
 - Decoding a 1080p60 stream: `avdec_h264` about 275 fps, `openh264dec` about 135 fps. Viewing is no problem.
 - So on a Pi 5: View up to 4K; Share and Extend at 1080p60 with x264 installed, 720p30 with OpenH264 only.
 
-Still to measure: Pi 4 (V4L2 hardware encoder), Jetson AGX Thor, DGX Spark, an x86_64 laptop (VA-API, X11), GNOME and KDE virtual monitors.
+**The app on the Pi 5** (labwc, screencopy + x264, virtual pointer and keyboard), viewed from the Mac CLI:
+
+- Mirror: about 30 fps, p50 about 10 ms, p95 60–78 ms (p95 still to tune).
+- Extend: `ANNEX-1` added at the viewer's size, streamed and removed.
+- Found the Thor over the tailnet.
+
+**Jetson AGX Thor** (Ubuntu 26.04, GNOME 50, JetPack 7):
+
+- Viewing a local CLI host: 60 fps, p50 12.5 ms with `avdec_h264`.
+- Mirror through Mutter + `nvh264enc` to the Mac: works, picture checked.
+- Extend: see the GNOME row in section 4.
+
+Still to test: Pi 4 (V4L2 encoder), DGX Spark, an x86_64 Ubuntu laptop (VA-API, X11, GNOME Extend on a real desktop), KDE.
 
 ## 5. Phases
 
-| # | What | Done when | Estimate |
-|---|---|---|---|
-| 0 | **Prove Extend and the encoders.** In a Linux VM: read `AvailableSourceTypes` on GNOME and KDE, try `RecordVirtual`, a wlroots headless output, `evdi` on X11. On real hardware: the encoder on a Pi 4, a Pi 5 and a Jetson, and the size and rate each sustains | A table of what works where, replacing every **[VERIFY]** | 2–3 days |
-| 1 | **Core prep** (testable on the Mac now): evdev key column; let Linux Tailscale peers through (`mesh.rs` `maybe_desktop`); Linux release names in `annex-update`; move `annexb.rs`/`geometry.rs`/`stream_size` out of `annex-media-win` into a shared crate; `annex host --extend` so the CLI can test Extend | `cargo test` passes on all three OSes in CI | 1–2 days |
-| 2 | **App shell:** Nearby, This Computer, Paired Devices, Settings, About; tray; pairing; discovery; CI builds for x86_64, arm64, armhf and riscv64 (`.deb`, `.rpm`, `.tar.gz`) | Installs and pairs with a Mac and a PC on x86_64 and a Pi | 4–5 days |
-| 3 | **View:** decode, window, full screen, input, ⌃⌥⇧Q, pointer lock for Extend | Views a Mac and a PC, Mirror and Extend | 3–4 days |
-| 4 | **Share (Mirror):** portal and X11 capture, encoder choice, input injection | A Mac and a PC view and control it | 4–5 days |
-| 5 | **Extend host + release:** virtual monitor per section 4; packages in `release.yml`; update notice | A Mac and a PC extend onto it | 4–6 days |
-
-About 4–5 weeks in total; the extra week is the wider set of CPUs, packages and desktops.
+| # | What | Status |
+|---|---|---|
+| 0 | Prove Extend and the encoders | Pi 5 and Thor done (section 4a); Pi 4, Spark, laptop, KDE to do |
+| 1 | Core prep: evdev key column, Linux Tailscale peers, shared media crate, `annex host --extend` | Done |
+| 2 | App shell: Nearby, Share, Paired Devices, Settings, About; tray; pairing; packages | Done |
+| 3 | View: decode, window, full screen, input, ⌃⌥⇧Q | Done; pointer lock for Extend to do |
+| 4 | Share (Mirror): Mutter, portal, screencopy and X11 capture; encoder choice; input | Done |
+| 5 | Extend host + release | labwc works; GNOME, KDE, Sway built; X11 and the update notice to do |
 
 ## 6. Releases
 
-Releases build Linux packages from **Phase 2** on, when there is an app to package. Until then
-`release.yml` builds only the Mac `.dmg` and the Windows installers; CI already builds and tests the
-Rust core on Ubuntu for every push.
+Every release (`release.yml`) and every CI run (`ci.yml`) builds on Ubuntu 22.04, the oldest supported system, for x86_64 and arm64:
 
-From Phase 2, every release adds, for x86_64, arm64, armhf and riscv64:
-
-- `Annex-<version>-linux-<arch>.deb` (Ubuntu, Debian, Raspberry Pi OS, JetPack, DGX OS)
+- `Annex-<version>-linux-<arch>.deb` (Ubuntu, Debian, Raspberry Pi OS, JetPack, DGX OS, Mint, Pop!_OS)
 - `Annex-<version>-linux-<arch>.rpm` (Fedora, RHEL and its relatives, openSUSE, Amazon, Oracle)
-- `Annex-<version>-linux-<arch>.tar.gz` (Arch `PKGBUILD`, NixOS, Photon, anything else)
+- `Annex-<version>-linux-<arch>.tar.gz` (Arch, NixOS, Photon, anything else)
 
-They're listed in the signed `SHA256SUMS.txt` like the Mac and Windows files, and the app's update
-check (`annex-update`) offers the file for its own package type and CPU.
+CI installs the `.deb` and runs `annex --version` before uploading. The files are listed in the signed `SHA256SUMS.txt` like the Mac and Windows files. `scripts/package-linux.sh <version>` builds all three on the computer it runs on.
+
+### Install
+
+```sh
+# Ubuntu, Debian, Raspberry Pi OS, JetPack, DGX OS
+sudo apt install ./Annex-<version>-linux-arm64.deb     # or -x86_64
+# Fedora, RHEL, openSUSE (H.264: openh264 from Fedora's Cisco repo, or RPM Fusion / Packman)
+sudo dnf install ./Annex-<version>-linux-x86_64.rpm
+# Anything else: unpack and run bin/annex (needs GTK ≥ 4.6 and GStreamer ≥ 1.20 with plugins)
+tar xf Annex-<version>-linux-x86_64.tar.gz
+```
+
+Options: `annex --share` starts sharing, `annex --connect <address or code> [--extend]` connects, `annex --background` starts in the tray.
+
+## 6a. Building
+
+```sh
+# Ubuntu / Debian
+sudo apt install build-essential pkg-config libgtk-4-dev libgstreamer1.0-dev \
+  libgstreamer-plugins-base1.0-dev libxkbcommon-dev libdbus-1-dev \
+  gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-pipewire
+cd apps/linux && cargo build --release      # → target/release/annex
+```
+
+armhf (32-bit Raspberry Pi OS) and riscv64 build the same way on the device itself; there are no prebuilt packages for them yet.
 
 ## 7. Risks
 
@@ -155,7 +191,7 @@ check (`annex-update`) offers the file for its own package type and CPU.
 | Virtual monitors not available on a desktop | No Extend there | Phase 0 first; a clear message otherwise |
 | No hardware H.264 (Fedora, some VMs) | Software encode: higher processor load | Cap at 60 fps; say so in Settings |
 | Pointer lock on Wayland | GTK4 has no API for it; Extend's relative pointer needs the pointer-constraints protocol through `gdk-wayland` | Build it in phase 3; fall back to absolute moves |
-| Testing | No Linux machine here; the Mac can run an arm64 VM (GNOME Shell runs headless with virtual monitors) | VM for daily checks; a real computer for GPU encode, X11 and sign-off |
-| Packaging | System GStreamer makes AppImage a poor fit | `.deb`, `.rpm`, `.tar.gz` and an Arch `PKGBUILD` for four CPUs; Flatpak later. Updates: a notice with a download link, no self-install |
+| Testing | Headless test computers miss things a real desktop shows (GNOME Extend) | A Lima VM (Ubuntu 22.04) for builds; the Thor and the Pi over Tailscale; a logged-in laptop for sign-off |
+| Packaging | System GStreamer makes AppImage a poor fit | `.deb`, `.rpm`, `.tar.gz` for x86_64 and arm64; Flatpak later. Updates: a notice with a download link, no self-install (to do) |
 | Raspberry Pi 5 | No H.264 hardware: software encode and decode | Lower caps on the Pi 5; later, HEVC viewing (the Pi 5 decodes HEVC in hardware; the core already negotiates it) |
-| 32-bit and RISC-V builds | Slow emulated CI builds; few testers | Cross-compile in CI; riscv64 is tier 2 |
+| 32-bit and RISC-V builds | Slow emulated CI builds; few testers | Build from source for now; riscv64 is tier 2 |

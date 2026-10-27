@@ -66,8 +66,21 @@ computers can't find this PC.
 
 ### Linux
 
-Coming: View, Share and Extend on Ubuntu, Debian, Raspberry Pi OS, Fedora and more, on x86_64 and
-ARM (including Raspberry Pi and NVIDIA Jetson). Progress: [docs/LINUX.md](docs/LINUX.md).
+Download the package for your system and CPU (`x86_64` for PCs, `arm64` for Raspberry Pi 4/5 on
+64-bit Raspberry Pi OS, NVIDIA Jetson and DGX Spark):
+
+```sh
+sudo apt install ./Annex-<version>-linux-arm64.deb    # Ubuntu, Debian, Raspberry Pi OS, JetPack, DGX OS
+sudo dnf install ./Annex-<version>-linux-x86_64.rpm   # Fedora, RHEL, openSUSE
+```
+
+Other distributions: unpack the `.tar.gz` and run `bin/annex`. Open **Annex** from the app menu; it
+adds a tray icon where the desktop has a tray (KDE, Raspberry Pi OS, Ubuntu's GNOME).
+
+View and Share are tested on GNOME (NVIDIA Jetson) and Raspberry Pi OS's labwc; KDE, Sway and X11
+are built but not yet tested. Extend works on labwc; GNOME, KDE and Sway are built and still being
+checked, and X11 has none yet. Details:
+[docs/LINUX.md](docs/LINUX.md).
 
 ## Quick start
 
