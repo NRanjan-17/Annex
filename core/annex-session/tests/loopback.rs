@@ -53,7 +53,8 @@ fn channel_sink() -> (EventSink, mpsc::UnboundedReceiver<Event>) {
 }
 
 async fn wait_for(rx: &mut mpsc::UnboundedReceiver<Event>, pred: impl Fn(&Event) -> bool) -> Event {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    // Generous: CI runners are slow and run every test at once.
+    tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let e = rx.recv().await.expect("event channel closed");
             if pred(&e) {
@@ -1033,7 +1034,9 @@ async fn a_cancelled_file_leaves_nothing_behind() {
     };
     wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await;
     let file = src.path().join("big.bin");
-    std::fs::write(&file, noise(400 << 20)).unwrap();
+    // Big enough to still be arriving when it's cancelled; one noise block repeated, since making
+    // 400 MB of noise byte by byte takes seconds in a debug build.
+    std::fs::write(&file, noise(1 << 20).repeat(400)).unwrap();
     viewer.send_file(&file).unwrap();
     let Event::TransferProgress { id, .. } =
         wait_for(&mut hrx, |e| matches!(e, Event::TransferProgress { incoming: true, .. })).await
