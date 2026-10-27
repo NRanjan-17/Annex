@@ -494,19 +494,33 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome
     let host_event = match viewer_event {
         Some(Event::SessionStarted { .. }) => {
             let started = next_matching(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await;
-            // About a second, so the relay is refreshed (with new nonces) while frames flow.
-            for i in 0..20 {
-                host.submit_frame(&[7u8; 4000], clock::now_us(), i == 0);
+            // About a second, so the relay is refreshed (with new nonces) while frames flow. Like a
+            // real encoder, answer keyframe requests: the host asks for one just after the session
+            // starts and drops deltas until it gets it, so on a busy machine frame 0 can come too
+            // early to count.
+            let mut scale = None;
+            let mut keyframe = true;
+            for _ in 0..20 {
+                host.submit_frame(&[7u8; 4000], clock::now_us(), std::mem::take(&mut keyframe));
                 tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            // The encoder's starting rate is set just after the session starts.
-            while let Ok(e) = hrx.try_recv() {
-                if let Event::BitrateHint { scale_percent, .. } = e {
-                    host_scale = scale_percent;
-                    break;
+                while let Ok(e) = hrx.try_recv() {
+                    match e {
+                        Event::KeyframeRequested { .. } => keyframe = true,
+                        // The encoder's starting rate is set just after the session starts.
+                        Event::BitrateHint { scale_percent, .. } if scale.is_none() => scale = Some(scale_percent),
+                        _ => {}
+                    }
                 }
             }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            while let Ok(e) = hrx.try_recv() {
+                if let Event::BitrateHint { scale_percent, .. } = e
+                    && scale.is_none()
+                {
+                    scale = Some(scale_percent);
+                }
+            }
+            host_scale = scale.unwrap_or(host_scale);
             started
         }
         _ => None,
