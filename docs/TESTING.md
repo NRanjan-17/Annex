@@ -34,7 +34,7 @@ macOS 27.0.1 (Apple Silicon), Xcode 27.1, Rust 1.99.1:
 The Linux app takes options, so it can be tested on a headless computer:
 
 - `annex --share` starts sharing at launch; `annex --connect <address or code> [--extend]` connects.
-- Pair once by hand, or put the other side's fingerprint in `<data>/trusted_peers.json`.
+- Pair with `annex --headless`: read the PIN from `<data>/pairing-pin.txt` over SSH. Tested on the Pi 5 from the Mac CLI (`annex viewer <address> --control`): paired, streamed, and control allowed without a prompt.
 - View it from the Mac with the CLI: `core/target/release/annex viewer <address> --seconds 20`.
 - GNOME with no monitor: `gnome-shell --headless --virtual-monitor 1920x1080` inside
   `dbus-run-session`, with `GDK_DEBUG=no-portals`. GNOME Extend doesn't send frames there, so test

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,6 +20,9 @@ pub enum TrustPolicy {
     AcceptAllInsecure,
 }
 
+/// The file a headless computer shows its pairing PIN in.
+pub const PIN_FILE: &str = "pairing-pin.txt";
+
 /// Failed pairing attempts allowed within [`FAILURE_WINDOW`] before pairing is locked.
 pub const MAX_PAIRING_FAILURES: usize = 5;
 pub const FAILURE_WINDOW: Duration = Duration::from_secs(10 * 60);
@@ -34,6 +37,9 @@ pub struct Core {
     pending: Mutex<HashMap<u64, oneshot::Sender<Option<String>>>>,
     next_request: AtomicU64,
     failures: Mutex<VecDeque<Instant>>,
+    data_dir: Option<PathBuf>,
+    /// Nobody watches this computer's screen (see [`Core::set_headless`]).
+    headless: AtomicBool,
 }
 
 impl Core {
@@ -51,15 +57,21 @@ impl Core {
     ) -> Result<Arc<Self>, SessionError> {
         let identity = Identity::load_or_create_with(data_dir, storage)?;
         let trust = TrustStore::open(&data_dir.join("trusted_peers.json"))?;
-        Ok(Self::new(identity, trust, device_name, policy))
+        Ok(Self::new(identity, trust, device_name, policy, Some(data_dir.to_path_buf())))
     }
 
     /// Fresh in-memory identity and trust store.
     pub fn ephemeral(device_name: &str, policy: TrustPolicy) -> Result<Arc<Self>, SessionError> {
-        Ok(Self::new(Identity::generate()?, TrustStore::in_memory(), device_name, policy))
+        Ok(Self::new(Identity::generate()?, TrustStore::in_memory(), device_name, policy, None))
     }
 
-    fn new(identity: Identity, trust: TrustStore, device_name: &str, policy: TrustPolicy) -> Arc<Self> {
+    fn new(
+        identity: Identity,
+        trust: TrustStore,
+        device_name: &str,
+        policy: TrustPolicy,
+        data_dir: Option<PathBuf>,
+    ) -> Arc<Self> {
         Arc::new(Core {
             identity,
             trust: Mutex::new(trust),
@@ -68,6 +80,8 @@ impl Core {
             pending: Mutex::new(HashMap::new()),
             next_request: AtomicU64::new(1),
             failures: Mutex::new(VecDeque::new()),
+            data_dir,
+            headless: AtomicBool::new(false),
         })
     }
 
@@ -89,6 +103,23 @@ impl Core {
         let name = clean_name(name);
         *self.device_name.lock().unwrap() = name.clone();
         name
+    }
+
+    /// Headless: nobody is at this computer's screen (a Raspberry Pi or a server reached over SSH).
+    /// While on, a pairing PIN is also written to [`Core::pin_file`] for whoever is logged in over
+    /// SSH to read, and paired devices may use the mouse and keyboard without being allowed one by
+    /// one. Off by default.
+    pub fn set_headless(&self, on: bool) {
+        self.headless.store(on, Ordering::Relaxed);
+    }
+
+    pub fn headless(&self) -> bool {
+        self.headless.load(Ordering::Relaxed)
+    }
+
+    /// Where a headless computer writes the PIN while pairing: `<data>/pairing-pin.txt`.
+    pub fn pin_file(&self) -> Option<PathBuf> {
+        self.data_dir.as_ref().map(|d| d.join(PIN_FILE))
     }
 
     pub fn policy(&self) -> TrustPolicy {
@@ -122,10 +153,10 @@ impl Core {
         Ok(self.trust.lock().unwrap().set_allow_input(fingerprint, allow)?)
     }
 
-    /// Whether a device may control this computer. Never true for untrusted devices, including
-    /// under `AcceptAllInsecure`.
+    /// Whether a device may control this computer: allowed one by one, or any paired device when
+    /// headless. Never true for untrusted devices, including under `AcceptAllInsecure`.
     pub fn allows_input(&self, fingerprint: &str) -> bool {
-        self.trust.lock().unwrap().get(fingerprint).is_some_and(|p| p.allow_input)
+        self.trust.lock().unwrap().get(fingerprint).is_some_and(|p| p.allow_input || self.headless())
     }
 
     /// Revokes a peer. Returns true if it was trusted.

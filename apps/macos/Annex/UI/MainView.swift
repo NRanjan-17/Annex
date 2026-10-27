@@ -1002,6 +1002,9 @@ private struct SettingsPage: View {
                 GroupRow(title: err, status: .symbol("exclamationmark.triangle.fill", .orange))
             }
             ToggleRow(title: "Start sharing when Annex opens", isOn: $settings.startSharingAtLaunch)
+            ToggleRow(title: "No one at this screen",
+                      subtitle: "For a Mac reached over SSH: pairing PINs also go to pairing-pin.txt in Annex's data folder, and paired devices can control it without asking.",
+                      isOn: $settings.headless)
             GroupRow(title: "Quality", subtitle: "Use Fast if the picture stutters on Wi-Fi.") {
                 Picker("", selection: $settings.quality) {
                     Text("Best").tag(0)
@@ -1164,8 +1167,11 @@ private struct DeviceGroup: View {
                 Button("Remove…", role: .destructive) { confirmRemove = true }
                     .pointingHand()
             }
+            // Headless lets every paired device control this Mac.
             ToggleRow(title: "Can use this Mac's mouse and keyboard",
-                      isOn: Binding(get: { peer.allowInput }, set: { model.setAllowInput(peer, $0) }))
+                      subtitle: model.settings.headless ? "Allowed while No one at this screen is on." : nil,
+                      isOn: Binding(get: { model.settings.headless || peer.allowInput }, set: { model.setAllowInput(peer, $0) }),
+                      disabled: model.settings.headless)
         }
         .confirmationDialog("Remove \(peer.name)?", isPresented: $confirmRemove) {
             Button("Remove", role: .destructive) { model.revoke(peer) }

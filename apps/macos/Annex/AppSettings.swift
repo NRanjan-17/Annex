@@ -10,6 +10,9 @@ final class AppSettings: ObservableObject {
 
     @Published var preferHardwareEncoder: Bool { didSet { defaults.set(preferHardwareEncoder, forKey: Keys.hardware) } }
     @Published var startSharingAtLaunch: Bool { didSet { defaults.set(startSharingAtLaunch, forKey: Keys.autoShare) } }
+    /// Nobody at this Mac's screen: pairing PINs also go to `pairing-pin.txt` in the data folder, and
+    /// paired devices may control it without asking. Over SSH: `defaults write com.nranjan-17.annex headless -bool true`.
+    @Published var headless: Bool { didSet { defaults.set(headless, forKey: Keys.headless) } }
     /// Viewer: ask hosts to let this Mac's mouse and keyboard control them. On by default: the
     /// sharing computer still decides per device, so asking is harmless.
     @Published var controlWhenViewing: Bool { didSet { defaults.set(controlWhenViewing, forKey: Keys.control) } }
@@ -57,6 +60,7 @@ final class AppSettings: ObservableObject {
     private enum Keys {
         static let hardware = "preferHardwareEncoder"
         static let autoShare = "startSharingAtLaunch"
+        static let headless = "headless"
         static let control = "useMouseAndKeyboard"
         static let fullScreen = "openFullScreen"
         static let extend = "extendByDefault"
@@ -91,6 +95,7 @@ final class AppSettings: ObservableObject {
                                        Keys.peerToPeer: true])
         preferHardwareEncoder = defaults.bool(forKey: Keys.hardware)
         startSharingAtLaunch = defaults.bool(forKey: Keys.autoShare)
+        headless = defaults.bool(forKey: Keys.headless)
         controlWhenViewing = defaults.bool(forKey: Keys.control)
         openFullScreen = defaults.bool(forKey: Keys.fullScreen)
         extendByDefault = defaults.bool(forKey: Keys.extend)

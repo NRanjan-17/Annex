@@ -160,6 +160,7 @@ public sealed partial class MainWindow : Window
             RefreshMonitors();
             // Show up under Nearby on other computers as soon as Annex is open.
             _core.SetPresence(true);
+            _core.SetHeadless(_settings.Headless);
             _extendStatus = TryExtendStatus();
             _ = CheckFirewallAsync();
             StartUpdateChecks();
@@ -1236,8 +1237,13 @@ public sealed partial class MainWindow : Window
             _settings.ConnectOverDirectWifi, on => { _settings.ConnectOverDirectWifi = on; _settings.Save(); }));
         if (peer.Fingerprint is { } fp && _trusted.FirstOrDefault(t => t.Fingerprint == fp) is { } trusted)
         {
-            stack.Children.Add(SmallSwitch("Can use this PC's mouse and keyboard", "When it shows this PC's screen.",
-                trusted.AllowInput, on => { _core?.SetAllowInput(trusted.Fingerprint, on); RefreshTrusted(); }));
+            // Headless lets every paired device control this PC.
+            var control = SmallSwitch("Can use this PC's mouse and keyboard",
+                _settings.Headless ? "Allowed while No one at this screen is on." : "When it shows this PC's screen.",
+                _settings.Headless || trusted.AllowInput, on => { _core?.SetAllowInput(trusted.Fingerprint, on); RefreshTrusted(); });
+            control.IsHitTestVisible = !_settings.Headless;
+            control.Opacity = _settings.Headless ? 0.6 : 1;
+            stack.Children.Add(control);
             var foot = new Grid();
             foot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             foot.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -1606,6 +1612,9 @@ public sealed partial class MainWindow : Window
             Ui.Switch(AppSettings.StartWithWindows, on => AppSettings.StartWithWindows = on)));
         p.Children.Add(Ui.Card("", "Start sharing when Annex opens", null,
             Ui.Switch(_settings.StartSharingAtLaunch, on => { _settings.StartSharingAtLaunch = on; _settings.Save(); })));
+        p.Children.Add(Ui.Card("", "No one at this screen",
+            "For a PC reached remotely: pairing PINs also go to pairing-pin.txt in Annex's data folder, and paired devices can control it without asking.",
+            Ui.Switch(_settings.Headless, on => { _settings.Headless = on; _settings.Save(); _core?.SetHeadless(on); RefreshTrusted(); })));
         p.Children.Add(Ui.Card("", "Quality",
             "Use Fast if the picture stutters on Wi-Fi.", quality));
         p.Children.Add(Ui.Card("", "Control the other computer",
@@ -1660,11 +1669,12 @@ public sealed partial class MainWindow : Window
             var remove = new Button { Content = "Remove…" };
             remove.Click += async (_, _) => await ConfirmRemove(peer);
             p.Children.Add(Ui.Card("", peer.Name, LastSeen(peer), remove));
-            p.Children.Add(Ui.Card("", "Can use this PC's mouse and keyboard", null, Ui.Switch(peer.AllowInput, on =>
+            p.Children.Add(Ui.Card("", "Can use this PC's mouse and keyboard",
+                _settings.Headless ? "Allowed while No one at this screen is on." : null, Ui.Switch(_settings.Headless || peer.AllowInput, on =>
             {
                 _core?.SetAllowInput(peer.Fingerprint, on);
                 RefreshTrusted();
-            })));
+            }, enabled: !_settings.Headless)));
             // A gap keeps each device in its own group.
             p.Children.Add(new Border { Height = 10 });
         }

@@ -186,6 +186,7 @@ impl Model {
                 (Core::ephemeral(&name, TrustPolicy::Pair).expect("in-memory identity"), Some(err))
             }
         };
+        core.set_headless(settings.headless);
         let model = Rc::new(RefCell::new(Model {
             rt,
             core,

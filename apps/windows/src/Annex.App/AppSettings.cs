@@ -15,6 +15,9 @@ public sealed class AppSettings
     /// <summary>Graphics card for sharing (adapter LUID); 0 = automatic.</summary>
     public ulong GpuLuid { get; set; }
     public bool StartSharingAtLaunch { get; set; }
+    /// <summary>Nobody at this PC's screen: pairing PINs also go to pairing-pin.txt in the data folder, and
+    /// paired devices may control it without asking. Over SSH: set "Headless": true in settings.json.</summary>
+    public bool Headless { get; set; }
     /// <summary>Viewer: ask hosts to let this PC's mouse and keyboard control them. On by default: the
     /// sharing computer still decides per device (Paired devices), so asking is harmless.</summary>
     public bool UseMouseAndKeyboard { get; set; } = true;

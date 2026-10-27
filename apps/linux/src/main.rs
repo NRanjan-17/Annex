@@ -32,12 +32,15 @@ struct Opts {
     background: bool,
     /// Share this screen right away.
     share: bool,
+    /// Nobody at this screen: turn on (and keep) the headless setting.
+    headless: bool,
     /// Connect to this address (or code) right away; `--extend` to use it as a display.
     connect: Option<String>,
     extend: bool,
 }
 
-const USAGE: &str = "Usage: annex [--background] [--share] [--connect <address | code> [--extend]] [--version]";
+const USAGE: &str =
+    "Usage: annex [--background] [--share] [--headless] [--connect <address | code> [--extend]] [--version]";
 
 fn main() -> glib::ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -47,6 +50,7 @@ fn main() -> glib::ExitCode {
         match a.as_str() {
             "--background" => opts.background = true,
             "--share" => opts.share = true,
+            "--headless" => opts.headless = true,
             "--extend" => opts.extend = true,
             "--connect" => opts.connect = it.next().cloned(),
             "--version" => {
@@ -141,6 +145,15 @@ fn start(app: &gtk::Application, opts: Opts) {
     app.add_action(&quit_action);
     app.set_accels_for_action("app.quit", &["<Control>q"]);
 
+    if opts.headless && !model.borrow().settings.headless {
+        let mut m = model.borrow_mut();
+        m.settings.headless = true;
+        m.core.set_headless(true);
+        m.save_settings();
+    }
+    if let Some(file) = model.borrow().core.pin_file().filter(|_| model.borrow().settings.headless) {
+        tracing::info!("headless: pairing PINs appear in {}", file.display());
+    }
     if opts.share || model.borrow().settings.start_sharing_at_launch {
         ui::act(app, &model, |m| m.set_hosting(true));
     }

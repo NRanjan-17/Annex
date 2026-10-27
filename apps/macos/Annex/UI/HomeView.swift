@@ -446,8 +446,10 @@ private struct PeerCard: View {
                           isOn: $model.useDirectWiFi)
                     .disabled(model.isViewing)
                 if let trusted {
-                    SwitchRow(title: "Can use this Mac's mouse and keyboard", text: "When it shows this Mac's screen.",
-                              isOn: Binding(get: { trusted.allowInput }, set: { model.setAllowInput(trusted, $0) }))
+                    SwitchRow(title: "Can use this Mac's mouse and keyboard",
+                              text: model.settings.headless ? "Allowed while No one at this screen is on." : "When it shows this Mac's screen.",
+                              isOn: Binding(get: { model.settings.headless || trusted.allowInput }, set: { model.setAllowInput(trusted, $0) }))
+                        .disabled(model.settings.headless)
                     HStack {
                         Text(lastConnected(trusted)).font(.system(size: 11)).foregroundStyle(.secondary)
                         Spacer()

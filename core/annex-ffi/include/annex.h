@@ -75,6 +75,9 @@ char *annex_core_set_device_name(const AnnexCore *core, const char *name);
 /* Host: lets a trusted device control this computer's mouse and keyboard (off by default).
  * Returns 1 if changed, 0 if the device isn't trusted. Running sessions follow within ~1 s. */
 int32_t annex_core_set_allow_input(const AnnexCore *core, const char *fingerprint, bool allow);
+/* Headless (nobody at this screen): pairing PINs also go to <data>/pairing-pin.txt and paired
+ * devices may use the mouse and keyboard without being allowed one by one. Returns 0. */
+int32_t annex_core_set_headless(const AnnexCore *core, bool on);
 /* This platform's key code (macOS virtual key code / Windows scancode, 0xE0xx = extended) for a
  * HID usage from an "input" event, or -1 if there is no such key. */
 int32_t annex_key_native_from_hid(uint16_t usage);
