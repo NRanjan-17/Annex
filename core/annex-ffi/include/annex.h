@@ -62,7 +62,7 @@ char *annex_core_device_name(const AnnexCore *core);
 char *annex_core_trusted_peers_json(const AnnexCore *core);
 /* Returns 1 if removed, 0 if not trusted. */
 int32_t annex_core_untrust(const AnnexCore *core, const char *fingerprint);
-/* Writes the core's log to <data_dir>/annex.log while enabled. Off by default. */
+/* Writes the core's log to <data_dir>/annex.log while enabled. On by default. */
 void annex_set_log_enabled(bool enabled);
 /* Writes one line from the app to the log while it's on: level 0 = info, 1 = warning, 2 = error. */
 void annex_log(int32_t level, const char *message);

@@ -28,7 +28,6 @@ Get-ChildItem $dir | Select-Object Name, Length | Out-File (Join-Path $OutDir "i
 $started = Get-Date
 # Self-test mode: the app also opens every page twice and leaves a marker file when done.
 $env:ANNEX_SELFTEST = "1"
-$env:ANNEX_LOG = "1"   # the log is off by default; on for the test
 $marker = "$env:LOCALAPPDATA\Annex\selftest-ok"
 Remove-Item $marker -ErrorAction SilentlyContinue
 $app = Start-Process $exe -PassThru

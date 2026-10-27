@@ -468,7 +468,15 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.show_technical_details,
         Box::new(|m, on| m.settings.show_technical_details = on),
     );
-    toggle(&b, "Save a log (after Annex restarts)", s.save_log, Box::new(|m, on| m.settings.save_log = on));
+    let log = crate::settings::data_dir().join("annex.log");
+    b.append(&label(
+        &format!(
+            "Annex always keeps a log at {}. It stays on this computer; Annex never sends it \
+             anywhere. If something goes wrong, attach it to a bug report.",
+            log.display()
+        ),
+        "dim",
+    ));
     b
 }
 

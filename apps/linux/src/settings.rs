@@ -27,7 +27,6 @@ pub struct Settings {
     /// Sharing: use the graphics chip's video encoder when there is one.
     pub prefer_hardware_encoder: bool,
     pub show_technical_details: bool,
-    pub save_log: bool,
     pub check_for_updates: bool,
     pub beta_updates: bool,
     /// Empty: Annex's server.
@@ -52,7 +51,6 @@ impl Default for Settings {
             extend_by_default: false,
             prefer_hardware_encoder: true,
             show_technical_details: false,
-            save_log: false,
             check_for_updates: true,
             beta_updates: false,
             rendezvous_server: String::new(),

@@ -41,8 +41,6 @@ public sealed class AppSettings
     public string? DismissedUpdate { get; set; }
     /// <summary>When Annex last finished checking for updates (shown on the About page).</summary>
     public DateTimeOffset? LastUpdateCheck { get; set; }
-    /// <summary>Write annex.log for bug reports. Off by default.</summary>
-    public bool SaveLog { get; set; }
     /// <summary>Viewer: bitrate ceiling asked of hosts (Fast suits Wi-Fi).</summary>
     public Annex.Interop.Quality Quality { get; set; } = Annex.Interop.Quality.Best;
     /// <summary>The rendezvous server (wss://…) that swaps the two computers' addresses; empty = Annex's.</summary>

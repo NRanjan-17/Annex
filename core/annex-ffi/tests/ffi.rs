@@ -178,6 +178,10 @@ fn host_and_viewer_through_c_abi() {
         annex_core_free(host_core);
         annex_core_free(viewer_core);
         drop((hs, vs));
+
+        // The log is on without anyone turning it on.
+        let log = std::fs::read_to_string(dir.path().join("annex.log")).unwrap();
+        assert!(log.contains("annex core started"), "{log}");
     }
 }
 

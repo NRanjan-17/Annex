@@ -88,7 +88,7 @@ public static class AnnexNative
     public static void VerifyUpdate(string sumsPath, string sigPath, string filePath, string assetName) =>
         NativeMethods.Check(NativeMethods.annex_update_verify(sumsPath, sigPath, filePath, assetName));
 
-    /// <summary>Writes the core's log to annex.log in the data folder while on. Off by default.</summary>
+    /// <summary>Writes the core's log to annex.log in the data folder while on. On by default.</summary>
     public static void SetLogEnabled(bool enabled) => NativeMethods.annex_set_log_enabled(enabled);
 
     public static IReadOnlyList<MonitorInfo> Monitors() =>
