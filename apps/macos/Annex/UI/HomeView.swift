@@ -31,6 +31,7 @@ struct HomeView: View {
                 SessionStrip(model: model)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
+            SameNameNotice(model: model) { model.pane = .settings }
             HStack(alignment: .top, spacing: 18) {
                 VStack(alignment: .leading, spacing: 10) {
                     if !visible.isEmpty { SearchStatus(model: model, found: visible.count) }
@@ -322,7 +323,7 @@ private struct NearbyList: View {
         ScrollView {
             LazyVStack(spacing: 6) {
                 ForEach(peers) { peer in
-                    NearbyRow(peer: peer, paired: model.isPaired(peer), selected: selectedID == peer.id,
+                    NearbyRow(peer: peer, name: model.label(peer.name), paired: model.isPaired(peer), selected: selectedID == peer.id,
                               select: { selectedID = selectedID == peer.id ? nil : peer.id },
                               connect: { connect(peer) })
                 }
@@ -334,6 +335,7 @@ private struct NearbyList: View {
 
 private struct NearbyRow: View {
     let peer: PeerInfo
+    let name: String
     let paired: Bool
     let selected: Bool
     let select: () -> Void
@@ -349,7 +351,7 @@ private struct NearbyRow: View {
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(selected ? Color.black.opacity(0.08) : Color.white.opacity(0.07)))
             VStack(alignment: .leading, spacing: 2) {
-                Text(peer.name).font(.system(size: 13.5, weight: .semibold))
+                Text(name).font(.system(size: 13.5, weight: .semibold))
                 Text(peer.isSharing ? (paired ? "Paired" : "New · PIN needed") : "Not sharing")
                     .font(.system(size: 11.5))
                     .foregroundStyle(selected ? Color.black.opacity(0.6) : Color.secondary)
@@ -371,7 +373,7 @@ private struct NearbyRow: View {
         .onTapGesture(perform: select)
         .onHover { hovered = $0 }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(peer.name), \(PeerLook.status(peer, paired: paired))")
+        .accessibilityLabel("\(name), \(PeerLook.status(peer, paired: paired))")
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
         .accessibilityAction(.default, select)
         .accessibilityAction(named: "Connect", connect)
@@ -410,7 +412,7 @@ private struct PeerCard: View {
                     .accessibilityLabel("Close")
             }
             VStack(alignment: .leading, spacing: 6) {
-                Text(peer.name).font(.system(size: 22, weight: .semibold, design: .rounded)).lineLimit(2)
+                Text(model.label(peer.name)).font(.system(size: 22, weight: .semibold, design: .rounded)).lineLimit(2)
                 HStack(spacing: 6) {
                     Text(trusted != nil ? "Paired" : "New · asks for a PIN the first time")
                         .font(.system(size: 12)).foregroundStyle(.secondary)
@@ -558,9 +560,14 @@ private struct SessionStrip: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     LiveDot()
-                    Text("LIVE").font(.system(size: 10.5, weight: .bold)).tracking(1.4).foregroundStyle(Color.annexLive)
+                    Text(eyebrow).font(.system(size: 10.5, weight: .bold)).tracking(1.4).foregroundStyle(Color.annexLive)
                 }
-                Text(title).font(.system(size: 18, weight: .semibold, design: .rounded)).lineLimit(1)
+                if let role = model.sessionRole {
+                    RoleFlow(model: model, role: role).padding(.vertical, 2)
+                } else {
+                    Text(model.viewerStatus ?? "Connecting…")
+                        .font(.system(size: 18, weight: .semibold, design: .rounded)).lineLimit(1)
+                }
                 Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -592,12 +599,8 @@ private struct SessionStrip: View {
         return []
     }
 
-    private var title: String {
-        if model.isViewing { return model.viewerStatus ?? "Connected" }
-        let s = model.hostStatus
-        if let name = s.extendViewers.first { return "Extending onto \(name)" }
-        if let name = s.mirrorViewers.first { return "\(name) is viewing this screen" }
-        return "Connected"
+    private var eyebrow: String {
+        model.sessionRole.map { "LIVE · \($0.headline.uppercased())" } ?? "LIVE"
     }
 
     private var subtitle: String {
@@ -607,7 +610,7 @@ private struct SessionStrip: View {
         }
         if !model.hostStatus.extendViewers.isEmpty { return "Arrange it in System Settings → Displays" }
         let controllers = model.hostStatus.controllingViewers
-        if !controllers.isEmpty { return "\(controllers.joined(separator: ", ")) can use your mouse and keyboard" }
+        if !controllers.isEmpty { return "\(controllers.map(model.label).joined(separator: ", ")) can use your mouse and keyboard" }
         return "View only: it can't use your mouse or keyboard"
     }
 

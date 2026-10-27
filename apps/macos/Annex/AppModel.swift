@@ -59,7 +59,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var accessibilityTrusted = InputInjector.isTrusted
     /// Viewer: the host currently accepts this Mac's mouse and keyboard.
     @Published private(set) var controllingHost = false
-    private var viewerPeerName = ""
+    /// Viewer: the computer this Mac shows, by the name it gave.
+    @Published private(set) var viewerPeerName = ""
+    /// Viewer: the session started as an extra display (Extend) rather than a copy of its screen.
+    @Published private(set) var viewerExtends: Bool?
     private var viewerFingerprint: String?
     /// Direct Wi-Fi: what's happening, for the Connect page.
     @Published private(set) var directStatus: String?
@@ -135,6 +138,34 @@ final class AppModel: ObservableObject {
     var isViewing: Bool { viewer != nil }
     /// A session either way: this Mac shows another computer, or another computer shows this one.
     var isLive: Bool { isViewing || hostStatus.viewerName != nil }
+
+    /// Which way the picture goes right now, said the same way on every screen.
+    var sessionRole: SessionRole? {
+        if isViewing, let extend = viewerExtends { return .viewing(from: viewerPeerName, extend: extend) }
+        let s = hostStatus
+        if let name = s.extendViewers.first { return .sharing(with: name, extend: true) }
+        if let name = s.mirrorViewers.first { return .sharing(with: name, extend: false) }
+        return nil
+    }
+
+    /// Another computer's name as Annex shows it. Two Macs of one owner are often both called
+    /// "Name's MacBook Pro"; then "(other Mac)" says which one is meant.
+    func label(_ name: String) -> String { hasThisName(name) ? "\(name) (other Mac)" : name }
+
+    func hasThisName(_ name: String) -> Bool {
+        func key(_ s: String) -> String {
+            s.replacingOccurrences(of: "’", with: "'").trimmingCharacters(in: .whitespaces).lowercased()
+        }
+        return !deviceName.isEmpty && key(name) == key(deviceName)
+    }
+
+    /// A computer nearby or in the session with this Mac's name, for the notice that asks to rename one.
+    var sameNamePeer: String? {
+        let session = sessionRole.map { role -> String in
+            switch role { case .sharing(let n, _), .viewing(let n, _): n }
+        }
+        return ([session].compactMap { $0 } + discovered.map(\.name)).first(where: hasThisName)
+    }
 
     private func updateInSession() {
         let busy = viewer != nil || hostStatus.viewerName != nil
@@ -541,6 +572,7 @@ final class AppModel: ObservableObject {
         latency = nil
         controllingHost = false
         viewerStatus = nil
+        viewerExtends = nil
         onDirectWiFi = false
         holdingWindow = false
     }
@@ -561,8 +593,9 @@ final class AppModel: ObservableObject {
             case "relayed": " · relay"
             default: peerToPeerTunnel != nil ? " · peer-to-peer" : ""
             }
-            viewerStatus = (s.mode == "extend" ? "Extending \(s.peerName)" : "Viewing \(s.peerName)") + via
             viewerPeerName = s.peerName
+            viewerExtends = s.mode == "extend"
+            viewerStatus = (s.mode == "extend" ? "Extra display from \(label(s.peerName))" : "Viewing \(label(s.peerName))") + via
             viewerFingerprint = s.fingerprint
             if directReconnect != nil {
                 directReconnect = nil
@@ -576,7 +609,8 @@ final class AppModel: ObservableObject {
             case "relayed": "Through a relay"
             default: peerToPeerTunnel != nil ? "Over peer-to-peer Wi-Fi" : onDirectWiFi ? "On direct Wi-Fi" : ""
             }
-            viewerWindow?.setPeer(s.peerName, detail: route)
+            viewerWindow?.setPeer(s.mode == "extend" ? "Extra display from \(label(s.peerName))" : "Viewing \(label(s.peerName))",
+                                  detail: route)
             viewerWindow?.setStreamSize(width: s.stream.width, height: s.stream.height)
             if switchOnStart {
                 // Set up direct Wi-Fi first; the picture starts once reconnected over it.
@@ -588,14 +622,14 @@ final class AppModel: ObservableObject {
             controllingHost = s.input ?? false
             viewerWindow?.setRelativePointer(s.mode == "extend" && s.pointerDeltas == true)
             if settings.controlWhenViewing {
-                viewerWindow?.setControlling(controllingHost, hostName: s.peerName)
+                viewerWindow?.setControlling(controllingHost, hostName: label(s.peerName))
             }
         case .streamConfig(let s):
             // The title set at session start keeps how it's reached (" · relay"); the size is a detail.
             viewerWindow?.setStreamSize(width: s.width, height: s.height)
         case .inputAllowed(_, let allowed):
             controllingHost = allowed
-            viewerWindow?.setControlling(allowed, hostName: viewerPeerName)
+            viewerWindow?.setControlling(allowed, hostName: label(viewerPeerName))
         case .latencyStats(let l):
             latency = l
         case .directLinkOffer(_, let ssid, let passphrase):
@@ -632,6 +666,7 @@ final class AppModel: ObservableObject {
             peerToPeerTunnel = nil
             latency = nil
             controllingHost = false
+            viewerExtends = nil
             holdingWindow = false
         default:
             handleSessionEvent(e)
@@ -914,4 +949,13 @@ final class AppModel: ObservableObject {
         stopHosting()
         NSApp.terminate(nil)
     }
+}
+
+/// This Mac's part in a live session. Every status says it from this Mac's side, so it reads
+/// right even when both computers have the same name.
+enum SessionRole: Equatable {
+    /// This Mac's screen (or a display it added, with Extend) shows on `with`.
+    case sharing(with: String, extend: Bool)
+    /// This Mac shows `from`'s screen, or the extra display `from` added.
+    case viewing(from: String, extend: Bool)
 }

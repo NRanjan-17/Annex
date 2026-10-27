@@ -421,6 +421,7 @@ private struct SharePage: View {
                  text: "Let another computer show this screen, or extend this display onto it.",
                  symbol: "display.2", tint: .blue)
             UpdateBanner(updater: model.updater)
+            SameNameNotice(model: model) { model.pane = .settings }
             GroupSection {
                 GroupRow(title: model.isHosting ? "Sharing is on" : "Sharing is off", subtitle: shareStatus,
                          status: model.isHosting ? .symbol("dot.radiowaves.left.and.right", .green)
@@ -468,7 +469,7 @@ private struct SharePage: View {
                 let s = model.hostStatus
                 GroupSection("Connected now") {
                     ForEach(s.viewers) { v in
-                        GroupRow(title: v.extend ? "\(v.name) is extending this display" : "Showing this screen on \(v.name)",
+                        GroupRow(title: v.extend ? "This Mac is extending onto \(model.label(v.name))" : "This Mac's screen is on \(model.label(v.name))",
                                  subtitle: v.extend ? "Arrange it in System Settings → Displays."
                                      : model.settings.showTechnicalDetails
                                          ? s.stream.map { "\($0.width)×\($0.height) at \($0.fps) fps" } : nil) {
@@ -485,7 +486,7 @@ private struct SharePage: View {
                         GroupRow(title: "Direct Wi-Fi", subtitle: direct)
                     }
                     ForEach(s.controllingViewers, id: \.self) { name in
-                        GroupRow(title: "\(name) is controlling this Mac", subtitle: "Turn it off in Paired Devices.")
+                        GroupRow(title: "\(model.label(name)) is controlling this Mac", subtitle: "Turn it off in Paired Devices.")
                     }
                 }
             }
@@ -835,7 +836,7 @@ private struct PeerRow: View {
     let peer: PeerInfo
 
     var body: some View {
-        GroupRow(title: peer.name, subtitle: subtitle) {
+        GroupRow(title: model.label(peer.name), subtitle: subtitle) {
             ConnectButtons(model: model, connect: { model.connect(to: peer) }, compact: true, peer: peer)
         }
         .opacity(peer.isSharing ? 1 : 0.6)

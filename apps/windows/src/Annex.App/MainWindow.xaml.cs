@@ -56,6 +56,8 @@ public sealed partial class MainWindow : Window
     private bool _controlling;
     private string? _viewerFingerprint;
     private bool _viewerExtend;
+    /// <summary>The viewer's session started (its mode and the other name are known).</summary>
+    private bool _viewerLive;
     /// <summary>Connected over this PC's hotspot right now.</summary>
     private bool _onDirectWifi;
 
@@ -277,11 +279,48 @@ public sealed partial class MainWindow : Window
     private static partial uint SetThreadExecutionState(uint flags);
 
     /// <summary>The tray icon, one look per state, so a glance says whether anyone can see this screen:
-    /// faded when not sharing, normal while sharing, with a green dot while connected.</summary>
+    /// faded when not sharing, normal while sharing, with a green dot while another computer shows this
+    /// one, and a green ▶ while this PC shows another computer.</summary>
     private void UpdateTrayIcon()
     {
-        var live = _viewer is not null || _sessions.Count > 0;
-        _tray?.SetIcon(Ui.AssetPath(live ? "TrayLive.ico" : _host is not null ? "Annex.ico" : "TrayOff.ico"));
+        _tray?.SetIcon(Ui.AssetPath(_sessions.Count > 0 ? "TrayLive.ico" : _viewer is not null ? "TrayView.ico"
+            : _host is not null ? "Annex.ico" : "TrayOff.ico"));
+    }
+
+    /// <summary>Another computer's name as Annex shows it. Two PCs of one owner can have the same name;
+    /// then "(other PC)" says which one is meant.</summary>
+    private string Label(string name) => HasThisName(name) ? $"{name} (other PC)" : name;
+
+    private bool HasThisName(string name)
+    {
+        static string Key(string s) => s.Replace('’', '\'').Trim().ToLowerInvariant();
+        var mine = _core?.DeviceName;
+        return !string.IsNullOrEmpty(mine) && Key(name) == Key(mine);
+    }
+
+    /// <summary>This PC's part in the live session, said from this PC's side: "This PC is sharing ·
+    /// Extend", and which way the picture goes.</summary>
+    private (string Headline, string From, string To, bool ThisIsFrom)? Role()
+    {
+        if (_viewer is not null && _viewerLive)
+            return ($"This PC is viewing · {(_viewerExtend ? "Extend" : "Mirror")}", Label(_viewingName), "This PC", false);
+        if (_sessions.Count == 0) return null;
+        var s = _sessions.Values.OrderByDescending(x => x.Mode == "extend").First();
+        return ($"This PC is sharing · {(s.Mode == "extend" ? "Extend" : "Mirror")}", "This PC", Label(s.Name), true);
+    }
+
+    /// <summary>A computer nearby or in the session with this PC's name, for the notice that asks to rename one.</summary>
+    private string? SameNamePeer() =>
+        (_viewerLive ? [_viewingName] : Array.Empty<string>())
+            .Concat(_sessions.Values.Select(s => s.Name)).Concat(_hosts.Select(h => h.Name))
+            .FirstOrDefault(HasThisName);
+
+    /// <summary>Both computers have this PC's name, so nothing on screen can say which is which.</summary>
+    private void SameNameNotice(Panel p)
+    {
+        if (SameNamePeer() is not { } name) return;
+        p.Children.Add(Ui.Card("\uE7BA", $"Both computers are called “{name}”.", "Give this PC its own name.",
+            Ui.Button("Rename…", () => Go("settings")), glyphBrush: new SolidColorBrush(Microsoft.UI.Colors.Orange)));
     }
 
     private const uint EsContinuous = 0x80000000, EsSystemRequired = 0x1, EsDisplayRequired = 0x2;
@@ -476,6 +515,7 @@ public sealed partial class MainWindow : Window
             box.SelectionChanged += (_, _) => _monitorIndex = Math.Max(0, box.SelectedIndex);
             p.Children.Add(Ui.Card("", "Screen to share", _host is null ? null : "Stop sharing to pick another screen.", box));
         }
+        SameNameNotice(p);
         if (_hostError is not null)
             p.Children.Add(Ui.Info("Sharing problem", _hostError, InfoBarSeverity.Warning));
 
@@ -484,7 +524,7 @@ public sealed partial class MainWindow : Window
             p.Children.Add(Ui.Section("Connected now"));
             foreach (var (id, s) in _sessions)
             {
-                var title = s.Mode == "extend" ? $"Extending onto {s.Name}" : $"{s.Name} is viewing this screen";
+                var title = s.Mode == "extend" ? $"This PC is extending onto {Label(s.Name)}" : $"This PC's screen is on {Label(s.Name)}";
                 var detail = s.Mode == "extend" ? "Arrange it in Settings → System → Display" :
                     ShowTech && _hostStream is { } st ? $"{st.Width}×{st.Height} at {st.Fps} fps" : null;
                 detail = (detail is null ? "" : detail + " · ") + (s.Input ? "can use your mouse and keyboard" : "view only");
@@ -904,6 +944,7 @@ public sealed partial class MainWindow : Window
         // What's live comes first: it's what this PC is doing right now.
         var live = _viewer is not null || _sessions.Count > 0;
         if (SessionStrip() is { } strip) notes.Children.Add(strip);
+        SameNameNotice(notes);
         Grid.SetRow(notes, 1);
         root.Children.Add(notes);
 
@@ -1071,7 +1112,7 @@ public sealed partial class MainWindow : Window
             Child = glyph,
         });
         var text = new StackPanel { Spacing = 1, VerticalAlignment = VerticalAlignment.Center };
-        var name = Ui.Text(h.Name, wrap: false);
+        var name = Ui.Text(Label(h.Name), wrap: false);
         name.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
         name.Foreground = selected ? Ui.Black(1) : Ui.White(0.95);
         text.Children.Add(name);
@@ -1113,7 +1154,7 @@ public sealed partial class MainWindow : Window
             _selected = selected ? null : h.Instance;
             Render();
         };
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, $"{h.Name}, {PeerStatus(h)}");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(row, $"{Label(h.Name)}, {PeerStatus(h)}");
         return row;
     }
 
@@ -1165,7 +1206,7 @@ public sealed partial class MainWindow : Window
         stack.Children.Add(top);
 
         var heading = new StackPanel { Spacing = 6 };
-        var name = Ui.Text(peer.Name);
+        var name = Ui.Text(Label(peer.Name));
         name.FontSize = 22;
         name.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
         heading.Children.Add(name);
@@ -1278,23 +1319,32 @@ public sealed partial class MainWindow : Window
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         var head = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
-        var liveLabel = Ui.Text("LIVE", "CaptionTextBlockStyle", Ui.Live, wrap: false);
+        var role = Role();
+        var liveLabel = Ui.Text(role is { } r ? $"LIVE · {r.Headline.ToUpperInvariant()}" : "LIVE", "CaptionTextBlockStyle", Ui.Live, wrap: false);
         liveLabel.FontWeight = Microsoft.UI.Text.FontWeights.Bold;
         liveLabel.CharacterSpacing = 140;
         var live = Ui.Row(Ui.LiveDot(8), liveLabel);
         head.Children.Add(live);
         var first = _sessions.Values.FirstOrDefault();
-        var title = Ui.Text(_viewer is not null ? _viewerStatus ?? "Connected"
-            : first.Mode == "extend" ? $"Extending onto {first.Name}" : $"{first.Name} is viewing this screen", wrap: false);
-        title.FontSize = 18;
-        title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
-        head.Children.Add(title);
+        if (role is { } flow)
+        {
+            var arrow = Ui.Flow(flow.From, flow.To, flow.ThisIsFrom, size: 14);
+            arrow.Margin = new Thickness(0, 2, 0, 2);
+            head.Children.Add(arrow);
+        }
+        else
+        {
+            var title = Ui.Text(_viewerStatus ?? "Connecting…", wrap: false);
+            title.FontSize = 18;
+            title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+            head.Children.Add(title);
+        }
         string subtitle = _viewer is not null
             ? _controlling ? "You're in control · Ctrl+Alt+Shift+Q to leave"
                 : _onDirectWifi ? $"On direct Wi-Fi “{_hotspot.Ssid}”"
                 : "Press Esc to leave the viewer · encrypted end to end"
             : first.Mode == "extend" ? "Arrange it in Settings → System → Display"
-            : first.Input ? $"{first.Name} can use your mouse and keyboard" : "View only: it can't use your mouse or keyboard";
+            : first.Input ? $"{Label(first.Name)} can use your mouse and keyboard" : "View only: it can't use your mouse or keyboard";
         head.Children.Add(Ui.Text(subtitle, "CaptionTextBlockStyle", Ui.Secondary, wrap: false));
         grid.Children.Add(head);
 
@@ -1882,11 +1932,11 @@ public sealed partial class MainWindow : Window
     private void ShowTrayMenu()
     {
         _trayMenu ??= new TrayMenu();
-        var status = _viewer is not null ? _viewerStatus ?? "Connecting…"
-            : _host is null ? "Not sharing" : "Sharing";
+        var status = Role()?.Headline ?? (_viewer is not null ? _viewerStatus ?? "Connecting…"
+            : _host is null ? "Not sharing" : "Sharing");
         _trayMenu.ShowAtCursor(
             new TrayMenu.Model(_core?.DeviceName ?? "Annex", status, _host is not null,
-                _viewer is not null ? $"Viewing {_viewingName}" : null, _hosts, TrayLive()),
+                _viewer is not null ? $"Viewing {_viewingName}" : null, _hosts, TrayLive(), Label),
             new TrayMenu.Actions(
                 SetSharing: on => SetHosting(on),
                 Connect: (peer, extend) => { _extend = extend; ConnectToPeer(peer); },
@@ -1898,15 +1948,17 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>The tray menu's live block: the same title as Nearby's session bar, and its numbers.</summary>
-    private (string Title, string? Detail)? TrayLive()
+    private (string Title, (string From, string To, bool ThisIsFrom)? Flow, string? Detail)? TrayLive()
     {
+        var role = Role();
+        var flow = role is { } r ? (r.From, r.To, r.ThisIsFrom) : ((string, string, bool)?)null;
         if (_viewer is not null)
-            return (_viewerStatus ?? $"Connected to {_viewingName}",
+            return (role?.Headline ?? _viewerStatus ?? "Connecting…", flow,
                 _lat is { } l ? $"{l.P50Ms:F0} ms delay · {l.Fps:F0} fps" : null);
         if (_sessions.Count == 0) return null;
         var s = _sessions.Values.First();
-        return (s.Mode == "extend" ? $"Extending onto {s.Name}" : $"{s.Name} is viewing this screen",
-            s.Input ? $"{s.Name} can use your mouse and keyboard" : "View only: it can't use your mouse or keyboard");
+        return (role!.Value.Headline, flow,
+            s.Input ? $"{Label(s.Name)} can use your mouse and keyboard" : "View only: it can't use your mouse or keyboard");
     }
 
     private void ShowFromTray()
@@ -2190,11 +2242,12 @@ public sealed partial class MainWindow : Window
                 _viewerStatus = $"Pairing with {f.PeerName} didn't finish. Check the PIN and try again.";
                 break;
             case CoreEvent.SessionStarted s:
-                _viewerStatus = (s.Mode == "extend" ? $"Extending {s.PeerName}'s display" : $"Viewing {s.PeerName}")
+                _viewerStatus = (s.Mode == "extend" ? $"Extra display from {Label(s.PeerName)}" : $"Viewing {Label(s.PeerName)}")
                     + s.Link switch { "direct" => " · cable", "internet" => " · internet", "relayed" => " · relay", _ => "" };
                 _viewingName = s.PeerName;
                 _viewerFingerprint = s.Fingerprint;
                 _viewerExtend = s.Mode == "extend";
+                _viewerLive = true;
                 _controlling = s.Input;
                 if (_tray is not null) _tray.Tooltip = $"Annex — viewing {s.PeerName}";
                 RefreshTrusted();
@@ -2295,6 +2348,7 @@ public sealed partial class MainWindow : Window
     {
         var v = _viewer;
         _viewer = null;
+        _viewerLive = false;
         _viewerToken = null;
         v?.Dispose();
     }

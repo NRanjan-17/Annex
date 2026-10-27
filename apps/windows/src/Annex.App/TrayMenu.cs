@@ -15,15 +15,17 @@ namespace Annex.App;
 /// </summary>
 internal sealed partial class TrayMenu : Window
 {
-    /// <summary>What the menu shows; rebuilt every time it opens. <c>Live</c>: the session's title and
-    /// one detail line, when one is running.</summary>
+    /// <summary>What the menu shows; rebuilt every time it opens. <c>Live</c>: the session's title, which
+    /// way it goes (<see cref="Ui.Flow"/>) and one detail line, when one is running. <c>Label</c>: a
+    /// computer's name as shown here.</summary>
     public sealed record Model(
         string DeviceName,
         string Status,
         bool Sharing,
         string? Viewing,
         IReadOnlyList<PeerInfo> Nearby,
-        (string Title, string? Detail)? Live = null);
+        (string Title, (string From, string To, bool ThisIsFrom)? Flow, string? Detail)? Live = null,
+        Func<string, string>? Label = null);
 
     public sealed record Actions(
         Action<bool> SetSharing,
@@ -133,6 +135,8 @@ internal sealed partial class TrayMenu : Window
             title.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
             var titleRow = Ui.Row(Ui.LiveDot(7), title);
             block.Children.Add(titleRow);
+            if (live.Flow is { } flow)
+                block.Children.Add(Ui.Flow(flow.From, flow.To, flow.ThisIsFrom, size: 12));
             if (live.Detail is { } detail)
                 block.Children.Add(Ui.Text(detail, "CaptionTextBlockStyle", Ui.Secondary));
             var stop = m.Viewing is not null
@@ -166,7 +170,7 @@ internal sealed partial class TrayMenu : Window
         {
             var rows = new StackPanel { Spacing = 2 };
             foreach (var peer in sharing.Take(6))
-                rows.Children.Add(PeerItem(peer, m.Viewing is null, a));
+                rows.Children.Add(PeerItem(peer, m.Label?.Invoke(peer.Name) ?? peer.Name, m.Viewing is null, a));
             stack.Children.Add(rows);
         }
         // Codes and addresses live in one dialog in the main window; the menu just opens it.
@@ -197,7 +201,7 @@ internal sealed partial class TrayMenu : Window
     }
 
     /// <summary>A computer that's sharing: its name and how it's reached, then Extend and View.</summary>
-    private static Grid PeerItem(PeerInfo peer, bool enabled, Actions a)
+    private static Grid PeerItem(PeerInfo peer, string label, bool enabled, Actions a)
     {
         var row = new Grid { Padding = new Thickness(4, 5, 0, 5), ColumnSpacing = 10 };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -214,7 +218,8 @@ internal sealed partial class TrayMenu : Window
             Child = Ui.Glyph(n.Contains("book") || n.Contains("laptop") ? "\uE7F8" : "\uE7F4", 13),
         });
         var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        var name = Ui.Text(peer.Name, wrap: false);
+        var name = Ui.Text(label, wrap: false);
+        name.TextTrimming = TextTrimming.CharacterEllipsis;
         name.FontWeight = Microsoft.UI.Text.FontWeights.Medium;
         text.Children.Add(name);
         text.Children.Add(Ui.Text(MainWindow.LinkKind(peer).Label, "CaptionTextBlockStyle", Ui.Secondary, wrap: false));

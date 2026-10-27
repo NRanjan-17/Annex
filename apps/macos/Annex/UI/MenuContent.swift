@@ -23,6 +23,7 @@ struct MenuContent: View {
                     LiveBlock(model: model)
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
+                SameNameNotice(model: model, compact: true) { open(.settings) }
             }
             .padding(.horizontal, 12)
             NearbySection(model: model)
@@ -60,6 +61,7 @@ struct MenuContent: View {
     }
 
     private var status: String {
+        if let role = model.sessionRole { return role.headline }
         if model.isViewing { return model.viewerStatus ?? "Connecting…" }
         return model.isHosting ? "Sharing" : "Not sharing"
     }
@@ -148,6 +150,9 @@ private struct LiveBlock: View {
                 Text(title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                 Spacer(minLength: 0)
             }
+            if let role = model.sessionRole {
+                RoleFlow(model: model, role: role, compact: true)
+            }
             if !stats.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 18) {
                     ForEach(stats, id: \.label) { s in
@@ -196,18 +201,15 @@ private struct LiveBlock: View {
     }
 
     private var title: String {
-        if model.isViewing { return model.viewerStatus ?? "Connected" }
-        let s = model.hostStatus
-        if let name = s.extendViewers.first { return "Extending onto \(name)" }
-        if let name = s.mirrorViewers.first { return "\(name) is viewing this screen" }
-        return "Connected"
+        if let role = model.sessionRole { return role.headline }
+        return model.isViewing ? model.viewerStatus ?? "Connecting…" : "Connected"
     }
 
     private var note: String? {
         if model.isViewing, model.controllingHost { return "You're in control · ⌃⌥⇧Q to leave" }
         let controllers = model.hostStatus.controllingViewers
         if !model.isViewing, !controllers.isEmpty {
-            return "\(controllers.joined(separator: ", ")) can use your mouse and keyboard"
+            return "\(controllers.map(model.label).joined(separator: ", ")) can use your mouse and keyboard"
         }
         if !model.isViewing { return "View only: it can't use your mouse or keyboard." }
         return nil
@@ -263,7 +265,7 @@ private struct PeerRow: View {
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.07)))
             VStack(alignment: .leading, spacing: 1) {
                 Text(peer.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                Text(LinkKind(peer).label + (model.isPaired(peer) ? " · Paired" : " · New"))
+                Text((model.hasThisName(peer.name) ? "Other Mac · " : "") + LinkKind(peer).label + (model.isPaired(peer) ? " · Paired" : " · New"))
                     .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 6)

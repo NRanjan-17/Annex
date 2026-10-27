@@ -386,6 +386,29 @@ internal static class Ui
         Padding = padding ?? new Thickness(16),
     };
 
+    /// <summary>[From] → [To]: which way the picture goes. This PC's end is the light chip, so the
+    /// direction reads right even when both computers have the same name.</summary>
+    public static StackPanel Flow(string from, string to, bool thisIsFrom, double size = 13)
+    {
+        Border Chip(string text, bool mine) => new()
+        {
+            CornerRadius = new CornerRadius(999),
+            Padding = new Thickness(10, 4, 10, 4),
+            Background = mine ? White(0.92) : White(0.08),
+            Child = new TextBlock
+            {
+                Text = text, FontSize = size, FontWeight = FontWeights.SemiBold,
+                Foreground = mine ? Black(1) : White(0.95), TextTrimming = TextTrimming.CharacterEllipsis,
+            },
+        };
+        var arrow = Glyph("\uE72A", size);
+        arrow.Foreground = Live;
+        arrow.VerticalAlignment = VerticalAlignment.Center;
+        var row = Row(Chip(from, thisIsFrom), arrow, Chip(to, !thisIsFrom));
+        AutomationProperties.SetName(row, $"{from} to {to}");
+        return row;
+    }
+
     public static StackPanel Row(params UIElement[] children)
     {
         var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };

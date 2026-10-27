@@ -11,7 +11,7 @@ struct AnnexApp: App {
             MenuContent(model: model)
                 .onAppear { model.refreshDisplays() }
         } label: {
-            MenuBarIcon(state: model.isLive ? .live : model.isHosting ? .sharing : .off)
+            MenuBarIcon(state: model.hostStatus.viewerName != nil ? .live : model.isViewing ? .viewing : model.isHosting ? .sharing : .off)
         }
         .menuBarExtraStyle(.window)
 
@@ -128,15 +128,17 @@ private struct SettingsCommand: View {
 }
 
 /// The menu bar icon, one look per state, so a glance says whether anyone can see this screen.
+/// The dot means only that: this Mac is being shown. Showing another computer gets a ▶ instead.
 /// Template images: macOS tints them for light and dark menu bars.
 enum MenuBarGlyph {
-    enum State { case off, sharing, live }
+    enum State { case off, sharing, live, viewing }
 
     static func label(_ state: State) -> String {
         switch state {
         case .off: "Annex, not sharing"
         case .sharing: "Annex, sharing"
-        case .live: "Annex, connected"
+        case .live: "Annex, this screen is being shown"
+        case .viewing: "Annex, showing another computer"
         }
     }
 
@@ -147,17 +149,29 @@ enum MenuBarGlyph {
         let base = NSImage(named: "MenuBarIcon") ?? NSImage()
         let size = base.size == .zero ? NSSize(width: 18, height: 18) : base.size
         let image = NSImage(size: size, flipped: false) { rect in
-            // Off: faded, like a paused app. Sharing: solid. Live: solid with a dot.
+            // Off: faded, like a paused app. Sharing: solid. Live: solid with a dot. Viewing: a ▶.
             base.draw(in: rect, from: .zero, operation: .sourceOver, fraction: state == .off ? 0.45 : 1)
-            if state == .live {
-                let d = rect.width * 0.34
-                let dot = NSRect(x: rect.maxX - d, y: rect.maxY - d, width: d, height: d)
-                // Clear a ring round the dot so it reads apart from the screens.
+            if state == .live || state == .viewing {
+                let d = rect.width * (state == .live ? 0.34 : 0.4)
+                let badge = NSRect(x: rect.maxX - d, y: rect.maxY - d, width: d, height: d)
+                let path: NSBezierPath
+                if state == .live {
+                    path = NSBezierPath(ovalIn: badge)
+                } else {
+                    path = NSBezierPath()
+                    path.move(to: NSPoint(x: badge.minX + d * 0.1, y: badge.minY))
+                    path.line(to: NSPoint(x: badge.minX + d * 0.1, y: badge.maxY))
+                    path.line(to: NSPoint(x: badge.maxX, y: badge.midY))
+                    path.close()
+                }
+                // Clear a ring round the badge so it reads apart from the screens.
                 NSGraphicsContext.current?.compositingOperation = .clear
-                NSBezierPath(ovalIn: dot.insetBy(dx: -1.5, dy: -1.5)).fill()
+                path.lineWidth = 3
+                path.stroke()
+                path.fill()
                 NSGraphicsContext.current?.compositingOperation = .sourceOver
                 NSColor.black.setFill()
-                NSBezierPath(ovalIn: dot).fill()
+                path.fill()
             }
             return true
         }
@@ -171,7 +185,7 @@ enum MenuBarGlyph {
 extension MenuBarGlyph {
     /// Each state tinted the way the menu bar would, on a light and a dark strip, 4× size.
     static func writePreview(to dir: URL) {
-        let states: [State] = [.off, .sharing, .live]
+        let states: [State] = [.off, .sharing, .live, .viewing]
         let scale: CGFloat = 4, cell: CGFloat = 30
         for (name, bg, fg) in [("light", NSColor(white: 0.93, alpha: 1), NSColor.black),
                                ("dark", NSColor(white: 0.12, alpha: 1), NSColor.white)] {
