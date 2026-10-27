@@ -41,15 +41,19 @@ curl -fsSL https://raw.githubusercontent.com/NRanjan-17/Annex/main/scripts/insta
 irm https://raw.githubusercontent.com/NRanjan-17/Annex/main/scripts/install.ps1 | iex
 ```
 
-Or download it yourself from **[Releases](https://github.com/NRanjan-17/Annex/releases/latest)**:
+Or download the newest version
+<a href="https://github.com/NRanjan-17/Annex/releases/latest"><img alt="latest version" src="https://img.shields.io/github/v/release/NRanjan-17/Annex?label=&color=2a78d6"></a>
+directly (click to download):
 
-| System | File |
+| System | Download |
 |---|---|
-| macOS | `Annex-<version>-macos-universal.dmg`: open it and drag Annex to Applications |
-| Windows | `Annex-Setup-<version>-x64.exe` (`-arm64.exe` for ARM PCs) |
-| Ubuntu, Debian, Raspberry Pi OS, JetPack | `Annex-<version>-linux-<arch>.deb`: `sudo apt install ./Annex-*.deb` |
-| Fedora, RHEL, openSUSE | `Annex-<version>-linux-<arch>.rpm`: `sudo dnf install ./Annex-*.rpm` |
-| Other Linux | `Annex-<version>-linux-<arch>.tar.gz`: unpack and run `bin/annex` |
+| macOS 14 or later | [**Annex for Mac**](https://github.com/NRanjan-17/Annex/releases/latest/download/Annex-macos-universal.dmg) (.dmg, Apple silicon and Intel): open it, drag Annex to Applications |
+| Windows 10 or 11 | [**x64**](https://github.com/NRanjan-17/Annex/releases/latest/download/Annex-Setup-x64.exe) · [**ARM64**](https://github.com/NRanjan-17/Annex/releases/latest/download/Annex-Setup-arm64.exe) (setup .exe) |
+| Ubuntu, Debian, Raspberry Pi OS, JetPack | [**.deb x86_64**](https://github.com/NRanjan-17/Annex/releases/latest/download/Annex-linux-x86_64.deb) · [**.deb arm64**](https://github.com/NRanjan-17/Annex/releases/latest/download/Annex-linux-arm64.deb), then `sudo apt install ./Annex-linux-*.deb` |
+| Fedora, RHEL, openSUSE | [**.rpm x86_64**](https://github.com/NRanjan-17/Annex/releases/latest/download/Annex-linux-x86_64.rpm) · [**.rpm arm64**](https://github.com/NRanjan-17/Annex/releases/latest/download/Annex-linux-arm64.rpm), then `sudo dnf install ./Annex-linux-*.rpm` |
+| Other Linux | [**.tar.gz x86_64**](https://github.com/NRanjan-17/Annex/releases/latest/download/Annex-linux-x86_64.tar.gz) · [**.tar.gz arm64**](https://github.com/NRanjan-17/Annex/releases/latest/download/Annex-linux-arm64.tar.gz): unpack and run `bin/annex` |
+
+Older versions and checksums: [all releases](https://github.com/NRanjan-17/Annex/releases).
 
 Linux packages start with the release after 0.2.0. Mac and Windows keep themselves up to date.
 Step-by-step notes, permissions and what each check does: [docs/GUIDE.md](docs/GUIDE.md#installing-by-hand).

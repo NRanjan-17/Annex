@@ -255,6 +255,18 @@ jobs:
           output-file: dist/Annex-${{ needs.version.outputs.version }}-linux.spdx.json
           upload-artifact: false
           upload-release-assets: false
+      - name: Copies without the version, for the README's download links
+        working-directory: dist
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          # github.com/…/releases/latest/download/<name> needs a name that stays the same from release
+          # to release. In-app updates keep using the versioned files.
+          for f in Annex-"$VERSION"-* Annex-Setup-"$VERSION"-*; do
+            case "$f" in *.spdx.json) continue ;; esac
+            cp "$f" "${f/-$VERSION/}"
+          done
+          ls -la
       - name: Checksums
         working-directory: dist
         run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
