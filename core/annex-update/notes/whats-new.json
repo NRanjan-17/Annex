@@ -16,6 +16,26 @@
         "kind": "new",
         "title": "Annex Microphone on Linux",
         "detail": "On a Linux computer you control, your microphone shows up as Annex Microphone, so Zoom, Meet or Discord there can use it for calls."
+      },
+      {
+        "kind": "new",
+        "title": "Pause or unsend a file",
+        "detail": "Files you're sending show Pause and Unsend in the island at the top of the screen. Unsending deletes what had arrived."
+      },
+      {
+        "kind": "improved",
+        "title": "Annex for Linux looks and works like the Mac",
+        "detail": "A dark window with grouped settings, the quality picker, update checks, live session stats and more."
+      },
+      {
+        "kind": "improved",
+        "title": "Smooth video on slow connections",
+        "detail": "On a slow link Annex now lowers the picture's bitrate far enough to stay live instead of falling seconds behind."
+      },
+      {
+        "kind": "fixed",
+        "title": "The Mac's notch glows as soon as you drag a file",
+        "detail": "Before, it only lit up once the file reached it."
       }
     ]
   },
