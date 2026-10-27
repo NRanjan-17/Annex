@@ -32,6 +32,9 @@ pub struct Settings {
     pub drop_at_top: bool,
     /// Sharing: use the graphics chip's video encoder when there is one.
     pub prefer_hardware_encoder: bool,
+    /// Sharing: the size of text and windows on a screen extending this one. 0 = the other
+    /// screen's own scale (200 % on a Retina Mac); otherwise a percentage, 100–200.
+    pub extend_scale: u32,
     pub show_technical_details: bool,
     /// Everything Annex does goes in the log (every input event, every progress step).
     pub verbose_logging: bool,
@@ -61,6 +64,7 @@ impl Default for Settings {
             receive_files: true,
             drop_at_top: true,
             prefer_hardware_encoder: true,
+            extend_scale: 0,
             show_technical_details: false,
             verbose_logging: false,
             check_for_updates: true,

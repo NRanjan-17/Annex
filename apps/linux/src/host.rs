@@ -69,6 +69,8 @@ struct ExtendSession {
 struct State {
     session: Session,
     prefer_hardware: bool,
+    /// Settings → Extended display scaling (0: the viewer's own scale).
+    extend_scale: u32,
     stream: StreamConfig,
     rt: tokio::runtime::Handle,
     tx: async_channel::Sender<Msg>,
@@ -149,6 +151,7 @@ impl Host {
         let state = Arc::new(State {
             session,
             prefer_hardware,
+            extend_scale: m.settings.extend_scale,
             stream: stream.clone(),
             rt: m.rt.handle().clone(),
             tx: m.sender(),
@@ -443,6 +446,18 @@ impl State {
         Ok(Running { _pipeline: pipeline, stop })
     }
 
+    /// The extended display's scale: the setting, or else the viewer's own (a Retina Mac asks
+    /// for 2704×1756 pixels at 200 %; at 1.0 everything, the pointer too, is half size). Follows
+    /// the stream if it was made smaller than the viewer's screen.
+    fn extend_scale(&self, display: &DisplayInfo, stream_w: u32) -> f64 {
+        let percent = match self.extend_scale {
+            0 => display.scale_percent,
+            p => p,
+        };
+        let shrink = f64::from(stream_w) / f64::from(display.width_px.max(stream_w));
+        (f64::from(percent.clamp(100, 300)) / 100.0 * shrink).max(1.0)
+    }
+
     fn start_extend(self: &Arc<Self>, id: u64, display: DisplayInfo) {
         let Some(host) = self.host() else {
             tracing::debug!(target: "annex::display", id, "extend: sharing stopped first");
@@ -510,7 +525,7 @@ impl State {
                 }
                 Err(e) => return fail(e),
             },
-            Session::Wlroots(kind) => match crate::extend::add(kind, w, h, hz) {
+            Session::Wlroots(kind) => match crate::extend::add(kind, w, h, hz, self.extend_scale(&display, w)) {
                 Ok(d) => {
                     tracing::info!(target: "annex::display", id, output = d.output, "extend: the display is up");
                     match crate::inject::Wlr::new(Some(&d.output)) {

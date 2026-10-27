@@ -469,6 +469,30 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.prefer_hardware_encoder,
         Box::new(|m, on| m.settings.prefer_hardware_encoder = on),
     );
+    let row = hbox(12);
+    row.append(&label("Extended display scaling", ""));
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    row.append(&spacer);
+    const SCALES: [u32; 6] = [0, 100, 125, 150, 175, 200];
+    let scale = gtk::DropDown::from_strings(&["Match the other screen", "100 %", "125 %", "150 %", "175 %", "200 %"]);
+    scale.set_selected(SCALES.iter().position(|&p| p == s.extend_scale).unwrap_or(0) as u32);
+    {
+        let (app, model) = (app.clone(), model.clone());
+        scale.connect_selected_notify(move |d| {
+            let p = SCALES[(d.selected() as usize).min(SCALES.len() - 1)];
+            act(&app, &model, |m| {
+                m.settings.extend_scale = p;
+                m.save_settings();
+            });
+        });
+    }
+    row.append(&scale);
+    b.append(&row);
+    b.append(&label(
+        "Text size on a computer using this one as an extra display. Turn sharing off and on to apply.",
+        "dim",
+    ));
 
     b.append(&label("Internet", "section"));
     b.append(&label("Codes and relays go through Annex's server unless you use your own.", "dim"));
