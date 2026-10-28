@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.3.4",
+    "items": [
+      {
+        "kind": "fixed",
+        "title": "No more echo",
+        "detail": "With Send my microphone on, neither side hears itself come back any more. Headphones are no longer needed."
+      },
+      {
+        "kind": "improved",
+        "title": "A cleaner microphone",
+        "detail": "Steady background noise, like a fan, is filtered out of your voice. Music and videos from the other computer are left alone."
+      }
+    ]
+  },
+  {
     "version": "0.3.3",
     "items": [
       {
