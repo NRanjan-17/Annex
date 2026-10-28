@@ -277,9 +277,11 @@ pub fn apply(app: &gtk::Application, model: &Shared) {
 
 /// Held while a session runs (viewing, or this computer shown to someone), so neither screen
 /// sleeps: the viewer gets no local input, and the host's screen is what the viewer watches.
+/// Also held while sharing with no one at this screen: a locked screen can't be shared (GNOME
+/// refuses), and no one is there to unlock it.
 fn keep_awake(app: &gtk::Application, model: &Shared) {
     let Ok(m) = model.try_borrow() else { return };
-    let active = m.viewer.is_some() || !m.host_sessions.is_empty();
+    let active = m.viewer.is_some() || !m.host_sessions.is_empty() || (m.settings.headless && m.is_hosting());
     drop(m);
     KEEP_AWAKE.with(|k| match (active, k.get()) {
         (true, None) => {

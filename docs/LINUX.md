@@ -206,6 +206,8 @@ annex devices allow-sound "Mac Studio" off   # it no longer hears this computer
 annex devices allow-mic "Mac Studio" off     # its microphone no longer plays here
 ```
 
+On GNOME, a locked screen can't be shared: Mutter refuses new screen casts and closes the running one. So while sharing with *No one at this screen* on, Annex keeps the screen from going idle and locking (anyone at the monitor can use the computer meanwhile). If it was locked anyway, `loginctl unlock-session` unlocks it over SSH; the next viewer gets a new screen cast.
+
 `annex help`:
 
 ```text
