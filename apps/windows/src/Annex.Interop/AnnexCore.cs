@@ -197,6 +197,14 @@ public sealed class CoreClient : IDisposable
     public bool SetAllowInput(string fingerprint, bool allow) =>
         NativeMethods.Check(NativeMethods.annex_core_set_allow_input(Raw, fingerprint, allow)) == 1;
 
+    /// <summary>Lets a trusted device hear this PC's sound (on by default). False if it isn't trusted.</summary>
+    public bool SetAllowSound(string fingerprint, bool allow) =>
+        NativeMethods.Check(NativeMethods.annex_core_set_allow_sound(Raw, fingerprint, allow)) == 1;
+
+    /// <summary>Lets a trusted device's microphone play here (on by default). False if it isn't trusted.</summary>
+    public bool SetAllowMic(string fingerprint, bool allow) =>
+        NativeMethods.Check(NativeMethods.annex_core_set_allow_mic(Raw, fingerprint, allow)) == 1;
+
     /// <summary>Headless (nobody at this screen): pairing PINs also go to <c>pairing-pin.txt</c> in the data
     /// folder, and paired devices may use the mouse and keyboard without being allowed one by one.</summary>
     public void SetHeadless(bool on) => NativeMethods.Check(NativeMethods.annex_core_set_headless(Raw, on));

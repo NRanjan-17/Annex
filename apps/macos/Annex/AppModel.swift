@@ -1240,6 +1240,32 @@ final class AppModel: ObservableObject {
         refreshPermissions()
     }
 
+    /// Host: let a trusted device hear this Mac's sound (or stop it).
+    func setAllowSound(_ peer: TrustedPeer, _ allow: Bool) {
+        Annex.log(.info, "[audio] \(allow ? "share" : "stop sharing") this Mac's sound with \(peer.name)")
+        do {
+            if try core?.setAllowSound(peer.fingerprint, allow) == false {
+                Annex.log(.warn, "[audio] \(peer.name) isn't paired; nothing changed")
+            }
+        } catch {
+            Annex.log(.warn, "[audio] couldn't change sound for \(peer.name): \(error.localizedDescription)")
+        }
+        refreshTrusted()
+    }
+
+    /// Host: let a trusted device's microphone play on this Mac (or stop it).
+    func setAllowMic(_ peer: TrustedPeer, _ allow: Bool) {
+        Annex.log(.info, "[audio] \(allow ? "play" : "mute") \(peer.name)'s microphone here")
+        do {
+            if try core?.setAllowMic(peer.fingerprint, allow) == false {
+                Annex.log(.warn, "[audio] \(peer.name) isn't paired; nothing changed")
+            }
+        } catch {
+            Annex.log(.warn, "[audio] couldn't change the microphone for \(peer.name): \(error.localizedDescription)")
+        }
+        refreshTrusted()
+    }
+
     /// Session-end codes from the core, in words.
     static func friendlyReason(_ reason: String, peer: String, byCode: Bool = false) -> String {
         switch reason {

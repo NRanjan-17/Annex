@@ -3,7 +3,8 @@
 //! ```text
 //! annex identity                      print this device's name and fingerprint
 //! annex peers [remove <fingerprint>]  list or revoke trusted devices
-//! annex discover [--seconds N]        list hosts on the LAN
+//! annex discover [--seconds N]        list hosts on the LAN (raw events, JSON)
+//! annex nearby [--seconds N] [--json] what the apps' Nearby would list, with the search's log
 //! annex host [--port P] [--replay file.h264 | --synthetic] [--fps N] [--extend] [--no-advertise] [--internet]
 //! annex viewer <address | --code K7P-4QX> [--extend] [--control] [--dump file.h264] [--expect <fingerprint>] [--seconds N]
 //! ```
@@ -170,6 +171,7 @@ async fn main() {
             }
         }
         "discover" => discover(&mut o).await,
+        "nearby" => nearby(&mut o).await,
         "host" => host(&mut o).await,
         "viewer" => viewer(&mut o).await,
         _ => {
@@ -177,7 +179,7 @@ async fn main() {
                 "{}",
                 include_str!("main.rs")
                     .lines()
-                    .take(12)
+                    .take(13)
                     .skip(2)
                     .map(|l| l.trim_start_matches("//!").trim_start_matches(' '))
                     .collect::<Vec<_>>()
@@ -200,6 +202,49 @@ async fn discover(o: &mut Opts) {
         .browse(|e| println!("{}", serde_json::to_string(&e).unwrap_or_default()))
         .unwrap_or_else(|e| die(&e.to_string()));
     tokio::time::sleep(Duration::from_secs(secs)).await;
+}
+
+/// Runs the same search as the apps' Nearby page (local network and private networks) for a
+/// while, printing its log, then the computers still found. Doesn't advertise this one.
+async fn nearby(o: &mut Opts) {
+    let core = open_core(o);
+    let secs: u64 = o.num("--seconds", 8);
+    let json = o.flag("--json");
+    // The search's own log lines (what each private network listed, who answered) on stderr.
+    annex_log::init(&default_data_dir(), true);
+    let found = Arc::new(std::sync::Mutex::new(Vec::<annex_discovery::PeerInfo>::new()));
+    let d = annex_discovery::Discovery::new(core.fingerprint()).unwrap_or_else(|e| die(&e.to_string()));
+    let f = found.clone();
+    let _b = d
+        .browse(move |e| {
+            let mut f = f.lock().unwrap();
+            match e {
+                annex_discovery::DiscoveryEvent::PeerFound(p) => {
+                    f.retain(|q| q.instance != p.instance);
+                    f.push(p);
+                }
+                annex_discovery::DiscoveryEvent::PeerLost { instance } => f.retain(|q| q.instance != instance),
+            }
+        })
+        .unwrap_or_else(|e| die(&e.to_string()));
+    eprintln!("Looking for {secs} s…");
+    tokio::time::sleep(Duration::from_secs(secs)).await;
+    let mut f = found.lock().unwrap().clone();
+    f.sort_by(|a, b| b.sharing.cmp(&a.sharing).then_with(|| a.name.cmp(&b.name)));
+    if json {
+        println!("{}", serde_json::to_string_pretty(&f).unwrap_or_default());
+        return;
+    }
+    if f.is_empty() {
+        println!("No computers found. The lines above say what each network was asked.");
+        return;
+    }
+    println!("{:<28} {:<12} {:<9} ADDRESS", "NAME", "SHARING", "NETWORK");
+    for p in &f {
+        let addr = p.addresses.first().map(|a| format!("{a}:{}", p.port)).unwrap_or_default();
+        let net = if p.mesh { "private" } else { "local" };
+        println!("{:<28} {:<12} {:<9} {addr}", p.name, if p.sharing { "yes" } else { "not sharing" }, net);
+    }
 }
 
 async fn host(o: &mut Opts) {

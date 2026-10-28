@@ -42,8 +42,10 @@ public sealed record WhatsNewRelease(string Version, WhatsNewItem[] Items);
 
 public sealed record WhatsNewItem(string Kind, string Title, string Detail);
 
-/// <summary><c>AllowInput</c>: host side, the device may control this PC's mouse and keyboard.</summary>
-public sealed record TrustedPeer(string Fingerprint, string Name, ulong AddedAt, ulong LastSeen, bool AllowInput = false);
+/// <summary>Host side: <c>AllowInput</c>, the device may control this PC's mouse and keyboard;
+/// <c>AllowSound</c>, it hears this PC's sound; <c>AllowMic</c>, its microphone plays here.</summary>
+public sealed record TrustedPeer(string Fingerprint, string Name, ulong AddedAt, ulong LastSeen, bool AllowInput = false,
+    bool AllowSound = true, bool AllowMic = true);
 
 public sealed record MonitorInfo(int Index, string Name, int Width, int Height, int RefreshHz, bool Primary)
 {

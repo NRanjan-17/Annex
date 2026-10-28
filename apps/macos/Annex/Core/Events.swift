@@ -111,13 +111,19 @@ struct TrustedPeer: Decodable, Identifiable, Hashable {
     let lastSeen: UInt64
     /// Host side: this device may control this Mac's mouse and keyboard.
     var allowInput: Bool = false
+    /// Host side: this device hears this Mac's sound, and its microphone plays here (both on
+    /// unless turned off).
+    var allowSound: Bool = true
+    var allowMic: Bool = true
 
     var id: String { fingerprint }
 
-    private enum CodingKeys: String, CodingKey { case fingerprint, name, addedAt, lastSeen, allowInput }
+    private enum CodingKeys: String, CodingKey { case fingerprint, name, addedAt, lastSeen, allowInput, allowSound, allowMic }
 
-    init(fingerprint: String, name: String, addedAt: UInt64, lastSeen: UInt64, allowInput: Bool = false) {
+    init(fingerprint: String, name: String, addedAt: UInt64, lastSeen: UInt64, allowInput: Bool = false,
+         allowSound: Bool = true, allowMic: Bool = true) {
         (self.fingerprint, self.name, self.addedAt, self.lastSeen, self.allowInput) = (fingerprint, name, addedAt, lastSeen, allowInput)
+        (self.allowSound, self.allowMic) = (allowSound, allowMic)
     }
 
     init(from decoder: Decoder) throws {
@@ -127,6 +133,8 @@ struct TrustedPeer: Decodable, Identifiable, Hashable {
         addedAt = try c.decode(UInt64.self, forKey: .addedAt)
         lastSeen = try c.decodeIfPresent(UInt64.self, forKey: .lastSeen) ?? 0
         allowInput = try c.decodeIfPresent(Bool.self, forKey: .allowInput) ?? false
+        allowSound = try c.decodeIfPresent(Bool.self, forKey: .allowSound) ?? true
+        allowMic = try c.decodeIfPresent(Bool.self, forKey: .allowMic) ?? true
     }
 }
 

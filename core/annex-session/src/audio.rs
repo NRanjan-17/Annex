@@ -207,13 +207,22 @@ pub(crate) enum Incoming {
     Handed(mpsc::UnboundedReceiver<Vec<u8>>),
 }
 
-/// Starts sound for a session. `host`: this computer is the one being viewed.
-pub(crate) fn start(core: Arc<Core>, conn: quinn::Connection, id: u64, host: bool, incoming: Incoming) -> SessionAudio {
+/// Starts sound for a session. `host`: the fingerprint of the viewer, when this computer is the
+/// one being viewed (its per-device sound and microphone switches apply).
+pub(crate) fn start(
+    core: Arc<Core>,
+    conn: quinn::Connection,
+    id: u64,
+    host: Option<String>,
+    incoming: Incoming,
+) -> SessionAudio {
     let task = tokio::spawn(run(core.clone(), conn, id, host, incoming));
     SessionAudio { task, core, id }
 }
 
-async fn run(core: Arc<Core>, conn: quinn::Connection, id: u64, host: bool, mut incoming: Incoming) {
+async fn run(core: Arc<Core>, conn: quinn::Connection, id: u64, viewer: Option<String>, mut incoming: Incoming) {
+    let host = viewer.is_some();
+    let device = viewer.unwrap_or_default();
     let (expect, play_as) = if host {
         (AudioKind::Microphone, "the viewer's microphone")
     } else {
@@ -235,8 +244,9 @@ async fn run(core: Arc<Core>, conn: quinn::Connection, id: u64, host: bool, mut 
             _ = tick.tick() => {
                 let s = core.audio();
                 if host {
-                    if s.share_sound != sharing {
-                        sharing = s.share_sound;
+                    let share = s.share_sound && core.allows_sound(&device);
+                    if share != sharing {
+                        sharing = share;
                         tracing::info!(target: "annex::audio", session = id, on = sharing, "sharing this computer's sound");
                         if sharing { core.sound.add(id, conn.clone()) } else { core.sound.remove(id) }
                     }
@@ -260,7 +270,8 @@ async fn run(core: Arc<Core>, conn: quinn::Connection, id: u64, host: bool, mut 
                 if !s.send_mic {
                     mic_failed = false;
                 }
-                let want = match (s.hear_sound, host && s.virtual_mic && virtual_microphone_here()) {
+                let hear = s.hear_sound && (!host || core.allows_mic(&device));
+                let want = match (hear, host && s.virtual_mic && virtual_microphone_here()) {
                     (false, _) => None,
                     (true, true) => Some(Output::VirtualMicrophone),
                     (true, false) => Some(Output::Speakers),

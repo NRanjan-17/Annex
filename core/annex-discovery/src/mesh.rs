@@ -301,6 +301,12 @@ fn note(source: &str, what: String) {
 fn run(program: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new(program);
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // The Mac Tailscale app is its own command line only when started from a terminal, which it
+    // tells by TERM (or SHLVL). Started by an app, with neither, it tries to open its window,
+    // prints "The Tailscale GUI failed to start" and exits 0, so Nearby found nobody.
+    if std::env::var_os("TERM").is_none() {
+        cmd.env("TERM", "dumb");
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -334,7 +340,14 @@ fn run(program: &str, args: &[&str]) -> Result<String, String> {
     loop {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => {
-                return reader.join().ok().flatten().ok_or_else(|| "its output wasn't text".to_string());
+                let out = reader.join().ok().flatten().ok_or_else(|| "its output wasn't text".to_string())?;
+                // A status is JSON; anything else is the client saying why not (and the next copy
+                // of it may work).
+                if !out.trim_start().starts_with('{') {
+                    let line = out.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+                    return Err(format!("said: {}", line.chars().take(160).collect::<String>()));
+                }
+                return Ok(out);
             }
             Ok(Some(status)) => return Err(format!("exited with {status}{}", said(errors))),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),

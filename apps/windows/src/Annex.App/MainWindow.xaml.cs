@@ -1341,6 +1341,18 @@ public sealed partial class MainWindow : Window
             control.IsHitTestVisible = !_settings.Headless;
             control.Opacity = _settings.Headless ? 0.6 : 1;
             stack.Children.Add(control);
+            stack.Children.Add(SmallSwitch("Can hear this PC's sound", "Its own switch for each device.", trusted.AllowSound, on =>
+            {
+                AnnexLog.Info($"[audio] {trusted.Name} may hear this PC's sound: {on}");
+                _core?.SetAllowSound(trusted.Fingerprint, on);
+                RefreshTrusted();
+            }));
+            stack.Children.Add(SmallSwitch("Its microphone plays here", "For calls on this PC.", trusted.AllowMic, on =>
+            {
+                AnnexLog.Info($"[audio] {trusted.Name}'s microphone plays here: {on}");
+                _core?.SetAllowMic(trusted.Fingerprint, on);
+                RefreshTrusted();
+            }));
             var foot = new Grid();
             foot.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             foot.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -2138,6 +2150,19 @@ public sealed partial class MainWindow : Window
                 _core?.SetAllowInput(peer.Fingerprint, on);
                 RefreshTrusted();
             }, enabled: !_settings.Headless)));
+            p.Children.Add(Ui.Card("", "Can hear this PC's sound",
+                _settings.ShareSound ? null : "This PC's sound is off in Settings.", Ui.Switch(peer.AllowSound, on =>
+            {
+                AnnexLog.Info($"[audio] {peer.Name} may hear this PC's sound: {on}");
+                _core?.SetAllowSound(peer.Fingerprint, on);
+                RefreshTrusted();
+            })));
+            p.Children.Add(Ui.Card("", "Its microphone plays here", null, Ui.Switch(peer.AllowMic, on =>
+            {
+                AnnexLog.Info($"[audio] {peer.Name}'s microphone plays here: {on}");
+                _core?.SetAllowMic(peer.Fingerprint, on);
+                RefreshTrusted();
+            })));
             // A gap keeps each device in its own group.
             p.Children.Add(new Border { Height = 10 });
         }

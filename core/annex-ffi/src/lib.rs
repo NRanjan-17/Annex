@@ -581,6 +581,36 @@ pub unsafe extern "C" fn annex_core_set_allow_input(
     })
 }
 
+/// Host: lets a trusted device hear this computer's sound (on by default). Returns 1 if changed,
+/// 0 if the device isn't trusted, negative on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_set_allow_sound(
+    core: *const AnnexCore,
+    fingerprint: *const c_char,
+    allow: bool,
+) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        let fp = unsafe { str_arg(fingerprint, "fingerprint") }?;
+        Ok(c.core.set_allow_sound(fp, allow).map_err(failed)? as i32)
+    })
+}
+
+/// Host: lets a trusted device's microphone play here (on by default). Returns 1 if changed, 0 if
+/// the device isn't trusted, negative on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_core_set_allow_mic(
+    core: *const AnnexCore,
+    fingerprint: *const c_char,
+    allow: bool,
+) -> i32 {
+    guard(|| {
+        let c = unsafe { core.as_ref() }.ok_or_else(|| invalid("core is null"))?;
+        let fp = unsafe { str_arg(fingerprint, "fingerprint") }?;
+        Ok(c.core.set_allow_mic(fp, allow).map_err(failed)? as i32)
+    })
+}
+
 /// Headless (nobody at this screen): pairing PINs are also written to `<data>/pairing-pin.txt`,
 /// and paired devices may use the mouse and keyboard without being allowed one by one.
 #[unsafe(no_mangle)]

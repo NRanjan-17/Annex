@@ -567,6 +567,24 @@ impl Model {
         self.render();
     }
 
+    pub fn set_allow_sound(&mut self, fingerprint: &str, allow: bool) {
+        tracing::info!(target: "annex::pairing", fingerprint, allow, "paired devices: hears this computer's sound");
+        if let Err(e) = self.core.set_allow_sound(fingerprint, allow) {
+            tracing::warn!("couldn't change sound for the device: {e}");
+        }
+        self.refresh_trusted();
+        self.render();
+    }
+
+    pub fn set_allow_mic(&mut self, fingerprint: &str, allow: bool) {
+        tracing::info!(target: "annex::pairing", fingerprint, allow, "paired devices: its microphone plays here");
+        if let Err(e) = self.core.set_allow_mic(fingerprint, allow) {
+            tracing::warn!("couldn't change the microphone for the device: {e}");
+        }
+        self.refresh_trusted();
+        self.render();
+    }
+
     pub fn submit_pin(&self, request_id: u64, pin: &str) {
         tracing::info!(target: "annex::pairing", request_id, digits = pin.len(), "pairing: PIN typed");
         self.core.submit_pin(request_id, pin);

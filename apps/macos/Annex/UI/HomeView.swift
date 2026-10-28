@@ -451,6 +451,10 @@ private struct PeerCard: View {
                               text: model.settings.headless ? "Allowed while No one at this screen is on." : "When it shows this Mac's screen.",
                               isOn: Binding(get: { model.settings.headless || trusted.allowInput }, set: { model.setAllowInput(trusted, $0) }))
                         .disabled(model.settings.headless)
+                    SwitchRow(title: "Can hear this Mac's sound", text: "Its own switch for each device.",
+                              isOn: Binding(get: { trusted.allowSound }, set: { model.setAllowSound(trusted, $0) }))
+                    SwitchRow(title: "Its microphone plays here", text: "For calls on this Mac.",
+                              isOn: Binding(get: { trusted.allowMic }, set: { model.setAllowMic(trusted, $0) }))
                     HStack {
                         Text(lastConnected(trusted)).font(.system(size: 11)).foregroundStyle(.secondary)
                         Spacer()

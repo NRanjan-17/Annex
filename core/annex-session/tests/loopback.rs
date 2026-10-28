@@ -791,7 +791,9 @@ async fn a_viewer_without_control_cant_send_files_or_clipboard() {
     host_core.set_downloads(Some(host_dl.path().to_path_buf()));
     wait_for(&mut vrx, |e| matches!(e, Event::SessionStarted { .. })).await;
     let file = src.path().join("x.bin");
-    std::fs::write(&file, noise(100_000)).unwrap();
+    // Bigger than QUIC's stream window (~1.25 MB): a smaller file can be delivered and acknowledged
+    // whole before the host reads its header and refuses it, and the sender then sees it as sent.
+    std::fs::write(&file, noise(4_000_000)).unwrap();
     viewer.send_file(&file).unwrap();
     viewer.send_clipboard("text/plain;charset=utf-8", b"secret".to_vec());
     let (ok, _, error) = ended(&wait_for(&mut vrx, |e| ended(e).is_some()).await).unwrap();
