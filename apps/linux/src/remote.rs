@@ -18,7 +18,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 use serde_json::json;
 
-use crate::cli::{self, Command, Parsed, on_off};
+use crate::cli::{self, Command, Parsed, Permission, on_off};
 use crate::model::{InternetShare, Model, PinAsked, SessionRole, Shared, UpdateState};
 use crate::settings::{self, Settings};
 use crate::settings_keys::{self, Effect, Key};
@@ -51,7 +51,7 @@ pub fn client(args: &[String], cmd: Command) -> glib::ExitCode {
             ));
         }
     };
-    if !running && !matches!(cmd, Command::Set { .. } | Command::AllowControl { .. } | Command::Forget { .. }) {
+    if !running && !matches!(cmd, Command::Set { .. } | Command::Allow { .. } | Command::Forget { .. }) {
         return offline(cmd);
     }
     let mut cmd = cmd;
@@ -247,7 +247,7 @@ fn offline(cmd: Command) -> glib::ExitCode {
             }
             Err(e) => fail(&e),
         },
-        Command::AllowControl { device, on } => {
+        Command::Allow { what, device, on } => {
             let core = match offline_core() {
                 Ok(Some(c)) => c,
                 Ok(None) => return fail("No paired devices yet."),
@@ -259,10 +259,15 @@ fn offline(cmd: Command) -> glib::ExitCode {
                 Err(e) => return fail(&e),
             };
             annex_log::init(&settings::data_dir(), false);
-            tracing::info!(target: "annex::cli", "cli: devices allow-control {} (Annex isn't running)", on_off(on));
-            match core.set_allow_input(&fp, on) {
+            tracing::info!(target: "annex::cli", "cli: devices {} {} (Annex isn't running)", what.word(), on_off(on));
+            let changed = match what {
+                Permission::Control => core.set_allow_input(&fp, on),
+                Permission::Sound => core.set_allow_sound(&fp, on),
+                Permission::Mic => core.set_allow_mic(&fp, on),
+            };
+            match changed {
                 Ok(_) => {
-                    println!("{device} {} use this computer's mouse and keyboard.", if on { "can" } else { "can't" });
+                    println!("{}", what.sentence(&device, on));
                     glib::ExitCode::SUCCESS
                 }
                 Err(e) => fail(&format!("Couldn't change it: {e}")),
@@ -478,6 +483,8 @@ fn devices_list(list: &[TrustedPeer], headless: bool, json: bool, label: impl Fn
                     "last_connected": (t.last_seen > 0).then_some(t.last_seen),
                     "control": t.allow_input || headless,
                     "control_allowed": t.allow_input,
+                    "sound": t.allow_sound,
+                    "microphone": t.allow_mic,
                 })
             })
             .collect();
@@ -494,10 +501,13 @@ fn devices_list(list: &[TrustedPeer], headless: bool, json: bool, label: impl Fn
             (false, false) => "no",
         };
         out.push_str(&format!(
-            "{}\n  Identity code: {}\n  Last connected: {}\n  Can use the mouse and keyboard: {control}\n",
+            "{}\n  Identity code: {}\n  Last connected: {}\n  Can use the mouse and keyboard: {control}\n  \
+             Can hear this computer's sound: {}\n  Its microphone plays here: {}\n",
             label(&t.name),
             crate::model::display_fingerprint(&t.fingerprint),
             last_connected(t).unwrap_or_else(|| "never".into()),
+            if t.allow_sound { "yes" } else { "no" },
+            if t.allow_mic { "yes" } else { "no" },
         ));
     }
     out
@@ -663,14 +673,18 @@ pub fn run(
             out.print(&devices_list(&m.trusted, m.settings.headless, json, |n| m.label(n)));
             out.ok()
         }
-        Command::AllowControl { device, on } => {
+        Command::Allow { what, device, on } => {
             let (fp, name) = match find_device(&model.borrow().trusted, &device) {
                 Ok(d) => d,
                 Err(e) => return out.fail(&e),
             };
-            ui::act(app, model, |m| m.set_allow_input(&fp, on));
-            out.line(&format!("{name} {} use this computer's mouse and keyboard.", if on { "can" } else { "can't" }));
-            if !on && model.borrow().settings.headless {
+            ui::act(app, model, |m| match what {
+                Permission::Control => m.set_allow_input(&fp, on),
+                Permission::Sound => m.set_allow_sound(&fp, on),
+                Permission::Mic => m.set_allow_mic(&fp, on),
+            });
+            out.line(&what.sentence(&name, on));
+            if what == Permission::Control && !on && model.borrow().settings.headless {
                 out.line("No one at this screen is on, so every paired device can anyway (`annex set headless off`).");
             }
             out.ok()

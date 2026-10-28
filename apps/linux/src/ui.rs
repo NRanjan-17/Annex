@@ -2028,6 +2028,36 @@ fn render_devices(ui: &mut Ui, m: &Model, model: &Shared) {
                 &input,
             ),
         );
+        // Sound both ways, one device at a time (on until turned off).
+        let sound = gtk::Switch::new();
+        sound.set_active(t.allow_sound);
+        {
+            let (app, model, fp) = (app_of(ui), model.clone(), t.fingerprint.clone());
+            sound.connect_state_set(move |_, on| {
+                let fp = fp.clone();
+                act(&app, &model, |m| m.set_allow_sound(&fp, on));
+                glib::Propagation::Proceed
+            });
+        }
+        add_row(
+            &g,
+            &row_with(
+                "Can hear this computer's sound",
+                (!m.settings.share_sound).then_some("This computer's sound is off in Settings."),
+                &sound,
+            ),
+        );
+        let mic = gtk::Switch::new();
+        mic.set_active(t.allow_mic);
+        {
+            let (app, model, fp) = (app_of(ui), model.clone(), t.fingerprint.clone());
+            mic.connect_state_set(move |_, on| {
+                let fp = fp.clone();
+                act(&app, &model, |m| m.set_allow_mic(&fp, on));
+                glib::Propagation::Proceed
+            });
+        }
+        add_row(&g, &row_with("Its microphone plays here", None, &mic));
         if details {
             let id = cell(2);
             id.append(&label("Identity code", "row-title"));

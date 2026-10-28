@@ -418,7 +418,7 @@ async fn run(
     let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let _audio = match &quic {
         Some(conn) if cfg.mode == Mode::Mirror && peer.caps.iter().any(|c| c == crate::audio::CAP) => {
-            Some(crate::audio::start(core.clone(), conn.clone(), 0, false, crate::audio::Incoming::Handed(audio_rx)))
+            Some(crate::audio::start(core.clone(), conn.clone(), 0, None, crate::audio::Incoming::Handed(audio_rx)))
         }
         _ => None,
     };

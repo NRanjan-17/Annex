@@ -202,6 +202,8 @@ annex status
 annex code                         # a code for connecting over the internet
 annex send ~/report.pdf            # to the computer in the session
 annex devices allow-control "Mac Studio" on
+annex devices allow-sound "Mac Studio" off   # it no longer hears this computer
+annex devices allow-mic "Mac Studio" off     # its microphone no longer plays here
 ```
 
 `annex help`:
@@ -237,6 +239,10 @@ Commands (they talk to the Annex that's running; none opens a window)
   devices [--json]              Paired devices
   devices allow-control <device> on|off
                                 Let a paired device use this computer's mouse and keyboard
+  devices allow-sound <device> on|off
+                                Let a paired device hear this computer's sound (on by default)
+  devices allow-mic <device> on|off
+                                Play a paired device's microphone here (on by default)
   devices forget <device> [--yes]
                                 Forget a paired device (it pairs again with a PIN)
   send <file>...                Send files (or folders) to the computer in the session

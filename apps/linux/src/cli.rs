@@ -30,6 +30,36 @@ pub enum Parsed {
     Run(Command),
 }
 
+/// What `annex devices allow-…` changes for one paired device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Permission {
+    Control,
+    Sound,
+    Mic,
+}
+
+impl Permission {
+    pub fn word(self) -> &'static str {
+        match self {
+            Permission::Control => "allow-control",
+            Permission::Sound => "allow-sound",
+            Permission::Mic => "allow-mic",
+        }
+    }
+
+    /// "<device> can use this computer's mouse and keyboard." and the like.
+    pub fn sentence(self, device: &str, on: bool) -> String {
+        match (self, on) {
+            (Permission::Control, true) => format!("{device} can use this computer's mouse and keyboard."),
+            (Permission::Control, false) => format!("{device} can't use this computer's mouse and keyboard."),
+            (Permission::Sound, true) => format!("{device} can hear this computer's sound."),
+            (Permission::Sound, false) => format!("{device} can't hear this computer's sound."),
+            (Permission::Mic, true) => format!("{device}'s microphone plays here."),
+            (Permission::Mic, false) => format!("{device}'s microphone doesn't play here."),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Status {
@@ -56,7 +86,9 @@ pub enum Command {
     Devices {
         json: bool,
     },
-    AllowControl {
+    /// `annex devices allow-control|allow-sound|allow-mic <device> on|off`.
+    Allow {
+        what: Permission,
         device: String,
         on: bool,
     },
@@ -160,10 +192,15 @@ pub fn parse(args: &[String]) -> Result<Parsed, Usage> {
         }
         "devices" => match a.rest.first().map(String::as_str) {
             None | Some("--json") => Command::Devices { json: a.flag("--json") },
-            Some("allow-control") => {
+            Some(w @ ("allow-control" | "allow-sound" | "allow-mic")) => {
+                let what = match w {
+                    "allow-control" => Permission::Control,
+                    "allow-sound" => Permission::Sound,
+                    _ => Permission::Mic,
+                };
                 a.rest.remove(0);
                 let device = a.word("a device's name or identity code")?;
-                Command::AllowControl { device, on: a.on_off("on or off")? }
+                Command::Allow { what, device, on: a.on_off("on or off")? }
             }
             Some("forget" | "remove") => {
                 a.rest.remove(0);
@@ -372,7 +409,7 @@ impl Command {
             Command::Get { key, .. } => format!("get {key}"),
             Command::Set { key, .. } => format!("set {key}"),
             Command::Devices { .. } => "devices".into(),
-            Command::AllowControl { on, .. } => format!("devices allow-control {}", on_off(*on)),
+            Command::Allow { what, on, .. } => format!("devices {} {}", what.word(), on_off(*on)),
             Command::Forget { .. } => "devices forget".into(),
             Command::Nearby { .. } => "nearby".into(),
             Command::Connect { to, extend } => format!(
@@ -476,6 +513,10 @@ Commands (they talk to the Annex that's running; none opens a window)
   devices [--json]              Paired devices
   devices allow-control <device> on|off
                                 Let a paired device use this computer's mouse and keyboard
+  devices allow-sound <device> on|off
+                                Let a paired device hear this computer's sound (on by default)
+  devices allow-mic <device> on|off
+                                Play a paired device's microphone here (on by default)
   devices forget <device> [--yes]
                                 Forget a paired device (it pairs again with a PIN)
   send <file>...                Send files (or folders) to the computer in the session
@@ -526,10 +567,12 @@ pub fn help_for(command: &str) -> Option<&'static str> {
              `default`.\n"
         }
         "devices" => {
-            "annex devices [--json]\nannex devices allow-control <device> on|off\nannex devices forget <device> \
-             [--yes]\n\nPaired devices: name, identity code, when it last connected, and whether it may use this \
-             computer's mouse and keyboard. <device> is its name or the start of its identity code. forget asks \
-             first unless --yes is given; the device needs a PIN to connect again.\n"
+            "annex devices [--json]\nannex devices allow-control <device> on|off\nannex devices allow-sound \
+             <device> on|off\nannex devices allow-mic <device> on|off\nannex devices forget <device> [--yes]\n\n\
+             Paired devices: name, identity code, when it last connected, whether it may use this computer's \
+             mouse and keyboard (off until allowed), hear its sound and play its microphone here (both on until \
+             turned off). <device> is its name or the start of its identity code. forget asks first unless \
+             --yes is given; the device needs a PIN to connect again.\n"
         }
         "nearby" => {
             "annex nearby [--json]\n\nComputers with Annex open on this network (or a private network like \
@@ -620,7 +663,14 @@ mod tests {
         );
         assert_eq!(run("devices"), Command::Devices { json: false });
         assert_eq!(run("devices --json"), Command::Devices { json: true });
-        assert_eq!(run("devices allow-control Mac on"), Command::AllowControl { device: "Mac".into(), on: true });
+        assert_eq!(
+            run("devices allow-control Mac on"),
+            Command::Allow { what: Permission::Control, device: "Mac".into(), on: true }
+        );
+        assert_eq!(
+            run("devices allow-mic Mac off"),
+            Command::Allow { what: Permission::Mic, device: "Mac".into(), on: false }
+        );
         assert_eq!(run("devices forget Mac Studio --yes"), Command::Forget { device: "Mac Studio".into(), yes: true });
         assert_eq!(run("connect 10.0.0.2"), Command::Connect { to: "10.0.0.2".into(), extend: None });
         assert_eq!(run("connect K7P-4QX --extend"), Command::Connect { to: "K7P-4QX".into(), extend: Some(true) });

@@ -681,7 +681,13 @@ async fn run_session(
     // Sound both ways, while this session lasts.
     let _audio = match quic {
         Some(conn) if req.mode == Mode::Mirror && peer.caps.iter().any(|c| c == crate::audio::CAP) => {
-            Some(crate::audio::start(shared.core.clone(), conn.clone(), id, true, crate::audio::Incoming::Conn))
+            Some(crate::audio::start(
+                shared.core.clone(),
+                conn.clone(),
+                id,
+                Some(fp.to_string()),
+                crate::audio::Incoming::Conn,
+            ))
         }
         _ => None,
     };

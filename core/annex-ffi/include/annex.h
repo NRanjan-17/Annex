@@ -88,6 +88,10 @@ char *annex_core_set_device_name(const AnnexCore *core, const char *name);
 /* Host: lets a trusted device control this computer's mouse and keyboard (off by default).
  * Returns 1 if changed, 0 if the device isn't trusted. Running sessions follow within ~1 s. */
 int32_t annex_core_set_allow_input(const AnnexCore *core, const char *fingerprint, bool allow);
+/* Host: lets a trusted device hear this computer's sound / its microphone play here (both on by
+ * default). Returns 1 if changed, 0 if the device isn't trusted. Sessions follow within ~0.25 s. */
+int32_t annex_core_set_allow_sound(const AnnexCore *core, const char *fingerprint, bool allow);
+int32_t annex_core_set_allow_mic(const AnnexCore *core, const char *fingerprint, bool allow);
 /* Headless (nobody at this screen): pairing PINs also go to <data>/pairing-pin.txt and paired
  * devices may use the mouse and keyboard without being allowed one by one. Returns 0. */
 int32_t annex_core_set_headless(const AnnexCore *core, bool on);

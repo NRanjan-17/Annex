@@ -219,6 +219,18 @@ final class CoreClient {
         try check(annex_core_set_allow_input(raw, fingerprint, allow)) == 1
     }
 
+    /// Lets a trusted device hear this Mac's sound (or stops it). Returns false if it isn't trusted.
+    @discardableResult
+    func setAllowSound(_ fingerprint: String, _ allow: Bool) throws -> Bool {
+        try check(annex_core_set_allow_sound(raw, fingerprint, allow)) == 1
+    }
+
+    /// Lets a trusted device's microphone play here (or stops it). Returns false if it isn't trusted.
+    @discardableResult
+    func setAllowMic(_ fingerprint: String, _ allow: Bool) throws -> Bool {
+        try check(annex_core_set_allow_mic(raw, fingerprint, allow)) == 1
+    }
+
     /// Headless (nobody at this screen): pairing PINs also go to `pairing-pin.txt` in the data
     /// folder, and paired devices may use the mouse and keyboard without being allowed one by one.
     func setHeadless(_ on: Bool) {

@@ -206,6 +206,30 @@ impl Core {
         self.trust.lock().unwrap().get(fingerprint).is_some_and(|p| p.allow_input || self.headless())
     }
 
+    /// Host side: lets a trusted device hear this computer's sound (on by default), or stops it.
+    /// Running sessions follow within a quarter of a second. Returns false if not trusted.
+    pub fn set_allow_sound(&self, fingerprint: &str, allow: bool) -> Result<bool, SessionError> {
+        tracing::info!(fingerprint, allow, "sound for this device");
+        Ok(self.trust.lock().unwrap().set_allow_sound(fingerprint, allow)?)
+    }
+
+    /// Host side: lets a trusted device's microphone play here (on by default), or stops it.
+    pub fn set_allow_mic(&self, fingerprint: &str, allow: bool) -> Result<bool, SessionError> {
+        tracing::info!(fingerprint, allow, "microphone from this device");
+        Ok(self.trust.lock().unwrap().set_allow_mic(fingerprint, allow)?)
+    }
+
+    /// Whether a device may hear this computer's sound. Devices that aren't paired (accepted
+    /// under `AcceptAllInsecure`) follow the sound settings alone.
+    pub fn allows_sound(&self, fingerprint: &str) -> bool {
+        self.trust.lock().unwrap().get(fingerprint).is_none_or(|p| p.allow_sound)
+    }
+
+    /// Whether a device's microphone may play here; see [`Core::allows_sound`].
+    pub fn allows_mic(&self, fingerprint: &str) -> bool {
+        self.trust.lock().unwrap().get(fingerprint).is_none_or(|p| p.allow_mic)
+    }
+
     /// Revokes a peer. Returns true if it was trusted.
     pub fn untrust(&self, fingerprint: &str) -> Result<bool, SessionError> {
         tracing::info!(fingerprint, "forgetting a device");

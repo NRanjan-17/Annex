@@ -1227,7 +1227,8 @@ private struct DevicesPage: View {
     }
 }
 
-/// One paired device: who it is, and whether it may use this Mac's mouse and keyboard.
+/// One paired device: who it is, whether it may use this Mac's mouse and keyboard, hear its
+/// sound and talk through its microphone.
 private struct DeviceGroup: View {
     @ObservedObject var model: AppModel
     let peer: TrustedPeer
@@ -1244,6 +1245,11 @@ private struct DeviceGroup: View {
                       subtitle: model.settings.headless ? "Allowed while No one at this screen is on." : nil,
                       isOn: Binding(get: { model.settings.headless || peer.allowInput }, set: { model.setAllowInput(peer, $0) }),
                       disabled: model.settings.headless)
+            ToggleRow(title: "Can hear this Mac's sound",
+                      subtitle: model.settings.shareSound ? nil : "This Mac's sound is off in Settings.",
+                      isOn: Binding(get: { peer.allowSound }, set: { model.setAllowSound(peer, $0) }))
+            ToggleRow(title: "Its microphone plays here",
+                      isOn: Binding(get: { peer.allowMic }, set: { model.setAllowMic(peer, $0) }))
         }
         .confirmationDialog("Remove \(peer.name)?", isPresented: $confirmRemove) {
             Button("Remove", role: .destructive) { model.revoke(peer) }

@@ -16,6 +16,16 @@ pub struct TrustedPeer {
     /// Host side: this device may control our mouse and keyboard. Off until the user turns it on.
     #[serde(default)]
     pub allow_input: bool,
+    /// Host side: this device hears this computer's sound. On unless the user turns it off.
+    #[serde(default = "yes")]
+    pub allow_sound: bool,
+    /// Host side: this device's microphone plays here. On unless the user turns it off.
+    #[serde(default = "yes")]
+    pub allow_mic: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -78,6 +88,8 @@ impl TrustStore {
                 added_at: t,
                 last_seen: t,
                 allow_input: false,
+                allow_sound: true,
+                allow_mic: true,
             }),
         }
         self.save()
@@ -98,6 +110,22 @@ impl TrustStore {
     pub fn set_allow_input(&mut self, fingerprint: &str, allow: bool) -> Result<bool, CryptoError> {
         let Some(p) = self.peers.iter_mut().find(|p| p.fingerprint == fingerprint) else { return Ok(false) };
         p.allow_input = allow;
+        self.save()?;
+        Ok(true)
+    }
+
+    /// Returns false if the peer isn't trusted.
+    pub fn set_allow_sound(&mut self, fingerprint: &str, allow: bool) -> Result<bool, CryptoError> {
+        let Some(p) = self.peers.iter_mut().find(|p| p.fingerprint == fingerprint) else { return Ok(false) };
+        p.allow_sound = allow;
+        self.save()?;
+        Ok(true)
+    }
+
+    /// Returns false if the peer isn't trusted.
+    pub fn set_allow_mic(&mut self, fingerprint: &str, allow: bool) -> Result<bool, CryptoError> {
+        let Some(p) = self.peers.iter_mut().find(|p| p.fingerprint == fingerprint) else { return Ok(false) };
+        p.allow_mic = allow;
         self.save()?;
         Ok(true)
     }
@@ -145,9 +173,24 @@ mod tests {
         s.add(&fp, "Laptop 2").unwrap();
         assert!(s.get(&fp).unwrap().allow_input);
         assert!(!s.set_allow_input(&"b".repeat(64), true).unwrap());
+        // Sound and microphone are on until turned off.
+        assert!(s.get(&fp).unwrap().allow_sound && s.get(&fp).unwrap().allow_mic);
+        assert!(s.set_allow_mic(&fp, false).unwrap());
+        assert!(!TrustStore::open(&path).unwrap().get(&fp).unwrap().allow_mic);
         assert!(s.remove(&fp).unwrap());
         assert!(!s.remove(&fp).unwrap());
         assert!(!TrustStore::open(&path).unwrap().is_trusted(&fp));
+    }
+
+    #[test]
+    fn devices_paired_before_the_sound_switches_keep_sound() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trust.json");
+        let fp = "a".repeat(64);
+        let old = format!(r#"{{"version":1,"peers":[{{"fingerprint":"{fp}","name":"Mac","added_at":1}}]}}"#);
+        std::fs::write(&path, old).unwrap();
+        let p = TrustStore::open(&path).unwrap().get(&fp).unwrap().clone();
+        assert!(p.allow_sound && p.allow_mic && !p.allow_input);
     }
 
     #[test]
