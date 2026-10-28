@@ -110,7 +110,7 @@ impl SoundHub {
             capture: Mutex::new(None),
             pushed: Mutex::new(None),
             ducked_until: Arc::default(),
-            echo: Arc::new(Mutex::new(Echo::new())),
+            echo: Arc::new(Mutex::new(Echo::new(false))),
             start: Instant::now(),
         }
     }
@@ -247,7 +247,7 @@ async fn run(core: Arc<Core>, conn: quinn::Connection, id: u64, viewer: Option<S
     let mut player_failed = false;
     let mut decoder = Decoder::new().ok();
     // Viewer: the other computer's sound, as it plays here, is taken out of the microphone.
-    let echo = Arc::new(Mutex::new(Echo::new()));
+    let echo = Arc::new(Mutex::new(Echo::new(true)));
     let (mut received, mut bad) = (0u64, 0u64);
     let seq = Arc::new(AtomicU32::new(0));
     let start = Instant::now();

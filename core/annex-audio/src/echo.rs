@@ -12,6 +12,8 @@ use crate::RATE;
 
 /// AEC3 works on 10 ms blocks.
 const BLOCK: usize = RATE as usize / 100;
+/// Blocks after the last played sound before sound that isn't a voice passes untouched (2 s).
+const IDLE_BLOCKS: u32 = 200;
 
 pub struct Echo {
     apm: AudioProcessing,
@@ -21,19 +23,19 @@ pub struct Echo {
     sent: Vec<f32>,
     clean: Vec<f32>,
     scratch: Vec<f32>,
-}
-
-impl Default for Echo {
-    fn default() -> Self {
-        Echo::new()
-    }
+    voice: bool,
+    /// Blocks sent since sound last played here.
+    since_played: u32,
 }
 
 impl Echo {
-    pub fn new() -> Echo {
+    /// `voice`: what's sent is a microphone, so background noise is taken out too. Otherwise
+    /// (a computer's own sound: music, videos, games) only the echo is, and only while something
+    /// plays here; the rest of the time it passes untouched.
+    pub fn new(voice: bool) -> Echo {
         let config = Config {
             echo_canceller: Some(EchoCanceller::default()),
-            noise_suppression: Some(NoiseSuppression::default()),
+            noise_suppression: voice.then(NoiseSuppression::default),
             ..Default::default()
         };
         let apm = AudioProcessing::builder()
@@ -41,12 +43,21 @@ impl Echo {
             .capture_config(StreamConfig::new(RATE, 1))
             .render_config(StreamConfig::new(RATE, 1))
             .build();
-        Echo { apm, played: Vec::new(), sent: Vec::new(), clean: Vec::new(), scratch: vec![0.0; BLOCK] }
+        Echo {
+            apm,
+            played: Vec::new(),
+            sent: Vec::new(),
+            clean: Vec::new(),
+            scratch: vec![0.0; BLOCK],
+            voice,
+            since_played: IDLE_BLOCKS,
+        }
     }
 
     /// Sound this computer is playing aloud (48 kHz mono, any length).
     pub fn played(&mut self, samples: &[f32]) {
         self.played.extend_from_slice(samples);
+        self.since_played = 0;
         let whole = self.played.len() / BLOCK * BLOCK;
         for block in self.played[..whole].as_chunks::<BLOCK>().0 {
             let _ = self.apm.process_render_f32(&[&block[..]], &mut [&mut self.scratch[..]]);
@@ -60,7 +71,9 @@ impl Echo {
         self.sent.extend_from_slice(frame);
         let whole = self.sent.len() / BLOCK * BLOCK;
         for block in self.sent[..whole].as_chunks::<BLOCK>().0 {
-            if self.apm.process_capture_f32(&[&block[..]], &mut [&mut self.scratch[..]]).is_ok() {
+            self.since_played = self.since_played.saturating_add(1);
+            let idle = !self.voice && self.since_played > IDLE_BLOCKS;
+            if !idle && self.apm.process_capture_f32(&[&block[..]], &mut [&mut self.scratch[..]]).is_ok() {
                 self.clean.extend_from_slice(&self.scratch);
             } else {
                 self.clean.extend_from_slice(block);
@@ -89,7 +102,7 @@ mod tests {
     /// the cleaned microphone carries far less of it.
     #[test]
     fn played_sound_is_taken_out_of_the_microphone() {
-        let mut echo = Echo::new();
+        let mut echo = Echo::new(false);
         let mut seed = 1u32;
         let mut noise = || {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -116,9 +129,23 @@ mod tests {
         assert!(erle_db > 15.0, "only {erle_db:.1} dB of echo removed");
     }
 
+    /// A computer's own sound with nothing playing here comes out exactly as it went in.
+    #[test]
+    fn music_passes_untouched_while_nothing_plays_here() {
+        let mut echo = Echo::new(false);
+        let music: Vec<f32> = (0..FRAME * 10).map(|i| (i as f32 * 0.05).sin() * 0.3).collect();
+        let mut out = Vec::new();
+        for f in music.chunks(FRAME) {
+            let mut f = f.to_vec();
+            echo.clean(&mut f);
+            out.extend(f);
+        }
+        assert_eq!(out, music);
+    }
+
     #[test]
     fn a_frame_comes_out_the_same_length() {
-        let mut echo = Echo::new();
+        let mut echo = Echo::new(true);
         let mut f = vec![0.1f32; FRAME];
         echo.clean(&mut f);
         assert_eq!(f.len(), FRAME);
