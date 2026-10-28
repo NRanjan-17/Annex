@@ -9,8 +9,8 @@
       },
       {
         "kind": "improved",
-        "title": "The log explains the relay",
-        "detail": "It says which network blocked a direct connection, and when a session switches to the relay. Sessions stay end to end encrypted either way."
+        "title": "Clearer logs for internet connections",
+        "detail": "If a connection over the internet is slow or uses the relay, the log now helps find out why. Sessions stay end to end encrypted either way."
       }
     ]
   },
