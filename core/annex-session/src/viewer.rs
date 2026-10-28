@@ -614,6 +614,7 @@ async fn join_by_code(
         None => InternetSocket::bind()?,
     };
     let addrs = net.candidates(crate::resolve_stun(&j.servers.stun).await?).await?;
+    net.udp.set_punch_code(&j.code);
     let joined = crate::rendezvous::join(&j.servers.rendezvous, &j.code, &core.device_name(), &addrs).await?;
     let host = joined.peer.addrs.clone();
     tracing::info!(name = %joined.peer.name, addrs = ?host, "joined by code");
@@ -739,7 +740,9 @@ async fn race(
     for (i, &addr) in addrs.iter().enumerate() {
         try_addr(&mut tries, core, cfg, endpoint, addr, Duration::from_millis(100 * i as u64));
     }
+    // Learned addresses: at most MAX_LEARNED in all, and only while the host is punching.
     let mut learned: Vec<std::net::SocketAddr> = Vec::new();
+    let learn_until = tokio::time::Instant::now() + crate::punch::PUNCH_FOR;
     let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut last_err = None;
     loop {
@@ -756,8 +759,11 @@ async fn race(
                 }
                 Some(Err(_)) => {}
             },
-            _ = tick.tick(), if learn_from.is_some() => {
+            _ = tick.tick(), if learn_from.is_some() && tokio::time::Instant::now() < learn_until => {
                 for addr in learn_from.map(|u| u.learned(&addrs)).unwrap_or_default() {
+                    if learned.len() >= crate::punch::MAX_LEARNED {
+                        break;
+                    }
                     if !learned.contains(&addr) {
                         tracing::info!(%addr, "also trying where the host's packets come from (hard NAT there)");
                         learned.push(addr);

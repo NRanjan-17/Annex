@@ -212,6 +212,13 @@ impl HostHandle {
         Ok(out)
     }
 
+    /// Punches carry a token made from `code` (see [`PunchSocket::set_punch_code`]).
+    pub fn set_punch_code(&self, code: &str) {
+        if let Some(udp) = &self.shared.udp {
+            udp.set_punch_code(code);
+        }
+    }
+
     /// Logs why the viewer at `viewer` couldn't connect directly, as far as this side can tell.
     pub fn log_why_not_direct(&self, viewer: &[SocketAddr]) {
         if let Some(udp) = &self.shared.udp {

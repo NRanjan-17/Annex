@@ -26,6 +26,8 @@ pub const PUNCH_FOR: Duration = Duration::from_secs(6);
 const PUNCH_EVERY: Duration = Duration::from_millis(200);
 /// At most this many learned addresses per peer are tried (see [`PunchSocket::learned`]).
 pub const MAX_LEARNED: usize = 4;
+/// At most this many punch sources are remembered (for the log and [`PunchSocket::learned`]).
+const MAX_HEARD: usize = 32;
 /// TURN permissions last 5 minutes (RFC 8656 §9); renew them, and the allocation, before then.
 static RELAY_REFRESH_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(240_000);
 
@@ -97,8 +99,11 @@ pub struct PunchSocket {
     relay: Mutex<Option<Relay>>,
     /// Packets unwrapped from the relay, waiting for QUIC to read them: (from, data).
     relayed_in: Mutex<VecDeque<(SocketAddr, Vec<u8>)>>,
-    /// Where punches from punched peers' IPs came from (for the log).
+    /// Where punches from punched peers' IPs came from, carrying `token` (for the log).
     heard: Mutex<HashSet<SocketAddr>>,
+    /// The transaction id punches carry, made from the code both computers know (see
+    /// [`PunchSocket::set_punch_code`]); `None`: punches carry random ids and none are learned from.
+    token: Mutex<Option<stun::TransactionId>>,
     /// This router's ports, once checked (for the log).
     router: Mutex<Option<Router>>,
 }
@@ -118,6 +123,7 @@ impl PunchSocket {
             relay: Mutex::default(),
             relayed_in: Mutex::default(),
             heard: Mutex::default(),
+            token: Mutex::default(),
             router: Mutex::default(),
         })
     }
@@ -233,6 +239,14 @@ impl PunchSocket {
         tracing::info!(%public, port_kept, "network check: {what}");
         *self.router.lock().unwrap() = Some(router);
         router
+    }
+
+    /// Punches carry a token made from `code`, which only the two computers know, and only punches
+    /// with it are learned from: another customer behind the same ISP address (or anyone spoofing
+    /// it) can't pass their own port off as the peer's. Forgets earlier sessions' punches.
+    pub fn set_punch_code(&self, code: &str) {
+        *self.token.lock().unwrap() = Some(punch_token(code));
+        self.heard.lock().unwrap().clear();
     }
 
     /// Where `peers`' punches really came from, when not from an address they gave: a router that
@@ -417,12 +431,13 @@ impl PunchSocket {
         tracing::debug!(?peers, "punching through to");
         self.punched.lock().unwrap().extend(peers.iter().copied());
         let me = self.clone();
+        let id = self.token.lock().unwrap().unwrap_or_else(rand_id);
         tokio::spawn(async move {
             let end = tokio::time::Instant::now() + PUNCH_FOR;
             while tokio::time::Instant::now() < end {
                 for &p in &peers {
                     // Unreachable candidates (e.g. IPv6 from an IPv4-only socket) are skipped.
-                    let _ = me.send_raw(p, &stun::binding_indication(&rand_id())).await;
+                    let _ = me.send_raw(p, &stun::binding_indication(&id)).await;
                 }
                 tokio::time::sleep(PUNCH_EVERY).await;
             }
@@ -446,15 +461,21 @@ impl PunchSocket {
         false
     }
 
-    /// An unasked-for STUN packet (a punch) from `from`. The first from each address on a punched
-    /// peer's IP is logged: from the address that peer gave, or from another port, which means
-    /// the peer's router picks a new port for each address.
-    fn note_punch(&self, from: SocketAddr) {
-        let given: Vec<SocketAddr> =
-            self.punched.lock().unwrap().iter().filter(|p| p.ip() == from.ip()).copied().collect();
-        if given.is_empty() || !self.heard.lock().unwrap().insert(from) {
+    /// An unasked-for STUN packet (`data`, a punch) from `from`. Counted only with this session's
+    /// token, from a punched peer's IP. The first from each address is logged: from the address
+    /// that peer gave, or from another port (the peer's router picks a new port for each address).
+    fn note_punch(&self, from: SocketAddr, data: &[u8]) {
+        let token = *self.token.lock().unwrap();
+        if token.is_none() || stun::transaction_id(data) != token {
             return;
         }
+        let given: Vec<SocketAddr> =
+            self.punched.lock().unwrap().iter().filter(|p| p.ip() == from.ip()).copied().collect();
+        let mut heard = self.heard.lock().unwrap();
+        if given.is_empty() || heard.len() >= MAX_HEARD || !heard.insert(from) {
+            return;
+        }
+        drop(heard);
         if given.contains(&from) {
             tracing::info!(%from, "network check: the other computer's punch got through, from the address it gave");
         } else {
@@ -501,6 +522,15 @@ impl PunchSocket {
     fn relay_server(&self) -> Option<SocketAddr> {
         self.relay.lock().unwrap().as_ref().map(|r| r.server)
     }
+}
+
+/// The punch token for a code, however it was typed (case, dashes and spaces don't matter).
+fn punch_token(code: &str) -> stun::TransactionId {
+    let code: String = code.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect();
+    let digest = ring::digest::digest(&ring::digest::SHA256, format!("annex punch v1 {code}").as_bytes());
+    let mut id = [0u8; 12];
+    id.copy_from_slice(&digest.as_ref()[..12]);
+    id
 }
 
 fn canonical(a: SocketAddr) -> SocketAddr {
@@ -571,7 +601,7 @@ impl AsyncUdpSocket for PunchSocket {
                 }
                 if m.len == m.stride && stun::is_stun(&bufs[i][..m.len]) {
                     if !self.take_stun(&bufs[i][..m.len]) {
-                        self.note_punch(canonical(m.addr));
+                        self.note_punch(canonical(m.addr), &bufs[i][..m.len]);
                     }
                     continue;
                 }
@@ -657,5 +687,11 @@ mod tests {
         ] {
             assert_eq!(is_global_v6(&ip.parse().unwrap()), global, "{ip}");
         }
+    }
+
+    #[test]
+    fn both_computers_make_the_same_punch_token_from_the_code() {
+        assert_eq!(punch_token("K7P2QX"), punch_token("k7p-2qx "));
+        assert_ne!(punch_token("K7P2QX"), punch_token("K7P2QY"));
     }
 }
