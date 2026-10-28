@@ -373,9 +373,10 @@ mod tests {
         // Nothing is known before the first frame, so frames 0..5 aren't reported.
         let out = push_all(&mut r, &fragment(5, 0, VideoFlags(0), &frame(500), 1200, 10).unwrap());
         assert!(out.lost.is_empty());
-        // Frame 6 vanished entirely, frame 7 lost a shard too many, frame 8 arrives.
+        // Frame 6 vanished entirely, frame 7 lost a shard too many (three, against two parity),
+        // frame 8 arrives.
         let seven = fragment(7, 0, VideoFlags(0), &frame(5000), 1200, 10).unwrap();
-        push_all(&mut r, &seven[2..]);
+        push_all(&mut r, &seven[3..]);
         let out = push_all(&mut r, &fragment(8, 0, VideoFlags(0), &frame(500), 1200, 10).unwrap());
         assert_eq!(out.lost, vec![6, 7]);
         assert_eq!((out.frames.len(), r.frames_lost), (1, 2));
