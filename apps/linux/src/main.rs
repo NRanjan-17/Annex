@@ -145,6 +145,8 @@ thread_local! {
 
 fn start(app: &gtk::Application, opts: cli::LaunchOpts, used_before: bool) {
     ui::load_css();
+    // The taskbar and window switcher show Annex's icon (installed by the packages), not a generic one.
+    gtk::Window::set_default_icon_name("annex");
     // Keep running with no window open: Annex lives in the tray.
     std::mem::forget(app.hold());
 

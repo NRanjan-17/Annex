@@ -159,8 +159,19 @@ window.annex {
   background-image: none; background-color: rgba(255, 255, 255, 0.06); border: 1px solid rgba(255, 255, 255, 0.10);
   box-shadow: none; border-radius: 9px; color: #f2f2f2; min-height: 30px;
 }
-.annex-content switch:checked { background-color: #d0d0d0; }
-.annex-content switch:checked slider { background-color: #141414; }
+/* Switches drawn from scratch: themes like Mint-Y paint them with images that would show through. */
+.annex-content switch {
+  background-image: none; background-color: rgba(255, 255, 255, 0.14); border: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow: none; outline: none; border-radius: 13px; min-width: 44px; min-height: 24px; padding: 0;
+}
+.annex-content switch image { opacity: 0; }
+.annex-content switch slider {
+  background-image: none; background-color: #f2f2f2; border: none; outline: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.45); border-radius: 11px; min-width: 20px; min-height: 20px; margin: 2px;
+}
+.annex-content switch:checked { background-color: rgba(255, 255, 255, 0.92); border-color: transparent; }
+.annex-content switch:checked slider { background-color: #141414; box-shadow: none; }
+.annex-content switch:disabled { opacity: 0.45; }
 
 /* Something live: the only colour. */
 .annex-content .live-dot { min-width: 8px; min-height: 8px; border-radius: 4px; background-color: #3dd185;

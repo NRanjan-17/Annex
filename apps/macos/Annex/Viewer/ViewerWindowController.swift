@@ -407,8 +407,9 @@ final class VideoView: NSView {
     override func scrollWheel(with event: NSEvent) {
         guard controlling else { return super.scrollWheel(with: event) }
         // Precise (trackpad) deltas are pixels; wheel deltas are lines of roughly 10 pixels.
-        // Only natural scrolling is reversed; with it off, this Mac already scrolls like the PC.
-        let flip = reverseScroll && event.isDirectionInvertedFromDevice
+        // Only a mouse wheel under natural scrolling is reversed, so it turns like the PC's own wheel.
+        // A trackpad (or Magic Mouse) keeps natural scrolling: its precise deltas are never flipped.
+        let flip = reverseScroll && event.isDirectionInvertedFromDevice && !event.hasPreciseScrollingDeltas
         let scale: CGFloat = (event.hasPreciseScrollingDeltas ? 1 : 10) * (flip ? -1 : 1)
         scrollRest.x += event.scrollingDeltaX * scale
         scrollRest.y += event.scrollingDeltaY * scale

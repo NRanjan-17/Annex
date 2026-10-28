@@ -4,7 +4,8 @@ Name=Annex
 GenericName=Screen Sharing
 Comment=Show another computer's screen, share this one, or use it as an extra display
 Exec=annex
-Icon=annex
+# A full path, so app menus that cached the entry before the icon theme updated (Cinnamon) still show it.
+Icon=/usr/share/icons/hicolor/256x256/apps/annex.png
 Terminal=false
 Categories=Network;RemoteAccess;
 Keywords=screen;share;display;extend;mirror;remote;
