@@ -93,7 +93,7 @@ To turn it off again: `npx wrangler secret delete TURN_KEY_ID`.
 
 | Limit | Default | Effect |
 |---|---|---|
-| `RELAY_PER_DEVICE_PER_DAY` | 10 | Relay logins a day (UTC) per sharing computer, counted by its identity code (or its address, for apps that don't send one). `0` turns the relay off without removing the secrets. |
+| `RELAY_PER_DEVICE_PER_DAY` | 10 | Relay logins a day (UTC) per sharing computer, counted by its identity code together with its address (or by address alone, for apps that don't send one). `0` turns the relay off without removing the secrets. |
 | `RELAY_TTL_SECONDS` | 86400 | How long a login works (24 hours); then Cloudflare drops the session. |
 
 There is no total cap and no bitrate cap: a relayed session runs at the same quality as a direct

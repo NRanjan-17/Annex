@@ -185,7 +185,9 @@ export class CodeRoom extends DurableObject<Env> {
     if (!hostWs) return this.end("no_relay");
     await this.ctx.storage.put("asked", true);
     const host = await this.ctx.storage.get<HostInfo>("host");
-    const who = host?.device ? `device:${host.device}` : `ip:${host?.ip}`;
+    // The identity code isn't secret (apps show it), so it's counted together with the address:
+    // nobody elsewhere can spend another computer's logins.
+    const who = host?.device ? `device:${host.device}@${host.ip}` : `ip:${host?.ip}`;
     const turn = host && !host.ownRelay ? await relayLogin(this.env, who) : null;
     hostWs.send(JSON.stringify({ type: "need_relay", turn }));
   }
