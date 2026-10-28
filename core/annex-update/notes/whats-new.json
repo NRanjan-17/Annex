@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.3.7-pre.1",
+    "items": [
+      {
+        "kind": "improved",
+        "title": "More direct internet connections",
+        "detail": "When the sharing computer's internet provider gives each connection its own port, Annex now finds it, so fewer sessions need the relay."
+      },
+      {
+        "kind": "improved",
+        "title": "The log explains the relay",
+        "detail": "It says which network blocked a direct connection, and when a session switches to the relay. Sessions stay end to end encrypted either way."
+      }
+    ]
+  },
+  {
     "version": "0.3.6",
     "items": [
       {
