@@ -411,6 +411,11 @@ impl State {
         if self.screen.lock().unwrap().is_none() {
             return;
         }
+        if let Err(e) = self.reopen_gnome() {
+            drop(slot);
+            self.fail(e);
+            return;
+        }
         // On a link that's already slow, start with the smaller picture.
         let lowest = self.lowest_mirror_scale();
         let (reduced, picture) = self.mirror_picture(lowest, false);
@@ -426,6 +431,20 @@ impl State {
                 self.fail(format!("Screen capture didn't start: {e}"));
             }
         }
+    }
+
+    /// GNOME closes its screen cast when the screen locks; the next viewer gets a new one.
+    fn reopen_gnome(&self) -> Result<(), String> {
+        let closed = matches!(self.screen.lock().unwrap().as_ref(), Some(Screen::Gnome(g)) if g.is_closed());
+        if !closed {
+            return Ok(());
+        }
+        tracing::info!(target: "annex::capture", "sharing: GNOME closed the last screen cast; opening a new one");
+        let g = self.rt.block_on(crate::gnome::start(false))?;
+        let size = (self.stream.width as i32, self.stream.height as i32);
+        *self.injector.lock().unwrap() = Some(Injector::Portal(crate::inject::Portal::new(g.input.clone(), size)));
+        *self.screen.lock().unwrap() = Some(Screen::Gnome(g));
+        Ok(())
     }
 
     /// The mirror capture, sending `picture` (the full stream or adaptive bitrate's smaller one)

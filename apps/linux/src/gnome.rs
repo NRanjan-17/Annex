@@ -3,6 +3,8 @@
 //! mouse and keyboard, without a portal dialog: the user turned sharing on in Annex.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
@@ -16,10 +18,16 @@ const SC: &str = "org.gnome.Mutter.ScreenCast";
 pub struct Started {
     pub node: u32,
     pub input: mpsc::UnboundedSender<PortalInput>,
+    closed: Arc<AtomicBool>,
     _stop: tokio::sync::oneshot::Sender<()>,
 }
 
 impl Started {
+    /// GNOME ended the cast: the screen locked, or GNOME Shell restarted. Its stream is gone.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     pub fn source(&self, size: Option<(u32, u32)>) -> String {
         // A virtual monitor takes the size the stream asks for. (Mutter offers a frame-rate
         // range; fixing one fails to negotiate. The encoder side caps the rate.)
@@ -32,6 +40,10 @@ impl Started {
 }
 
 fn err(e: zbus::Error) -> String {
+    // Mutter refuses new casts while the screen is locked.
+    if e.to_string().contains("inhibited") {
+        return "GNOME won't share the screen while it's locked. Unlock it (`loginctl unlock-session` over SSH), then turn sharing on again.".into();
+    }
     format!("GNOME's screen sharing failed: {e}")
 }
 
@@ -62,6 +74,7 @@ pub async fn start(virtual_display: bool) -> Result<Started, String> {
     };
     let stream = zbus::Proxy::new(&conn, SC, stream_path.clone(), format!("{SC}.Stream")).await.map_err(err)?;
     let mut added = stream.receive_signal("PipeWireStreamAdded").await.map_err(err)?;
+    let mut ended = rd_session.receive_signal("Closed").await.map_err(err)?;
 
     rd_session.call::<_, _, ()>("Start", &()).await.map_err(err)?;
     let node: u32 = tokio::time::timeout(std::time::Duration::from_secs(10), added.next())
@@ -75,11 +88,18 @@ pub async fn start(virtual_display: bool) -> Result<Started, String> {
     tracing::info!(node, virtual_display, "GNOME: screen stream started");
     let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
     let (tx, mut rx) = mpsc::unbounded_channel::<PortalInput>();
+    let closed = Arc::new(AtomicBool::new(false));
     let stream_path = stream_path.to_string();
+    let gone = closed.clone();
     tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = &mut stopped => break,
+                _ = ended.next() => {
+                    tracing::info!("GNOME: closed the screen cast (the screen locked?); a new one opens for the next viewer");
+                    gone.store(true, Ordering::Release);
+                    return;
+                }
                 msg = rx.recv() => {
                     let Some(msg) = msg else { break };
                     let r = match msg {
@@ -111,5 +131,5 @@ pub async fn start(virtual_display: bool) -> Result<Started, String> {
         }
         tracing::info!("GNOME: screen stream stopped");
     });
-    Ok(Started { node, input: tx, _stop: stop })
+    Ok(Started { node, input: tx, closed, _stop: stop })
 }
