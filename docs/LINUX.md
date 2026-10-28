@@ -180,7 +180,115 @@ curl -fsSL https://raw.githubusercontent.com/NRanjan-17/Annex/main/scripts/insta
 
 It removes Annex, its settings, its identity and trusted devices, and the packages that were installed only for Annex; packages you had before stay. `sudo apt remove annex` removes Annex alone.
 
-Options: `annex --share` starts sharing, `annex --connect <address or code> [--extend]` connects, `annex --background` starts in the tray, `annex --headless` turns on No one at this screen ([GUIDE.md](GUIDE.md#a-computer-with-no-one-at-its-screen)).
+### Command line
+
+`annex` is also a command-line tool, so a computer reached only over SSH (a Raspberry Pi, a Jetson) can be run from the terminal: every setting, and everything the window does.
+
+- **Starting** keeps the options it always had (`--background`, `--share`, `--headless`, `--connect <address | code> [--extend]`), so autostart entries and scripts work as before. Given to an Annex that's already running, they now apply to it (`annex --share` turns sharing on) and show its window unless `--background`.
+- **Commands** (`annex status`, `annex set headless on`, …) go to the Annex that's running: Annex is a GApplication that handles command lines, so a second `annex` hands its arguments to the running one over the session bus; that one runs the command on its main thread and prints the answer, and the exit status, in the first one's terminal. Commands never open a window (a connection opens the video window, as it does from the window). Commands that wait for something (`connect`, `code`, `pin enter`, `update check`) answer once it's done, or after 20 seconds (40 for updates).
+- **Without a running Annex**, `settings`, `get`, `set` and `devices` change the files (`~/.config/annex/settings.json`, the paired devices in `~/.local/share/annex`) and Annex uses them when it starts; `start` starts it in the background on the desktop's display, out of the SSH session; the rest say Annex isn't running.
+- Over SSH, log in as the user whose desktop runs Annex. The session bus is found at `/run/user/<uid>/bus`; if it isn't, `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus` points `annex` to it.
+- `set` applies a change the way the Settings page does: `open-at-login` writes the autostart entry, `verbose-logging` switches the log, the sound switches go to the core, `name` renames this computer. The relay password and pairing PINs are never taken on the command line: `annex set relay-password` and `annex pin enter` ask for them without showing what's typed (or read a pipe). `annex pin` prints a PIN because you asked; nothing logs PINs, codes or the relay password. The log records each command as `cli: <command>` (`cli: set headless`, never the value of a secret).
+- `--json` on `status`, `settings`, `get`, `devices`, `nearby`, `transfers` and `update check`, for scripts. Exit status: 0 done, 1 failed, 2 wrong usage.
+
+A Raspberry Pi with no one at its screen, from SSH:
+
+```sh
+annex start --headless --share     # or, if it's running: annex set headless on && annex share on
+annex set open-at-login on         # starts by itself from now on
+annex set share-at-launch on
+annex pin                          # when another computer pairs: the PIN to type there
+annex status
+annex code                         # a code for connecting over the internet
+annex send ~/report.pdf            # to the computer in the session
+annex devices allow-control "Mac Studio" on
+```
+
+`annex help`:
+
+```text
+Annex: use another computer as a display, or show its screen.
+
+Usage: annex [--background] [--share] [--headless] [--connect <address | code> [--extend]]
+       annex <command> [options]
+
+Starting Annex
+  annex                         Open Annex (or show its window if it's already open)
+  annex --background            Start in the tray, without the window
+  annex --share                 Share this screen as soon as it starts
+  annex --headless              Turn on No one at this screen (for a computer reached over SSH)
+  annex --connect <to> [--extend]
+                                Connect at once to an address or a code
+  annex start [--headless] [--share]
+                                Start Annex in the background from a terminal, and wait for it
+  annex quit                    Quit Annex (ends every session)
+
+Commands (they talk to the Annex that's running; none opens a window)
+  status [--json]               Running?, name, sharing, sessions, viewing, updates
+  share on|off                  Share this screen, or stop
+  connect <to> [--extend|--mirror]
+                                View (or extend to) a computer: an address, a code, or a name in Nearby
+  disconnect                    End the session this computer is viewing
+  code                          Get a code for connecting over the internet (turns sharing on)
+  code stop                     Stop the code
+  pin                           Print the pairing PIN another computer is waiting for
+  pin enter                     Type the PIN another computer shows (read from the terminal)
+  nearby [--json]               Computers with Annex open on the network
+  devices [--json]              Paired devices
+  devices allow-control <device> on|off
+                                Let a paired device use this computer's mouse and keyboard
+  devices forget <device> [--yes]
+                                Forget a paired device (it pairs again with a PIN)
+  send <file>...                Send files (or folders) to the computer in the session
+  transfers [--json]            Files being sent or received, with their numbers
+  pause|resume|unsend <number>  Pause, resume or take back a file being sent
+  settings [--json]             Every setting, its value and what it takes
+  get <setting> [--json]        One setting's value
+  set <setting> <value>         Change a setting (applied at once if Annex is running)
+  update check [--json]         Look for a newer version
+  logs [--path] [--follow] [-n <lines>]
+                                Show the end of the log, its path, or follow it
+  version                       Annex's version
+  help [command]                This help, or more on one command
+
+<device> is a paired device's name or the start of its identity code.
+Without a running Annex, settings and paired devices are changed in their files; other commands
+say Annex isn't running. Exit status: 0 done, 1 failed, 2 wrong usage.
+```
+
+Every setting (`annex settings` shows their values):
+
+| Setting | Takes | What it is |
+|---|---|---|
+| `name` | text, or `default` | This computer's name, shown to other computers (default: the computer's own name) |
+| `open-at-login` | on, off | Start Annex in the tray when you log in |
+| `share-at-launch` | on, off | Share this screen when Annex opens |
+| `headless` | on, off | No one at this screen: PINs also go to pairing-pin.txt, paired devices control it without asking |
+| `quality` | best, balanced, fast | Picture quality when viewing; fast if it stutters on Wi-Fi |
+| `control` | on, off | Viewing: control the other computer with this one's mouse and keyboard, when it allows it |
+| `open-full-screen` | on, off | Viewing: open the other screen full screen |
+| `extend-by-default` | on, off | Connecting uses the other computer as a display instead of showing its screen |
+| `hardware-encoder` | on, off | Sharing: the graphics chip's video encoder (next time sharing turns on) |
+| `extend-scale` | auto, 100, 125, 150, 175, 200 | Sharing: text size on a computer extending this one; auto matches its screen (next time sharing turns on) |
+| `share-sound` | on, off | Sound: people viewing this computer hear what it plays |
+| `hear-sound` | on, off | Sound: play the other computer's sound here |
+| `send-mic` | on, off | Sound: send this microphone to the computer it views |
+| `virtual-mic` | on, off | Sound: a viewer's microphone becomes Annex Microphone here instead of playing aloud |
+| `share-clipboard` | on, off | Copy on one computer, paste on the other, while one controls the other |
+| `receive-files` | on, off | Take files the other computer sends, into Downloads |
+| `drop-island` | on, off | Drag files to the top of the screen to send them while connected |
+| `technical-details` | on, off | Show identity codes, routes, decoder and encoder in the window |
+| `verbose-logging` | on, off | Log every step (every input event, never which keys) |
+| `check-updates` | on, off | Look for updates on GitHub once a day |
+| `beta-updates` | on, off | Include beta versions when looking for updates |
+| `server` | text, or `default` | The code server (default: Annex's, wss://connect.getannex.dev) |
+| `relay` | text, or `default` | Your own TURN relay (turn:host:port), for networks that block direct connections |
+| `relay-username` | text, or `default` | Your relay's user name |
+| `relay-password` | typed at the prompt (or piped) | Your relay's password; `annex set relay-password` asks for it (empty clears it) |
+| `screen-token` | `clear` | The desktop's saved permission to share the screen; clear it to be asked again |
+| `last-seen-version` | read-only | The version whose What's New was last shown |
+| `beta-updates-chosen` | read-only | Beta updates was set by you (until then it follows the installed version) |
+| `verbose-logging-defaulted` | read-only | Internal: verbose logging was turned on once for installs from before it was the default |
 
 ## 6a. Building
 

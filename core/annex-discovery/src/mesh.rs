@@ -113,10 +113,25 @@ impl Drop for Responder {
 
 /// Asks each of `ips` whether Annex is there, waiting up to `wait` for answers.
 pub fn probe(ips: &[IpAddr], port: u16, wait: Duration) -> Vec<(IpAddr, Presence)> {
-    let Ok(socket) = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))) else { return Vec::new() };
+    let socket = match UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("private network: couldn't open a socket to ask ({e})");
+            return Vec::new();
+        }
+    };
     let q = ask();
+    let mut failed = Vec::new();
     for ip in ips.iter().filter(|ip| ip.is_ipv4()) {
-        let _ = socket.send_to(&q, SocketAddr::new(*ip, port));
+        // On a Mac, "no route to host" here is usually the Local Network permission turned off.
+        if let Err(e) = socket.send_to(&q, SocketAddr::new(*ip, port)) {
+            failed.push(format!("{ip}: {e}"));
+        }
+    }
+    if !failed.is_empty() {
+        note("send", format!("couldn't ask {} of {}: {}", failed.len(), ips.len(), failed.join(", ")));
+    } else {
+        note("send", String::new());
     }
     let deadline = Instant::now() + wait;
     let mut out: Vec<(IpAddr, Presence)> = Vec::new();
@@ -141,11 +156,25 @@ pub fn probe(ips: &[IpAddr], port: u16, wait: Duration) -> Vec<(IpAddr, Presence
 pub fn mesh_peers() -> Vec<IpAddr> {
     let mut out = Vec::new();
     for (names, args, parse) in SOURCES {
-        if !client_running(names[0]) {
+        let client = names[0];
+        if !client_running(client) {
+            note(client, format!("{client} isn't running"));
             continue;
         }
-        let Some(json) = names.iter().find_map(|n| run(n, args)) else { continue };
-        out.extend(parse(&json));
+        // Each copy of the client in turn; the reasons the others failed, if none answers.
+        let mut why = Vec::new();
+        let Some(json) = names.iter().find_map(|n| run(n, args).map_err(|e| why.push(format!("{n}: {e}"))).ok()) else {
+            // Not installed at all is normal (most people have one client, or none).
+            let missing = why.iter().all(|w| w.ends_with(NOT_INSTALLED));
+            note(
+                client,
+                if missing { String::new() } else { format!("couldn't list its computers ({})", why.join("; ")) },
+            );
+            continue;
+        };
+        let ips = parse(&json);
+        note(client, format!("{client} lists {} computer(s) to ask", ips.len()));
+        out.extend(ips);
     }
     // Testing: more addresses to ask, comma-separated (e.g. this computer's own mesh address).
     if let Ok(extra) = std::env::var("ANNEX_MESH_PEERS") {
@@ -240,31 +269,84 @@ fn client_running(client: &str) -> bool {
     })
 }
 
-/// Runs a mesh client's status command, if it's installed, for at most 3 seconds.
-fn run(program: &str, args: &[&str]) -> Option<String> {
+const NOT_INSTALLED: &str = "not installed";
+
+/// Logs what a mesh source said at info when it changes (so the log says why Nearby is empty
+/// without repeating it every 15 s), and at debug otherwise. An empty note clears it.
+fn note(source: &str, what: String) {
+    static LAST: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+    let mut last = LAST.lock().unwrap();
+    let changed = match last.iter_mut().find(|(s, _)| s == source) {
+        Some((_, old)) if *old == what => false,
+        Some((_, old)) => {
+            *old = what.clone();
+            true
+        }
+        None => {
+            last.push((source.to_string(), what.clone()));
+            true
+        }
+    };
+    if what.is_empty() {
+        return;
+    }
+    if changed {
+        tracing::info!("private network: {what}");
+    } else {
+        tracing::debug!("private network: {what}");
+    }
+}
+
+/// Runs a mesh client's status command, if it's installed, for at most 3 seconds; why not, if not.
+fn run(program: &str, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new(program);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    let mut child = cmd.spawn().ok()?;
-    let mut stdout = child.stdout.take()?;
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(NOT_INSTALLED.into()),
+        Err(e) => return Err(format!("couldn't start it: {e}")),
+    };
+    let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        return Err("no output".into());
+    };
     let reader = std::thread::spawn(move || {
         let mut s = String::new();
         io::Read::read_to_string(&mut stdout, &mut s).ok().map(|_| s)
     });
+    let errors = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = io::Read::read_to_string(&mut io::Read::take(&mut stderr, 2048), &mut s);
+        s
+    });
+    // The first line of what it printed on failure, short: it says why (logged out, stopped…).
+    let said = |errors: std::thread::JoinHandle<String>| {
+        let e = errors.join().unwrap_or_default();
+        let line = e.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(160).collect::<String>();
+        if line.is_empty() { String::new() } else { format!(": {line}") }
+    };
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return if status.success() { reader.join().ok().flatten() } else { None },
+            Ok(Some(status)) if status.success() => {
+                return reader.join().ok().flatten().ok_or_else(|| "its output wasn't text".to_string());
+            }
+            Ok(Some(status)) => return Err(format!("exited with {status}{}", said(errors))),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            _ => {
+            Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return None;
+                return Err("no answer within 3 s".into());
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("couldn't wait for it: {e}"));
             }
         }
     }

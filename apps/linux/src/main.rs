@@ -2,6 +2,7 @@
 //! display. GTK 4 for the window, GStreamer for video, the shared Rust core for the rest
 //! (docs/LINUX.md).
 
+mod cli;
 mod clipboard;
 mod desktop;
 mod drop_tray;
@@ -13,8 +14,10 @@ mod inject;
 mod layer;
 mod model;
 mod portal;
+mod remote;
 mod screencopy;
 mod settings;
+mod settings_keys;
 mod tray;
 mod ui;
 mod viewer;
@@ -28,48 +31,33 @@ use crate::model::Model;
 
 const APP_ID: &str = "dev.getannex.Annex";
 
-/// Command-line options, for open-at-login and scripts.
-#[derive(Clone, Default)]
-struct Opts {
-    /// Start in the tray without the window (open at login).
-    background: bool,
-    /// Share this screen right away.
-    share: bool,
-    /// Nobody at this screen: turn on (and keep) the headless setting.
-    headless: bool,
-    /// Connect to this address (or code) right away; `--extend` to use it as a display.
-    connect: Option<String>,
-    extend: bool,
-}
-
-const USAGE: &str =
-    "Usage: annex [--background] [--share] [--headless] [--connect <address | code> [--extend]] [--version]";
-
 fn main() -> glib::ExitCode {
     let args: Vec<String> = std::env::args().collect();
-    let mut opts = Opts::default();
-    let mut it = args.iter().skip(1);
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--background" => opts.background = true,
-            "--share" => opts.share = true,
-            "--headless" => opts.headless = true,
-            "--extend" => opts.extend = true,
-            "--connect" => opts.connect = it.next().cloned(),
-            "--version" => {
-                println!("Annex {}", env!("CARGO_PKG_VERSION"));
-                return glib::ExitCode::SUCCESS;
-            }
-            "--help" | "-h" => {
-                println!("{USAGE}");
-                return glib::ExitCode::SUCCESS;
-            }
-            other => {
-                eprintln!("unknown option {other}\n{USAGE}");
-                return glib::ExitCode::FAILURE;
-            }
+    let opts = match cli::parse(&args[1..]) {
+        Ok(cli::Parsed::Launch(opts)) => opts,
+        Ok(cli::Parsed::Help(topic)) => {
+            return match remote::help(topic.as_deref()) {
+                Ok(text) => {
+                    print!("{text}");
+                    glib::ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    glib::ExitCode::from(2)
+                }
+            };
         }
-    }
+        Ok(cli::Parsed::Version) => {
+            println!("{}", remote::version_line());
+            return glib::ExitCode::SUCCESS;
+        }
+        // `annex <command>`: to the running Annex, before any of the app starts here.
+        Ok(cli::Parsed::Run(cmd)) => return remote::client(&args, cmd),
+        Err(cli::Usage(e)) => {
+            eprintln!("{e}");
+            return glib::ExitCode::from(2);
+        }
+    };
 
     // Before the log and the identity exist: an update, or a first install?
     let used_before = settings::used_before();
@@ -97,28 +85,65 @@ fn main() -> glib::ExitCode {
         tracing::error!("app: couldn't register the GTK video sink: {e}");
     }
 
-    let app = gtk::Application::builder().application_id(APP_ID).build();
-    let started = std::cell::Cell::new(false);
-    app.connect_activate(move |app| {
-        // A second launch (or the desktop's launcher) shows the window of the running Annex.
-        if started.replace(true) {
-            tracing::info!("app: launched again; showing the window");
-            if let Some(model) = MODEL.with(|m| m.borrow().clone()) {
-                ui::present(app, &model);
+    // HANDLES_COMMAND_LINE: a second `annex …` hands its whole command line to this one
+    // (remote.rs), which answers in that terminal.
+    let app =
+        gtk::Application::builder().application_id(APP_ID).flags(gio::ApplicationFlags::HANDLES_COMMAND_LINE).build();
+    let started = std::rc::Rc::new(std::cell::Cell::new(false));
+    {
+        let started = started.clone();
+        app.connect_command_line(move |app, cmdline| {
+            let args: Vec<String> = cmdline.arguments().iter().map(|a| a.to_string_lossy().into_owned()).collect();
+            match cli::parse(args.get(1..).unwrap_or_default()) {
+                Ok(cli::Parsed::Launch(opts)) => {
+                    launch(app, opts, &started, used_before);
+                    glib::ExitCode::SUCCESS
+                }
+                Ok(cli::Parsed::Run(cmd)) => remote::run(app, cmdline, MODEL.with(|m| m.borrow().clone()), cmd),
+                other => remote::reply(cmdline, other),
             }
-            return;
-        }
-        start(app, opts.clone(), used_before);
-    });
-    // GTK would reject our own flags.
-    app.run_with_args(&args[..1])
+        });
+    }
+    // The desktop asking for Annex (its own launcher, a notification): the window.
+    app.connect_activate(move |app| launch(app, cli::LaunchOpts::default(), &started, used_before));
+    // GLib leaves options it doesn't know for the command-line handler.
+    app.run_with_args(&args)
+}
+
+/// Annex started, or was started again (`annex`, `annex --share`, the desktop's launcher): the
+/// options apply to the running one, and the window shows unless `--background`.
+fn launch(app: &gtk::Application, opts: cli::LaunchOpts, started: &std::cell::Cell<bool>, used_before: bool) {
+    if !started.replace(true) {
+        start(app, opts, used_before);
+        return;
+    }
+    tracing::info!(
+        background = opts.background,
+        share = opts.share,
+        headless = opts.headless,
+        connect = opts.connect.is_some(),
+        "app: launched again"
+    );
+    let Some(model) = MODEL.with(|m| m.borrow().clone()) else { return };
+    if opts.headless {
+        turn_on_headless(&model);
+    }
+    if opts.share {
+        ui::act(app, &model, |m| m.set_hosting(true));
+    }
+    if let Some(to) = opts.connect {
+        connect_at_launch(app, &model, &to, opts.extend);
+    }
+    if !opts.background {
+        ui::present(app, &model);
+    }
 }
 
 thread_local! {
     static MODEL: std::cell::RefCell<Option<model::Shared>> = const { std::cell::RefCell::new(None) };
 }
 
-fn start(app: &gtk::Application, opts: Opts, used_before: bool) {
+fn start(app: &gtk::Application, opts: cli::LaunchOpts, used_before: bool) {
     ui::load_css();
     // Keep running with no window open: Annex lives in the tray.
     std::mem::forget(app.hold());
@@ -171,12 +196,8 @@ fn start(app: &gtk::Application, opts: Opts, used_before: bool) {
     let share_clipboard = model.borrow().settings.share_clipboard;
     model.borrow_mut().set_clipboard_sharing(share_clipboard);
     model.borrow_mut().start_drop_tray();
-    if opts.headless && !model.borrow().settings.headless {
-        tracing::info!(target: "annex::settings", "settings: --headless turns on No one at this screen");
-        let mut m = model.borrow_mut();
-        m.settings.headless = true;
-        m.core.set_headless(true);
-        m.save_settings();
+    if opts.headless {
+        turn_on_headless(&model);
     }
     if let Some(file) = model.borrow().core.pin_file().filter(|_| model.borrow().settings.headless) {
         tracing::info!("headless: pairing PINs appear in {}", file.display());
@@ -207,16 +228,33 @@ fn start(app: &gtk::Application, opts: Opts, used_before: bool) {
         tracing::info!("app: started in the tray, without the window");
     }
     if let Some(to) = opts.connect {
-        tracing::info!(target: "annex::viewer", extend = opts.extend, "viewer: connecting at launch (--connect)");
-        let display = viewer::display_info(None::<&gtk::Widget>);
-        ui::act(app, &model, |m| {
-            if ui::looks_like_code(&to) {
-                m.connect_code(&to, opts.extend, display)
-            } else {
-                m.connect_address(&to, opts.extend, display)
-            }
-        });
+        connect_at_launch(app, &model, &to, opts.extend);
     }
+}
+
+/// `--headless` (or `annex start --headless`): turns on, and keeps, No one at this screen.
+fn turn_on_headless(model: &model::Shared) {
+    if model.borrow().settings.headless {
+        return;
+    }
+    tracing::info!(target: "annex::settings", "settings: --headless turns on No one at this screen");
+    let mut m = model.borrow_mut();
+    m.settings.headless = true;
+    m.core.set_headless(true);
+    m.save_settings();
+}
+
+/// `--connect <address | code> [--extend]`.
+fn connect_at_launch(app: &gtk::Application, model: &model::Shared, to: &str, extend: bool) {
+    tracing::info!(target: "annex::viewer", extend, "viewer: connecting at launch (--connect)");
+    let display = viewer::display_info(None::<&gtk::Widget>);
+    ui::act(app, model, |m| {
+        if ui::looks_like_code(to) {
+            m.connect_code(to, extend, display)
+        } else {
+            m.connect_address(to, extend, display)
+        }
+    });
 }
 
 fn quit(app: &gtk::Application, model: &model::Shared) {

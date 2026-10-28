@@ -14,6 +14,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 
 use crate::model::{Change, InternetShare, Model, SessionRole, Shared, UpdateState};
+use crate::settings_keys::Effect;
 
 const REPO: &str = "https://github.com/NRanjan-17/Annex";
 
@@ -232,7 +233,12 @@ pub fn apply(app: &gtk::Application, model: &Shared) {
                     crate::tray::refresh(&model.borrow());
                 }
                 Change::PinRequired { request_id, peer_name, fingerprint } => {
-                    ask_pin(app, model, request_id, &peer_name, &fingerprint)
+                    if model.borrow().cli_viewer {
+                        // `annex connect`: the PIN is typed with `annex pin enter`.
+                        tracing::info!(target: "annex::pairing", request_id, peer = peer_name, "pairing: PIN asked for on the command line");
+                    } else {
+                        ask_pin(app, model, request_id, &peer_name, &fingerprint)
+                    }
                 }
                 Change::ShowPin { request_id, pin, peer_name, fingerprint } => {
                     show_pin(app, model, request_id, &pin, &peer_name, &fingerprint)
@@ -884,8 +890,7 @@ fn select_nav(ui: &Ui, page: Option<&str>) {
 }
 
 pub fn looks_like_code(s: &str) -> bool {
-    let t: String = s.trim().chars().filter(|c| *c != '-').collect();
-    t.len() == 6 && t.chars().all(|c| c.is_ascii_alphanumeric()) && !t.chars().all(|c| c.is_ascii_digit())
+    crate::cli::looks_like_code(s)
 }
 
 /// "Annex X is available": Download opens the release page (the package manager installs it).
@@ -1033,9 +1038,8 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.open_at_login,
         Box::new(|m, on| {
             m.settings.open_at_login = on;
-            if let Err(e) = crate::settings::set_open_at_login(on) {
-                tracing::warn!("open at login: {e}");
-            }
+            // Logs what went wrong.
+            let _ = m.after_setting(Effect::OpenAtLogin);
         }),
     );
     switch_row(
@@ -1059,8 +1063,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.headless,
         Box::new(|m, on| {
             m.settings.headless = on;
-            m.core.set_headless(on);
-            m.render();
+            let _ = m.after_setting(Effect::Headless);
         }),
     );
     let quality = gtk::DropDown::from_strings(&["Best", "Balanced", "Fast (Wi-Fi)"]);
@@ -1127,7 +1130,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.prefer_hardware_encoder,
         Box::new(|m, on| {
             m.settings.prefer_hardware_encoder = on;
-            m.render();
+            let _ = m.after_setting(Effect::Render);
         }),
     );
     const SCALES: [u32; 6] = [0, 100, 125, 150, 175, 200];
@@ -1176,7 +1179,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.extend_by_default,
         Box::new(|m, on| {
             m.settings.extend_by_default = on;
-            m.render();
+            let _ = m.after_setting(Effect::Render);
         }),
     );
     advanced.append(&viewing);
@@ -1217,7 +1220,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
             on,
             Box::new(move |m, on| {
                 set(&mut m.settings, on);
-                m.core.set_audio(m.settings.audio());
+                let _ = m.after_setting(Effect::Audio);
             }),
         );
     }
@@ -1234,7 +1237,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.share_clipboard,
         Box::new(|m, on| {
             m.settings.share_clipboard = on;
-            m.set_clipboard_sharing(on);
+            let _ = m.after_setting(Effect::Clipboard);
         }),
     );
     switch_row(
@@ -1246,7 +1249,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.receive_files,
         Box::new(|m, on| {
             m.settings.receive_files = on;
-            m.set_receive_files(on);
+            let _ = m.after_setting(Effect::ReceiveFiles);
         }),
     );
     switch_row(
@@ -1258,7 +1261,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.drop_at_top,
         Box::new(|m, on| {
             m.settings.drop_at_top = on;
-            m.update_drop_target();
+            let _ = m.after_setting(Effect::DropIsland);
         }),
     );
     advanced.append(&files);
@@ -1325,7 +1328,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.show_technical_details,
         Box::new(|m, on| {
             m.settings.show_technical_details = on;
-            m.render();
+            let _ = m.after_setting(Effect::Render);
         }),
     );
     switch_row(
@@ -1340,7 +1343,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         s.verbose_logging,
         Box::new(|m, on| {
             m.settings.verbose_logging = on;
-            annex_log::set_verbose(on);
+            let _ = m.after_setting(Effect::VerboseLog);
         }),
     );
     let log_dir = annex_log::dir().unwrap_or_else(crate::settings::data_dir);
@@ -1440,9 +1443,7 @@ fn about_page(app: &gtk::Application, model: &Shared) -> About {
         s.check_for_updates,
         Box::new(|m, on| {
             m.settings.check_for_updates = on;
-            if on {
-                m.check_for_updates();
-            }
+            let _ = m.after_setting(Effect::CheckUpdates);
         }),
     );
     switch_row(
@@ -1455,8 +1456,7 @@ fn about_page(app: &gtk::Application, model: &Shared) -> About {
         Box::new(|m, on| {
             m.settings.beta_updates = on;
             m.settings.beta_updates_chosen = true;
-            m.update_dismissed = None;
-            m.check_for_updates();
+            let _ = m.after_setting(Effect::BetaUpdates);
         }),
     );
     let status = hbox(10);

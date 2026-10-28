@@ -352,6 +352,7 @@ fn browse_mesh(
     // Listed from the mesh: instance → (what was said, rounds unanswered).
     let mut listed: HashMap<String, (PeerInfo, u32)> = HashMap::new();
     let mut next = Instant::now();
+    let mut last_round = None;
     while !stop.load(Ordering::Acquire) {
         if !refresh.swap(false, Ordering::AcqRel) && Instant::now() < next {
             std::thread::sleep(Duration::from_millis(250));
@@ -360,6 +361,15 @@ fn browse_mesh(
         next = Instant::now() + MESH_EVERY;
         let ips = peers();
         let found = if ips.is_empty() { Vec::new() } else { mesh::probe(&ips, port, MESH_WAIT) };
+        // Each round, so an empty Nearby can be explained from the log: who was asked, who
+        // answered. At info only when that changes.
+        let round = (ips.len(), found.len());
+        if last_round != Some(round) {
+            tracing::info!(asked = ips.len(), answered = found.len(), "private network: round");
+            last_round = Some(round);
+        } else {
+            tracing::debug!(asked = ips.len(), answered = found.len(), "private network: round");
+        }
         let on_lan: Vec<String> = lan.lock().unwrap().values().cloned().collect();
         let mut seen = Vec::new();
         for (ip, p) in found {
