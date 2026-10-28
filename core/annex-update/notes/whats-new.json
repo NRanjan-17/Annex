@@ -1,5 +1,25 @@
 [
   {
+    "version": "0.3.7-pre.2",
+    "items": [
+      {
+        "kind": "improved",
+        "title": "A sharper picture over the internet",
+        "detail": "Annex no longer lowers the quality for the odd lost frame, and climbs back faster."
+      },
+      {
+        "kind": "new",
+        "title": "HEVC between Macs",
+        "detail": "Two Macs send the picture as HEVC: sharper at the same speed. Anyone else still gets H.264. It's in Settings."
+      },
+      {
+        "kind": "improved",
+        "title": "The relay at full quality",
+        "detail": "Used only when a direct connection is blocked, now with the same picture as direct and no 20-minute limit. 10 sessions a day per computer, end to end encrypted."
+      }
+    ]
+  },
+  {
     "version": "0.3.7-pre.1",
     "items": [
       {
