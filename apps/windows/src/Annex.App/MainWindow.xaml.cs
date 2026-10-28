@@ -44,7 +44,7 @@ public sealed partial class MainWindow : Window
     private string? _startupError;
 
     // Host state.
-    private readonly Dictionary<ulong, (string Name, string Mode, bool Input)> _sessions = [];
+    private readonly Dictionary<ulong, (string Name, string Mode, bool Input, bool Relayed)> _sessions = [];
     private StreamConfig? _hostStream;
     private string? _hostError;
     private ExtendStatus? _extendStatus;
@@ -597,7 +597,8 @@ public sealed partial class MainWindow : Window
                 var title = s.Mode == "extend" ? $"This PC is extending onto {Label(s.Name)}" : $"This PC's screen is on {Label(s.Name)}";
                 var detail = s.Mode == "extend" ? "Arrange it in Settings → System → Display" :
                     ShowTech && _hostStream is { } st ? $"{st.Width}×{st.Height} at {st.Fps} fps" : null;
-                detail = (detail is null ? "" : detail + " · ") + (s.Input ? "can use your mouse and keyboard" : "view only");
+                detail = (detail is null ? "" : detail + " · ") + (s.Input ? "can use your mouse and keyboard" : "view only")
+                    + (s.Relayed ? " · Relay" : "");
                 p.Children.Add(Ui.Card("", title, detail, Ui.Button("Switch to direct Wi-Fi", () => _ = OfferDirectWifiToViewerAsync(id, s.Name))));
             }
         }
@@ -2613,7 +2614,7 @@ public sealed partial class MainWindow : Window
                 RefreshTrusted();
                 break;
             case CoreEvent.SessionStarted s:
-                _sessions[s.SessionId] = (s.PeerName, s.Mode, s.Input);
+                _sessions[s.SessionId] = (s.PeerName, s.Mode, s.Input, s.Link == "relayed");
                 if (s.Mode == "mirror") _hostStream = s.Stream;
                 _hostError = null;
                 RefreshTrusted();

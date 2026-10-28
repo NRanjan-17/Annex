@@ -21,6 +21,8 @@ final class HostController {
         var hardwareEncoder = false
         /// Viewers currently controlling this Mac.
         var controllingViewers: [String] = []
+        /// Viewers connected through the relay (the sharing page marks them).
+        var relayedViewers: Set<String> = []
         var error: String?
 
         var viewerName: String? { (mirrorViewers + extendViewers).first }
@@ -57,6 +59,8 @@ final class HostController {
     private var mirrorReduced = false
     private var extendSessions: [UInt64: ExtendSession] = [:]
     private var inputSessions: [UInt64: String] = [:]
+    /// Sessions that came through the relay, by session id (their viewer's name).
+    private var relayedSessions: [UInt64: String] = [:]
     private let injector = InputInjector()
     /// Extend sessions' virtual displays, read on the core's thread for input injection.
     private let extendDisplays = LockedBox<[UInt64: CGDirectDisplayID]>()
@@ -163,6 +167,9 @@ final class HostController {
     var controllingViewer: String? { inputSessions.values.sorted().first }
 
     private func handle(_ event: CoreEvent) {
+        if case .sessionStarted(let s) = event, s.link == "relayed" {
+            relayedSessions[s.sessionId] = s.peerName
+        }
         if case .sessionStarted(let s) = event, s.input == true {
             inputSessions[s.sessionId] = s.peerName
             warnIfInputBlocked(s.peerName)
@@ -193,6 +200,7 @@ final class HostController {
             }
             status.stream = mirrorPicture ?? s.stream
         case .sessionEnded(let id, _):
+            relayedSessions.removeValue(forKey: id)
             if inputSessions.removeValue(forKey: id) != nil {
                 Annex.log(.debug, "[input] releasing held keys and buttons: session \(id) ended")
                 injector.releaseAll()
@@ -227,6 +235,7 @@ final class HostController {
         status.extendViewers = extendSessions.values.map(\.viewerName).sorted()
         refreshViewers()
         status.controllingViewers = inputSessions.values.sorted()
+        status.relayedViewers = Set(relayedSessions.values)
         onEvent?(event)
     }
 

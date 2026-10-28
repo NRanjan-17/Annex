@@ -490,7 +490,8 @@ private struct SharePage: View {
                         GroupRow(title: "Direct Wi-Fi", subtitle: direct)
                     }
                     ForEach(s.controllingViewers, id: \.self) { name in
-                        GroupRow(title: "\(model.label(name)) is controlling this Mac", subtitle: "Turn it off in Paired Devices.")
+                        GroupRow(title: "\(model.label(name)) is controlling this Mac",
+                                 subtitle: "Turn it off in Paired Devices." + (s.relayedViewers.contains(name) ? " · Relay" : ""))
                     }
                 }
             }

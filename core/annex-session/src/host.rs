@@ -710,6 +710,7 @@ async fn run_session(
         _ => None,
     };
     let relay_ceiling = crate::rate::relay_ceiling(req.mode, &stream);
+    link.kind.log_banner(&peer.device_name);
     (shared.events)(Event::SessionStarted {
         session_id: id,
         mode: req.mode,

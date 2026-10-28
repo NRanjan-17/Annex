@@ -340,6 +340,7 @@ async fn run(
     };
     // Older hosts don't know pointer movement events; they're never sent to them.
     let pointer_deltas = peer.proto_minor >= 2;
+    link.log_banner(&peer.device_name);
     events(Event::SessionStarted {
         session_id: 0,
         mode: cfg.mode,

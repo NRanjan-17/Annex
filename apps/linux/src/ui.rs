@@ -1850,9 +1850,10 @@ fn render_share(ui: &mut Ui, m: &Model, model: &Shared) {
         ui.sessions_section.set_visible(!m.host_sessions.is_empty());
         for s in &m.host_sessions {
             let what = format!(
-                "{} · {}",
+                "{} · {}{}",
                 if s.extend { "Using this computer as a display" } else { "Viewing this screen" },
-                if s.input { "Can use the mouse and keyboard" } else { "Can only watch" }
+                if s.input { "Can use the mouse and keyboard" } else { "Can only watch" },
+                if s.relayed { " · Relay" } else { "" }
             );
             let r = row(&m.label(&s.name), Some(what.as_str()));
             let dot = live_dot();

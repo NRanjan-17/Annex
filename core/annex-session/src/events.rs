@@ -18,6 +18,20 @@ pub enum LinkKind {
     Relayed,
 }
 
+impl LinkKind {
+    /// A banner in the log where a session starts, so a relayed session stands out from a direct
+    /// one when reading `annex.log`.
+    pub fn log_banner(self, peer: &str) {
+        let (word, how) = match self {
+            LinkKind::Relayed => ("RELAY", "through the relay, still end to end encrypted"),
+            LinkKind::Internet => ("DIRECT", "over the internet, no relay"),
+            LinkKind::Direct => ("DIRECT", "over a cable"),
+            LinkKind::Network => ("DIRECT", "on the local network"),
+        };
+        tracing::info!("==================== {word}: session with {peer}, {how} ====================");
+    }
+}
+
 use crate::LatencyStats;
 
 /// Everything the native UI needs to know, delivered as JSON through the FFI.

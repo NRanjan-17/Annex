@@ -156,6 +156,8 @@ pub struct HostSession {
     pub fingerprint: String,
     pub extend: bool,
     pub input: bool,
+    /// Came through the relay (the sharing page marks it).
+    pub relayed: bool,
 }
 
 /// Host: a PIN waiting to be typed on the computer that's pairing (for `annex pin`).
@@ -926,7 +928,7 @@ impl Model {
 
     fn handle_host(&mut self, event: Event) {
         match event {
-            Event::SessionStarted { session_id, mode, peer_name, fingerprint, input, .. } => {
+            Event::SessionStarted { session_id, mode, peer_name, fingerprint, input, link, .. } => {
                 let extend = mode == Mode::Extend;
                 self.host_sessions.retain(|s| s.id != session_id);
                 self.host_sessions.push(HostSession {
@@ -935,6 +937,7 @@ impl Model {
                     fingerprint,
                     extend,
                     input,
+                    relayed: link == LinkKind::Relayed,
                 });
                 self.emit(Change::Notify {
                     title: if extend {
