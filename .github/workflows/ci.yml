@@ -53,11 +53,12 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: test
         # Stream test output live so a native crash still shows how far a test got. The session
-        # tests each run a host and a viewer; all at once on a 4-core runner can slow a QUIC
-        # handshake past its 3 s wait, and the session falls back to TCP.
+        # tests each run a host and a viewer; too many at once on a 4-core runner slows a QUIC
+        # handshake past its 6 s wait and the session falls back to TCP, which can't carry files.
+        # Windows' debug-build handshakes are the slowest, so it runs two at a time.
         env:
           RUST_TEST_NOCAPTURE: ${{ runner.os == 'Windows' && '1' || '' }}
-          RUST_TEST_THREADS: "4"
+          RUST_TEST_THREADS: ${{ runner.os == 'Windows' && '2' || '4' }}
         run: cargo test --workspace --locked
 
   bench:
