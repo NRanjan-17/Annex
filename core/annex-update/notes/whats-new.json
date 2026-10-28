@@ -1,5 +1,30 @@
 [
   {
+    "version": "0.3.5",
+    "items": [
+      {
+        "kind": "fixed",
+        "title": "GNOME: no freeze at login",
+        "detail": "Annex starts 15 seconds after login, so the desktop can't freeze on graphics drivers that did."
+      },
+      {
+        "kind": "fixed",
+        "title": "GNOME: headless sharing keeps working",
+        "detail": "With No one at this screen on, the screen no longer locks while Annex shares it, and a closed screen share reopens for the next viewer."
+      },
+      {
+        "kind": "fixed",
+        "title": "Natural trackpad scrolling",
+        "detail": "Reverse Mouse Wheel now reverses only a mouse wheel. Trackpad and Magic Mouse scrolling stays natural."
+      },
+      {
+        "kind": "improved",
+        "title": "Linux switches and icon",
+        "detail": "Switches look right on every theme, and Annex's icon shows in menus, the taskbar and the window switcher."
+      }
+    ]
+  },
+  {
     "version": "0.3.4",
     "items": [
       {
