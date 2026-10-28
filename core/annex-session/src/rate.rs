@@ -3,13 +3,15 @@
 //! Loss-based with a delay guard, in the spirit of GCC/TFRC but deliberately simple:
 //! - a queue of a few hundred milliseconds (RTT ≥ 3 × the best + 100 ms) → halve at once: the
 //!   link is far slower than the stream, and every second at this rate adds more delay;
-//! - a lost frame, heavy datagram loss (> 5 %), or RTT rising well above the best seen →
-//!   multiplicative decrease (× 0.8) and more parity;
+//! - lost frames two reports running, more than 5 % of frames lost, heavy datagram loss (> 5 %),
+//!   or RTT rising well above the best seen → multiplicative decrease (× 0.8) and more parity;
+//! - one stray lost frame on an otherwise clean link (a short burst the parity couldn't cover) →
+//!   more parity, same rate: cutting for it kept a clean internet path at a fifth of its rate;
 //! - RTT creeping up (≥ 1.5 × the best + 8 ms, the first sign of a Wi-Fi queue building) →
 //!   gentle decrease (× 0.9) before anything is lost;
 //! - moderate datagram loss (2–5 %) → hold the rate, add parity;
-//! - clean intervals → 5 % more each time (at least two points) and slowly less parity. Growing
-//!   by a share of the current rate, not of the nominal one, keeps a slow link from being
+//! - clean intervals → 10 % more each time (at least three points) and slowly less parity.
+//!   Growing by a share of the current rate, not of the nominal one, keeps a slow link from being
 //!   overshot again within a second of recovering.
 //!
 //! The scale is a percentage of the app's normal bitrate for the stream, so the core needs no
@@ -37,6 +39,8 @@ pub struct RateController {
     recent_rtt_us: VecDeque<u32>,
     /// Highest scale the viewer's quality choice allows.
     ceiling: u32,
+    /// Reports in a row with a lost frame.
+    lost_streak: u32,
 }
 
 impl Default for RateController {
@@ -126,12 +130,12 @@ pub struct RateDecision {
 impl RateController {
     pub fn new(quality: Quality) -> Self {
         let ceiling = quality_ceiling(quality);
-        RateController { scale: ceiling.min(100), fec: 15, recent_rtt_us: VecDeque::new(), ceiling }
+        RateController { scale: ceiling.min(100), fec: 15, recent_rtt_us: VecDeque::new(), ceiling, lost_streak: 0 }
     }
 
     /// Capped at `ceiling` percent (e.g. [`relay_ceiling`]), which may be below [`MIN_SCALE`].
     pub fn with_ceiling(ceiling: u32) -> Self {
-        RateController { scale: ceiling.min(100), fec: 15, recent_rtt_us: VecDeque::new(), ceiling }
+        RateController { scale: ceiling.min(100), fec: 15, recent_rtt_us: VecDeque::new(), ceiling, lost_streak: 0 }
     }
 
     pub fn scale_percent(&self) -> u32 {
@@ -147,6 +151,10 @@ impl RateController {
         // Widened: the counts come from the peer and may sum past u32::MAX.
         let total = r.shards as u64 + r.recovered as u64;
         let shard_loss = if total == 0 { 0.0 } else { r.recovered as f64 / total as f64 };
+        let all_frames = r.frames as u64 + r.lost as u64;
+        let frame_loss = if all_frames == 0 { 0.0 } else { r.lost as f64 / all_frames as f64 };
+        let lost_again = r.lost > 0 && self.lost_streak > 0;
+        self.lost_streak = if r.lost > 0 { self.lost_streak.saturating_add(1) } else { 0 };
         let best_rtt_us = self.recent_rtt_us.iter().copied().min();
         let (rtt_queued, rtt_congested, rtt_rising) = match (best_rtt_us, r.rtt_us) {
             (_, 0) | (None, _) => (false, false, false),
@@ -166,15 +174,17 @@ impl RateController {
         if rtt_queued {
             self.scale = (self.scale / 2).max(MIN_SCALE.min(self.ceiling));
             self.fec = (self.fec + 5).min(MAX_FEC);
-        } else if r.lost > 0 || shard_loss > 0.05 || rtt_congested {
+        } else if lost_again || frame_loss > 0.05 || shard_loss > 0.05 || rtt_congested {
             self.scale = (self.scale * 4 / 5).max(MIN_SCALE.min(self.ceiling));
+            self.fec = (self.fec + 5).min(MAX_FEC);
+        } else if r.lost > 0 {
             self.fec = (self.fec + 5).min(MAX_FEC);
         } else if rtt_rising {
             self.scale = (self.scale * 9 / 10).max(MIN_SCALE.min(self.ceiling));
         } else if shard_loss > 0.02 {
             self.fec = (self.fec + 2).min(MAX_FEC);
         } else if r.frames > 0 {
-            self.scale = (self.scale + (self.scale / 20).max(2)).min(self.ceiling);
+            self.scale = (self.scale + (self.scale / 10).max(3)).min(self.ceiling);
             self.fec = self.fec.saturating_sub(1).max(MIN_FEC);
         }
         RateDecision { scale_percent: self.scale, fec_percent: self.fec, scale_changed: self.scale != before }
@@ -220,10 +230,26 @@ mod tests {
     }
 
     #[test]
+    fn a_stray_lost_frame_adds_parity_but_keeps_the_rate() {
+        // The internet session that sat at a fifth of its rate: 25 ms, 0.2 % datagram loss, and a
+        // frame lost now and then.
+        let mut c = RateController::default();
+        let d = c.on_report(&report(57, 1, 1500, 3, 25_000));
+        assert_eq!((d.scale_percent, d.fec_percent, d.scale_changed), (100, 20, false));
+        for _ in 0..3 {
+            c.on_report(&report(58, 0, 1500, 2, 25_000));
+        }
+        c.on_report(&report(57, 1, 1500, 3, 25_000));
+        assert!(c.scale_percent() > 100, "clean reports climb past the start: {}", c.scale_percent());
+    }
+
+    #[test]
     fn lost_frames_back_off_multiplicatively_with_more_fec() {
         let mut c = RateController::default();
         let d = c.on_report(&report(55, 2, 1400, 30, 3000));
-        assert_eq!((d.scale_percent, d.fec_percent, d.scale_changed), (80, 20, true));
+        assert_eq!((d.scale_percent, d.fec_percent, d.scale_changed), (100, 20, false), "one report: parity only");
+        let d = c.on_report(&report(55, 2, 1400, 30, 3000));
+        assert_eq!((d.scale_percent, d.fec_percent, d.scale_changed), (80, 25, true), "two in a row: back off");
         for _ in 0..20 {
             c.on_report(&report(10, 5, 300, 60, 3000));
         }

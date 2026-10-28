@@ -62,9 +62,12 @@ impl ShardHeader {
     }
 }
 
-/// Parity shards for `data` data shards at `fec_percent` overhead (at least one).
+/// Parity shards for `data` data shards at `fec_percent` overhead: at least one, and at least two
+/// once a frame takes two datagrams. Internet loss comes in short bursts, and a burst of two used
+/// to cost the many small frames that had a single parity shard. Receivers read the count from
+/// each shard's header, so older ones rebuild these frames too.
 pub fn parity_for(data: usize, fec_percent: u32) -> usize {
-    (data * fec_percent as usize).div_ceil(100).max(1)
+    (data * fec_percent as usize).div_ceil(100).max(data.min(2))
 }
 
 /// Splits one frame into datagrams no larger than `max_datagram` bytes.
@@ -297,6 +300,23 @@ mod tests {
     }
 
     #[test]
+    fn small_frames_survive_a_burst_of_two() {
+        assert_eq!(parity_for(1, 15), 1);
+        assert_eq!(parity_for(3, 15), 2);
+        assert_eq!(parity_for(40, 15), 6);
+        let data = frame(3000); // three data shards
+        let grams = fragment(3, 0, VideoFlags(0), &data, 1200, 15).unwrap();
+        assert_eq!(grams.len(), 3 + 2);
+        let mut r = Reassembler::default();
+        let mut got = Vec::new();
+        for g in &grams[2..] {
+            got.extend(r.push(g).unwrap().frames);
+        }
+        assert_eq!(got.len(), 1, "two lost in a row, rebuilt");
+        assert_eq!(got[0].data, data);
+    }
+
+    #[test]
     fn lost_shards_are_rebuilt_from_parity() {
         let data = frame(50_000);
         let grams = fragment(5, 0, VideoFlags(0), &data, 1200, 25).unwrap();
@@ -320,7 +340,8 @@ mod tests {
         let mut r = Reassembler::default();
         let a = fragment(1, 0, VideoFlags(0), &frame(5000), 1200, 10).unwrap();
         let b = fragment(2, 0, VideoFlags(0), &frame(500), 1200, 10).unwrap();
-        for g in &a[2..] {
+        // Five data shards and two parity: three lost is too many.
+        for g in &a[3..] {
             assert!(r.push(g).unwrap().frames.is_empty());
         }
         let mut out = PushResult::default();
