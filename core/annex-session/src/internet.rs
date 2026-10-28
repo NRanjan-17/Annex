@@ -89,14 +89,18 @@ async fn share(
 
     // The viewer asks for the relay only if the direct connection fails.
     let Some(login) = matched.relay_request().await? else {
-        tracing::debug!("code used: the viewer didn't ask for the relay");
+        tracing::info!("code used: the viewer didn't ask for the relay (it connected directly)");
         return Ok("used");
     };
     tracing::info!(our_relay = login.is_some(), own_relay = own_relay.is_some(), "the viewer asked for the relay");
+    host.log_why_not_direct(&peer.addrs);
     let relay = match (own_relay, login) {
         (Some(own), _) => Some((own, false)),
         (None, Some(login)) => login.server().await.ok().map(|s| (s, true)),
-        (None, None) => None,
+        (None, None) => {
+            tracing::info!("no relay to offer: the server gave no login (relay off, or today's allowance is used up)");
+            None
+        }
     };
     let relayed = match &relay {
         Some((relay, limited)) => {
@@ -112,6 +116,9 @@ async fn share(
         None => None,
     };
     tracing::info!(relayed = ?relayed, "answered the relay request");
+    if relayed.is_some() {
+        tracing::info!("switching to the relay: the session passes through it, still end to end encrypted (TLS 1.3)");
+    }
     events(Event::InternetRelay { relayed: relayed.is_some(), limited: relay.is_some_and(|(_, l)| l) });
     matched.answer_relay(relayed).await?;
     Ok("used")

@@ -125,7 +125,11 @@ impl InternetSocket {
         &self,
         stun_server: std::net::SocketAddr,
     ) -> Result<Vec<std::net::SocketAddr>, SessionError> {
-        let mut out = vec![self.udp.public_address(stun_server).await?];
+        let public = self.udp.public_address(stun_server).await?;
+        // For the log only: how this router handles ports, checked while connecting.
+        let check = self.udp.clone();
+        tokio::spawn(async move { check.check_router(public, stun_server).await });
+        let mut out = vec![public];
         out.extend(crate::punch::own_addresses(self.udp.local_addr()?.port()));
         out.dedup();
         Ok(out)
@@ -688,20 +692,29 @@ async fn connect_internet(
 ) -> Result<Established, SessionError> {
     // Also open this side's router towards the host, in case its first packets beat ours.
     net.udp.punch(addrs.clone());
-    let direct = race(core, cfg, &net.endpoint, addrs).await;
+    let direct = race(core, cfg, &net.endpoint, addrs.clone()).await;
+    if direct.is_ok() {
+        tracing::info!("connected directly over the internet, no relay (end to end encrypted, TLS 1.3)");
+    }
     let joined = net.fallback.lock().unwrap().take();
     let (Err(e), Some(joined)) = (&direct, joined) else {
         // Connected (dropping the rendezvous connection ends the match), or no relay to ask.
         return direct;
     };
     tracing::info!("couldn't connect directly ({e}); asking for the relay");
+    net.udp.log_why_not_direct(&addrs);
     match joined.ask_relay().await {
         Ok(Some(relayed)) if !relayed.is_empty() => {
+            tracing::info!(
+                ?relayed,
+                "switching to the relay: video, sound and input pass through it, still end to end encrypted (TLS 1.3 \
+                 between the two computers); the relay sees only encrypted packets"
+            );
             net.through_relay(&relayed);
             race(core, cfg, &net.endpoint, relayed).await
         }
         Ok(_) => {
-            tracing::info!("the sharing computer has no relay");
+            tracing::info!("the sharing computer has no relay to offer (it's off, or today's allowance is used up)");
             direct
         }
         Err(e) => {

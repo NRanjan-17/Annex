@@ -202,10 +202,21 @@ impl HostHandle {
     /// Hand them to the viewer through the rendezvous server.
     pub async fn internet_candidates(&self, stun_server: SocketAddr) -> Result<Vec<SocketAddr>, SessionError> {
         let udp = self.shared.udp.as_ref().ok_or(SessionError::Violation("QUIC isn't available".into()))?;
-        let mut out = vec![udp.public_address(stun_server).await?];
+        let public = udp.public_address(stun_server).await?;
+        // For the log only: how this router handles ports, checked while the code is out.
+        let check = udp.clone();
+        tokio::spawn(async move { check.check_router(public, stun_server).await });
+        let mut out = vec![public];
         out.extend(crate::punch::own_addresses(udp.local_addr()?.port()));
         out.dedup();
         Ok(out)
+    }
+
+    /// Logs why the viewer at `viewer` couldn't connect directly, as far as this side can tell.
+    pub fn log_why_not_direct(&self, viewer: &[SocketAddr]) {
+        if let Some(udp) = &self.shared.udp {
+            udp.log_why_not_direct(viewer);
+        }
     }
 
     /// A viewer on the internet is about to connect from `viewer`: open this computer's router

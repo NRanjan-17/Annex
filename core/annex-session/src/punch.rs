@@ -71,6 +71,21 @@ struct Relay {
     peers: HashSet<SocketAddr>,
 }
 
+/// What this computer's router does with ports, as two STUN answers show it. Only logged: it says
+/// which side keeps a direct connection out, and never changes how Annex connects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Router {
+    /// No address translation: the public address is this computer's own (IPv6).
+    None,
+    /// One public port for everyone: another computer can connect to the address a code carries.
+    SamePort,
+    /// A new public port for each address it talks to (a "hard" NAT, often an ISP sharing one
+    /// address among many homes): another computer can't connect to it directly.
+    NewPortEach,
+    /// The second STUN answer didn't come.
+    Unknown,
+}
+
 pub struct PunchSocket {
     inner: Arc<dyn AsyncUdpSocket>,
     /// STUN/TURN answers awaited, by transaction id.
@@ -80,6 +95,10 @@ pub struct PunchSocket {
     relay: Mutex<Option<Relay>>,
     /// Packets unwrapped from the relay, waiting for QUIC to read them: (from, data).
     relayed_in: Mutex<VecDeque<(SocketAddr, Vec<u8>)>>,
+    /// Where punches from punched peers' IPs came from (for the log).
+    heard: Mutex<HashSet<SocketAddr>>,
+    /// This router's ports, once checked (for the log).
+    router: Mutex<Option<Router>>,
 }
 
 impl fmt::Debug for PunchSocket {
@@ -96,6 +115,8 @@ impl PunchSocket {
             punched: Mutex::default(),
             relay: Mutex::default(),
             relayed_in: Mutex::default(),
+            heard: Mutex::default(),
+            router: Mutex::default(),
         })
     }
 
@@ -178,6 +199,59 @@ impl PunchSocket {
         let public = SocketAddr::new(a.ip().to_canonical(), a.port());
         tracing::debug!(%stun_server, %public, "public address from STUN");
         Ok(public)
+    }
+
+    /// Checks what this computer's router does with ports, for the log: asks `stun_server` once
+    /// more on another port (53, or 3478 if that was 53) and compares the answer with `public`,
+    /// the first one. A router that gives each address its own port answers differently.
+    pub async fn check_router(self: &Arc<Self>, public: SocketAddr, stun_server: SocketAddr) -> Router {
+        let router = if public.is_ipv6() {
+            Router::None
+        } else {
+            let other = SocketAddr::new(stun_server.ip(), if stun_server.port() == 53 { 3478 } else { 53 });
+            match self.public_address(other).await {
+                Ok(second) if second == public => Router::SamePort,
+                Ok(second) => {
+                    tracing::debug!(%public, %second, "two STUN ports saw different public addresses");
+                    Router::NewPortEach
+                }
+                Err(e) => {
+                    tracing::debug!("second STUN check: {e}");
+                    Router::Unknown
+                }
+            }
+        };
+        let what = match router {
+            Router::None => "no address translation (IPv6): others can connect directly",
+            Router::SamePort => "one public port for everyone (easy NAT): others can connect directly",
+            Router::NewPortEach => "a new public port for each address (hard NAT, often a shared ISP address)",
+            Router::Unknown => "couldn't tell how this router handles ports (no second STUN answer)",
+        };
+        let port_kept = self.local_addr().is_ok_and(|l| l.port() == public.port());
+        tracing::info!(%public, port_kept, "network check: {what}");
+        *self.router.lock().unwrap() = Some(router);
+        router
+    }
+
+    /// Logs why a direct connection with `peers` didn't happen, as far as this side can tell: how
+    /// this router handles ports ([`check_router`](Self::check_router)) and what arrived from the
+    /// peers' IPs while punching.
+    pub fn log_why_not_direct(&self, peers: &[SocketAddr]) {
+        let router = *self.router.lock().unwrap();
+        let given: HashSet<SocketAddr> = peers.iter().map(|&p| canonical(p)).collect();
+        let ips: HashSet<IpAddr> = given.iter().map(|p| p.ip()).collect();
+        let heard: Vec<SocketAddr> =
+            self.heard.lock().unwrap().iter().filter(|h| ips.contains(&h.ip())).copied().collect();
+        let theirs_moves = heard.iter().any(|h| !given.contains(h));
+        let ours_moves = router == Some(Router::NewPortEach);
+        let verdict = match (ours_moves, theirs_moves, heard.is_empty()) {
+            (true, true, _) => "both networks block it (hard NAT on both sides)",
+            (false, true, _) => "the other computer's network blocks it (hard NAT)",
+            (true, false, _) => "this computer's network blocks it (hard NAT)",
+            (false, false, true) => "nothing from the other computer got through (its network, or a firewall)",
+            (false, false, false) => "its packets got through, but the connection didn't (a firewall?)",
+        };
+        tracing::info!(this_router = ?router, heard_from = ?heard, given = ?given, "why not direct: {verdict}");
     }
 
     /// A signed TURN request: `kind` with its own attributes (`allowed` for a permission), then
@@ -348,13 +422,36 @@ impl PunchSocket {
         self.punched.lock().unwrap().contains(&canonical(peer))
     }
 
-    /// Takes a received STUN message out of QUIC's way: an awaited answer is handed over; punches
-    /// and anything else are dropped.
-    fn take_stun(&self, data: &[u8]) {
+    /// Takes a received STUN message out of QUIC's way: an awaited answer is handed over (true);
+    /// punches and anything else are dropped.
+    fn take_stun(&self, data: &[u8]) -> bool {
         if let Some(id) = stun::transaction_id(data)
             && let Some(tx) = self.waiting.lock().unwrap().remove(&id)
         {
             let _ = tx.send(data.to_vec());
+            return true;
+        }
+        false
+    }
+
+    /// An unasked-for STUN packet (a punch) from `from`. The first from each address on a punched
+    /// peer's IP is logged: from the address that peer gave, or from another port, which means
+    /// the peer's router picks a new port for each address.
+    fn note_punch(&self, from: SocketAddr) {
+        let given: Vec<SocketAddr> =
+            self.punched.lock().unwrap().iter().filter(|p| p.ip() == from.ip()).copied().collect();
+        if given.is_empty() || !self.heard.lock().unwrap().insert(from) {
+            return;
+        }
+        if given.contains(&from) {
+            tracing::info!(%from, "network check: the other computer's punch got through, from the address it gave");
+        } else {
+            tracing::info!(
+                %from,
+                ?given,
+                "network check: the other computer's packets come from another port than it gave: its router picks a \
+                 new port for each address (hard NAT)"
+            );
         }
     }
 
@@ -369,7 +466,7 @@ impl PunchSocket {
             let from = self.for_socket(peer).unwrap_or(peer);
             self.relayed_in.lock().unwrap().push_back((from, payload.to_vec()));
         } else if stun::is_stun(data) {
-            self.take_stun(data);
+            let _ = self.take_stun(data);
         }
     }
 
@@ -461,7 +558,9 @@ impl AsyncUdpSocket for PunchSocket {
                     continue;
                 }
                 if m.len == m.stride && stun::is_stun(&bufs[i][..m.len]) {
-                    self.take_stun(&bufs[i][..m.len]);
+                    if !self.take_stun(&bufs[i][..m.len]) {
+                        self.note_punch(canonical(m.addr));
+                    }
                     continue;
                 }
                 if kept != i {
