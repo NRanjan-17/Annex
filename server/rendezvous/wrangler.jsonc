@@ -22,10 +22,10 @@
   // Our relay (Cloudflare TURN). Off unless both secrets are set:
   //   npx wrangler secret put TURN_KEY_ID
   //   npx wrangler secret put TURN_KEY_API_TOKEN
-  // Worst case per day: RELAY_PER_DAY × RELAY_TTL_SECONDS of relayed video. See README.md.
+  // Limits: logins a day per sharing computer, and how long each lasts. No total cap: the relay is
+  // only the fallback. See README.md.
   "vars": {
-    "RELAY_TTL_SECONDS": "1200",
-    "RELAY_PER_DAY": "20",
-    "RELAY_PER_IP_PER_DAY": "2"
+    "RELAY_TTL_SECONDS": "86400",
+    "RELAY_PER_DEVICE_PER_DAY": "10"
   }
 }

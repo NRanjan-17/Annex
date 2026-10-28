@@ -683,7 +683,7 @@ public sealed partial class MainWindow : Window
                 break;
             case InternetShare.Relay { Relayed: true } r:
                 p.Children.Add(Ui.Card("", $"Connecting {r.Name} through the relay…",
-                    r.Limited ? "Their network blocks direct connections. Our relay: up to 20 minutes, lower quality."
+                    r.Limited ? "Their network blocks direct connections. Our relay passes it on, still end to end encrypted."
                         : "Their network blocks direct connections. Using your relay.", Ui.Spinner()));
                 break;
             case InternetShare.Relay r:

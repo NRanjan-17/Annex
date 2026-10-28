@@ -178,7 +178,7 @@ describe("relay budget", () => {
   }
 
   it("is off without a TURN key", async () => {
-    expect(await relayLogin(env, "192.0.2.1", cloudflare)).toBeNull();
+    expect(await relayLogin(env, "ip:192.0.2.1", cloudflare)).toBeNull();
   });
 
   it("hands out UDP logins with the configured lifetime", async () => {
@@ -187,23 +187,23 @@ describe("relay budget", () => {
       asked = init;
       return cloudflare(_url, init);
     }) as unknown as typeof fetch;
-    const login = await relayLogin(configured("budget-a"), "192.0.2.1", spy);
-    expect(login).toEqual({ urls: ["turn:turn.cloudflare.com:3478?transport=udp"], username: "u", credential: "c", ttl: 1200 });
-    expect(JSON.parse(asked!.body as string)).toEqual({ ttl: 1200 });
+    const login = await relayLogin(configured("budget-a"), "ip:192.0.2.1", spy);
+    expect(login).toEqual({ urls: ["turn:turn.cloudflare.com:3478?transport=udp"], username: "u", credential: "c", ttl: 86400 });
+    expect(JSON.parse(asked!.body as string)).toEqual({ ttl: 86400 });
   });
 
-  it("stops at the per-address and daily caps", async () => {
-    const e = configured("budget-b", { RELAY_PER_DAY: "3", RELAY_PER_IP_PER_DAY: "2" });
+  it("stops at the per-device cap, with no total cap", async () => {
+    const e = configured("budget-b", { RELAY_PER_DEVICE_PER_DAY: "2" });
     const got = [];
-    for (const ip of ["192.0.2.1", "192.0.2.1", "192.0.2.1", "192.0.2.2", "192.0.2.3"]) {
-      got.push((await relayLogin(e, ip, cloudflare)) !== null);
+    for (const who of ["device:a", "device:a", "device:a", "device:b", "ip:192.0.2.3", "device:c"]) {
+      got.push((await relayLogin(e, who, cloudflare)) !== null);
     }
-    expect(got).toEqual([true, true, false, true, false]);
+    expect(got).toEqual([true, true, false, true, true, true]);
   });
 
   it("gives nothing if Cloudflare refuses", async () => {
     const refuse = (async () => new Response("no", { status: 403 })) as unknown as typeof fetch;
-    expect(await relayLogin(configured("budget-c"), "192.0.2.1", refuse)).toBeNull();
+    expect(await relayLogin(configured("budget-c"), "ip:192.0.2.1", refuse)).toBeNull();
   });
 });
 

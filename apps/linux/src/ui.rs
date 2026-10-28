@@ -1930,7 +1930,7 @@ fn render_share(ui: &mut Ui, m: &Model, model: &Shared) {
             Some(InternetShare::Relay { name, relayed, limited }) => {
                 let text = match (relayed, limited) {
                     (true, true) => {
-                        format!("{} is connecting through Annex's relay (limited time and quality).", m.label(name))
+                        format!("{} is connecting through Annex's relay (still end to end encrypted).", m.label(name))
                     }
                     (true, false) => format!("{} is connecting through your relay.", m.label(name)),
                     (false, _) => format!("{} couldn't connect directly.", m.label(name)),

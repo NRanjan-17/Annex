@@ -54,8 +54,8 @@ pub fn quality_ceiling(q: Quality) -> u32 {
     }
 }
 
-/// Our relay's bitrate limit. With its login lifetime (20 minutes) that's at most about 0.9 GB a
-/// session, so the daily login cap keeps it inside Cloudflare's free relay allowance.
+/// A bitrate cap for a relay, about 6 Mbit/s ([`relay_ceiling`]). Sessions on our relay aren't
+/// held to it any more: the relay is only the fallback, with a daily login limit per device.
 pub const RELAY_BPS: u64 = 6_000_000;
 
 /// The apps' normal bitrate for a stream (macOS `HostController` and `ExtendSession`, and their

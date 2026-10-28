@@ -358,13 +358,13 @@ async fn run(
         && peer.caps.iter().any(|c| c == crate::transfer::CAP)
     {
         // The viewer takes what the host sends (the app decides whether to use the clipboard;
-        // files need a downloads folder). Any relay is treated as ours: paced.
+        // files need a downloads folder). Not paced on the relay either: it has no size limits.
         let t = crate::transfer::Transfers::start(
             conn.clone(),
             0,
             events.clone(),
             core.downloads(),
-            link == LinkKind::Relayed,
+            false,
             Box::new(|| true),
         );
         let _ = transfers.set(t);

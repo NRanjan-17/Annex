@@ -18,7 +18,9 @@
 //                                           (its relayed address; or {"type":"no_relay"})
 //   Viewer                                ← {"type":"relay","addrs":[…]}  or  {"type":"no_relay"}
 // "turn" is a short-lived login for our relay (Cloudflare TURN), only if the sharing computer has
-// no relay of its own ("own_relay"), the relay is configured, and the budget allows (see Budget).
+// no relay of its own ("own_relay"), the relay is configured, and that computer hasn't used up its
+// logins for the day (see Budget). The relay is only ever the fallback, after a direct connection
+// fails.
 // A code works once. Unknown or used codes get HTTP 404 before the upgrade; too many attempts
 // from one address get 429. Clients keep the socket alive with WebSocket pings, which the
 // runtime answers without waking the Durable Object (so a waiting host costs nothing).
@@ -48,7 +50,13 @@ interface Peer {
 interface HostInfo extends Peer {
   ownRelay: boolean;
   ip: string;
+  /** The sharing computer's identity code (64 hex), if its app sent one: relay logins are counted
+   * per device, else per address. */
+  device?: string;
 }
+
+/** A device's identity code: its certificate's SHA-256 fingerprint, in hex. */
+const DEVICE = /^[0-9a-f]{64}$/;
 
 function newCode(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(CODE_LENGTH));
@@ -147,9 +155,11 @@ export class CodeRoom extends DurableObject<Env> {
   private async hello(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const hello = parsePeer(message, "hello");
     if (!hello) return ws.close(4400, "bad message");
-    const ownRelay = parseObject(message)?.own_relay === true;
+    const m = parseObject(message);
+    const ownRelay = m?.own_relay === true;
+    const device = typeof m?.device === "string" && DEVICE.test(m.device) ? m.device : undefined;
     const ip = (await this.ctx.storage.get<string>("ip")) ?? "local";
-    await this.ctx.storage.put("host", { ...hello, ownRelay, ip } satisfies HostInfo);
+    await this.ctx.storage.put("host", { ...hello, ownRelay, ip, device } satisfies HostInfo);
   }
 
   private async join(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -175,7 +185,8 @@ export class CodeRoom extends DurableObject<Env> {
     if (!hostWs) return this.end("no_relay");
     await this.ctx.storage.put("asked", true);
     const host = await this.ctx.storage.get<HostInfo>("host");
-    const turn = host && !host.ownRelay ? await relayLogin(this.env, host.ip) : null;
+    const who = host?.device ? `device:${host.device}` : `ip:${host?.ip}`;
+    const turn = host && !host.ownRelay ? await relayLogin(this.env, who) : null;
     hostWs.send(JSON.stringify({ type: "need_relay", turn }));
   }
 
@@ -215,8 +226,9 @@ export class CodeRoom extends DurableObject<Env> {
   }
 }
 
-/** One relay login per day, per sharing computer's address and in total: a hard cap on what the
- * relay can use (each login works for RELAY_TTL_SECONDS, then the relay drops the session). */
+/** Relay logins per day, per sharing computer (its identity code, or its address for apps that
+ * don't send one). There's no total cap: the relay is only the fallback. Each login works for
+ * RELAY_TTL_SECONDS, then the relay drops the session. */
 export class Budget extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -225,14 +237,16 @@ export class Budget extends DurableObject<Env> {
     });
   }
 
-  /** Counts one login for `ip` today (UTC); false if either cap is reached. */
-  take(ip: string, perDay: number, perIpPerDay: number): boolean {
+  /** Counts one login for `who` today (UTC); false once it has had `perDay`. (The column is
+   * still called `ip`: it holds `device:…` or `ip:…`.) */
+  take(who: string, perDay: number): boolean {
     const day = new Date().toISOString().slice(0, 10);
     this.ctx.storage.sql.exec("DELETE FROM logins WHERE day <> ?", day);
-    const count = (where: string, ...args: string[]) =>
-      this.ctx.storage.sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM logins WHERE ${where}`, ...args).one().n;
-    if (count("day = ?", day) >= perDay || count("day = ? AND ip = ?", day, ip) >= perIpPerDay) return false;
-    this.ctx.storage.sql.exec("INSERT INTO logins (day, ip) VALUES (?, ?)", day, ip);
+    const used = this.ctx.storage.sql
+      .exec<{ n: number }>("SELECT COUNT(*) AS n FROM logins WHERE day = ? AND ip = ?", day, who)
+      .one().n;
+    if (used >= perDay) return false;
+    this.ctx.storage.sql.exec("INSERT INTO logins (day, ip) VALUES (?, ?)", day, who);
     return true;
   }
 }
@@ -249,17 +263,17 @@ function numberVar(value: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-/** A short-lived login for our relay, or null: relay not configured (no TURN key), or over budget. */
+/** A login for our relay, or null: relay not configured (no TURN key), or `who` (a device or an
+ * address) has used up today's logins. */
 /** Set with `wrangler secret put` (so not in wrangler.jsonc's types). Both unset: our relay is off. */
 type Secrets = { TURN_KEY_ID?: string; TURN_KEY_API_TOKEN?: string };
 
-export async function relayLogin(env: Env, ip: string, fetcher: typeof fetch = fetch): Promise<TurnLogin | null> {
+export async function relayLogin(env: Env, who: string, fetcher: typeof fetch = fetch): Promise<TurnLogin | null> {
   const { TURN_KEY_ID, TURN_KEY_API_TOKEN } = env as Env & Secrets;
   if (!TURN_KEY_ID || !TURN_KEY_API_TOKEN) return null;
-  const ttl = numberVar(env.RELAY_TTL_SECONDS, 1200);
-  const perDay = numberVar(env.RELAY_PER_DAY, 20);
-  const perIp = numberVar(env.RELAY_PER_IP_PER_DAY, 2);
-  if (ttl === 0 || !(await env.BUDGET.getByName("global").take(ip, perDay, perIp))) return null;
+  const ttl = numberVar(env.RELAY_TTL_SECONDS, 86400);
+  const perDevice = numberVar(env.RELAY_PER_DEVICE_PER_DAY, 10);
+  if (ttl === 0 || !(await env.BUDGET.getByName("global").take(who, perDevice))) return null;
   const response = await fetcher(
     `https://rtc.live.cloudflare.com/v1/turn/keys/${TURN_KEY_ID}/credentials/generate-ice-servers`,
     {

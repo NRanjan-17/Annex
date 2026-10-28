@@ -78,7 +78,8 @@ async fn share(
         None => None,
     };
     let addrs = host.internet_candidates(resolve_stun(&servers.stun).await?).await?;
-    let waiting = rendezvous::host(&servers.rendezvous, name, &addrs, own_relay.is_some()).await?;
+    let device = host.fingerprint();
+    let waiting = rendezvous::host(&servers.rendezvous, name, &addrs, own_relay.is_some(), Some(&device)).await?;
     host.set_punch_code(&waiting.code());
     tracing::info!(addrs = ?addrs, own_relay = own_relay.is_some(), "code ready; waiting for a viewer");
     events(Event::InternetCode { code: waiting.code(), expires_in: waiting.expires_in().as_secs() as u32 });

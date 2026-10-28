@@ -19,7 +19,7 @@ async fn host_and_viewer_swap_addresses_once_then_the_relay() {
         vec!["203.0.113.10:47800".parse().unwrap(), "[2001:db8::5]:47800".parse().unwrap()];
     let viewer_addrs: Vec<SocketAddr> = vec!["198.51.100.20:51234".parse().unwrap()];
 
-    let waiting = rendezvous::host(&server, "Dev's Mac", &host_addrs, false).await.unwrap();
+    let waiting = rendezvous::host(&server, "Dev's Mac", &host_addrs, false, Some(&"ab".repeat(32))).await.unwrap();
     let code = waiting.code();
     assert!(code.len() == 7 && code.as_bytes()[3] == b'-', "{code}");
     let host = tokio::spawn(waiting.wait());

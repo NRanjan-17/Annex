@@ -173,6 +173,11 @@ pub struct HostHandle {
 }
 
 impl HostHandle {
+    /// This computer's identity code (its certificate's SHA-256 fingerprint).
+    pub fn fingerprint(&self) -> String {
+        self.shared.core.fingerprint().to_string()
+    }
+
     pub fn port(&self) -> u16 {
         self.port
     }
@@ -236,8 +241,8 @@ impl HostHandle {
 
     /// The viewer couldn't connect directly: gets an address on `relay` that forwards to this
     /// host, open to the viewer's IP addresses. Hand it to the viewer through the rendezvous
-    /// server. `limited`: it's our relay (sessions through it are held to about 6 Mbit/s, and
-    /// end when its login expires), not one the user set up.
+    /// server. `limited`: it's our relay (its login comes from the rendezvous server), not one
+    /// the user set up.
     pub async fn relay(
         &self,
         relay: TurnServer,
@@ -535,7 +540,6 @@ async fn handle_conn(est: Established, shared: Arc<Shared>, shutdown: watch::Rec
     let mut started = false;
     let link = Link {
         transport: kind,
-        limited: shared.udp.as_ref().and_then(|u| u.relayed(remote)).unwrap_or(false),
         kind: if shared.udp.as_ref().is_some_and(|u| u.relayed(remote).is_some()) {
             LinkKind::Relayed
         } else if shared.udp.as_ref().is_some_and(|u| u.was_punched(remote)) {
@@ -586,8 +590,6 @@ async fn handle_conn(est: Established, shared: Arc<Shared>, shutdown: watch::Rec
 struct Link {
     transport: TransportKind,
     kind: LinkKind,
-    /// Through our relay, which has usage limits: the session is held to about 6 Mbit/s.
-    limited: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -679,7 +681,8 @@ async fn run_session(
                     id,
                     shared.events.clone(),
                     shared.core.downloads(),
-                    link.limited,
+                    // Not paced on the relay either: it's only the fallback, with no size limits.
+                    false,
                     Box::new(move || asked && core.allows_input(&fp)),
                 ))
             }
@@ -709,7 +712,6 @@ async fn run_session(
         }
         _ => None,
     };
-    let relay_ceiling = crate::rate::relay_ceiling(req.mode, &stream);
     link.kind.log_banner(&peer.device_name);
     (shared.events)(Event::SessionStarted {
         session_id: id,
@@ -752,13 +754,8 @@ async fn run_session(
         // so a `Bye` followed by EOF is reported as the `Bye` reason, not as "closed".
         std::future::pending::<()>().await
     };
-    let mut rate = if link.limited {
-        let ceiling = relay_ceiling;
-        tracing::info!(id, ceiling, "through our relay: bitrate limited");
-        crate::rate::RateController::with_ceiling(ceiling)
-    } else {
-        crate::rate::RateController::new(req.quality)
-    };
+    // The same on the relay as direct: it's only the fallback, with no bitrate cap.
+    let mut rate = crate::rate::RateController::new(req.quality);
     if rate.scale_percent() != 100 {
         // The viewer chose a lower quality: start the encoder there rather than at 100 %.
         (shared.events)(Event::BitrateHint { session_id: id, scale_percent: rate.scale_percent() });

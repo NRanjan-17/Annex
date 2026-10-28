@@ -141,14 +141,9 @@ work. Details: [docs/CABLES.md](CABLES.md).
 
 Annex connects the two computers **directly** whenever their networks allow it. Some don't: an
 internet provider that shares one address among many homes, or a college or office network that
-blocks it. Then the session goes through **our relay**. It stays end to end encrypted (the relay
-only forwards packets it can't read), with these limits:
-
-| Relay limit | |
-|---|---|
-| Session length | 20 minutes, then it ends; connect again with a new code |
-| Picture | Held to about 6 Mbit/s, so softer than a direct connection |
-| Per day | 2 relayed sessions per sharing computer's internet address, 20 in total for everyone (reset at midnight UTC) |
+blocks it. Only then does the session go through **our relay**. It stays end to end encrypted (the
+relay only forwards packets it can't read) and runs at the same quality as a direct connection. Each
+sharing computer can use it for **10 sessions a day** (reset at midnight UTC), each up to 24 hours.
 
 Direct connections, and your own TURN relay (**Settings → Internet**), have no limits.
 

@@ -100,6 +100,9 @@ enum Msg {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         local: Vec<String>,
         own_relay: bool,
+        /// This computer's identity code, so the server counts relay logins per device.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
     },
     Join {
         name: String,
@@ -235,8 +238,15 @@ impl Joined {
 }
 
 /// Registers this sharing computer: asks for a code, then says where it can be reached.
-/// `own_relay`: it has a relay of its own configured, so it needs no login for ours.
-pub async fn host(server: &str, name: &str, addrs: &[SocketAddr], own_relay: bool) -> Result<HostCode, SessionError> {
+/// `own_relay`: it has a relay of its own configured, so it needs no login for ours. `device`:
+/// this computer's identity code (its certificate's fingerprint), for the per-device relay limit.
+pub async fn host(
+    server: &str,
+    name: &str,
+    addrs: &[SocketAddr],
+    own_relay: bool,
+    device: Option<&str>,
+) -> Result<HostCode, SessionError> {
     let mut ws = open(server, "/v1/host").await?;
     let (code, expires_in) = match next_msg(&mut ws).await? {
         Msg::Code { code, expires_in } => (code, Duration::from_secs(expires_in.into())),
@@ -244,7 +254,8 @@ pub async fn host(server: &str, name: &str, addrs: &[SocketAddr], own_relay: boo
     };
     tracing::info!(server, expires_in = expires_in.as_secs(), own_relay, "rendezvous: got a code");
     let (addrs, local) = split(addrs);
-    send(&mut ws, &Msg::Hello { name: name.into(), addrs, local, own_relay }).await?;
+    let device = device.map(str::to_string);
+    send(&mut ws, &Msg::Hello { name: name.into(), addrs, local, own_relay, device }).await?;
     Ok(HostCode { ws, code, expires_in })
 }
 
@@ -370,8 +381,8 @@ mod tests {
         assert_eq!(public, ["203.0.113.9:47800", "[2a02:8070::5]:47800"]);
         assert_eq!(local, ["192.168.1.5:47800", "[fd00::2]:47800", "10.0.0.4:1"]);
         // A server that doesn't know `local` never sees it as an address.
-        let hello =
-            serde_json::to_value(Msg::Hello { name: "n".into(), addrs: public, local, own_relay: false }).unwrap();
+        let msg = Msg::Hello { name: "n".into(), addrs: public, local, own_relay: false, device: None };
+        let hello = serde_json::to_value(msg).unwrap();
         assert_eq!(hello["addrs"].as_array().unwrap().len(), 2);
     }
 }

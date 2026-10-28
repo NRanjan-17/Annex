@@ -89,20 +89,17 @@ is not stated in their docs.
 
 To turn it off again: `npx wrangler secret delete TURN_KEY_ID`.
 
-### How usage stays capped
+### Limits
 
 | Limit | Default | Effect |
 |---|---|---|
-| `RELAY_TTL_SECONDS` | 1200 | Each login works 20 minutes; then Cloudflare drops the session. |
-| `RELAY_PER_DAY` | 20 | Logins a day in total (UTC). After that, no relay until tomorrow. |
-| `RELAY_PER_IP_PER_DAY` | 2 | Logins a day per sharing computer's address. |
-| Bitrate (in the app) | ~6 Mbit/s | Sessions on our relay are held to about 6 Mbit/s, whatever the screen size. Known gap: it's worked out when the session starts, so switching an Extend session to a bigger resolution afterwards goes over it. |
+| `RELAY_PER_DEVICE_PER_DAY` | 10 | Relay logins a day (UTC) per sharing computer, counted by its identity code (or its address, for apps that don't send one). `0` turns the relay off without removing the secrets. |
+| `RELAY_TTL_SECONDS` | 86400 | How long a login works (24 hours); then Cloudflare drops the session. |
 
-Worst case with the defaults: 20 sessions × 20 minutes × 6 Mbit/s ≈ 18 GB a day, plus error
-correction (up to 40 %) ≈ 25 GB a day, about **760 GB a month**, under the 1,000 GB free allowance.
-(20 sessions at 30 minutes would be ~1,130 GB, over it.)
-If you raise a limit, redo this sum. Setting `RELAY_PER_DAY` to `0` turns the relay off without
-removing the secrets.
+There is no total cap and no bitrate cap: a relayed session runs at the same quality as a direct
+one. The relay is only used when a direct connection fails. Cloudflare's relay is free up to its
+monthly allowance (1,000 GB when this was written) and billed per GB after that, so watch the usage
+in the Cloudflare dashboard.
 
 The rendezvous server only issues the login; the session goes from the computers to Cloudflare's
 relay, encrypted end to end as always. The relay can't read it.

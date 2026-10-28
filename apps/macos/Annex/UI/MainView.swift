@@ -592,7 +592,7 @@ private struct InternetShareSection: View {
                      status: .spinner)
         case .relay(let name, true, let limited):
             GroupRow(title: "Connecting \(name) through the relay…",
-                     subtitle: limited ? "Their network blocks direct connections. Our relay: up to 20 minutes, lower quality."
+                     subtitle: limited ? "Their network blocks direct connections. Our relay passes it on, still end to end encrypted."
                                        : "Their network blocks direct connections. Using your relay.",
                      status: .spinner)
         case .relay(let name, false, _):
