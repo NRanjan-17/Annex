@@ -154,6 +154,7 @@ fn start(app: &gtk::Application, opts: cli::LaunchOpts, used_before: bool) {
     let model = Model::new(tx);
     MODEL.with(|m| *m.borrow_mut() = Some(model.clone()));
     log_boot(&model.borrow());
+    settings::add_login_delay();
 
     // The core's events, on the main thread.
     {

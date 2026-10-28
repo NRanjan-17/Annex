@@ -234,14 +234,38 @@ pub fn used_before() -> bool {
     path().exists() || ["annex.log", "identity.cert.der", "trusted_peers.json"].iter().any(|f| data.join(f).exists())
 }
 
+/// GNOME starts Annex this many seconds after login. Started together with the desktop, Annex's
+/// first request to the display can freeze GNOME Shell for good on some graphics drivers (seen on
+/// a Jetson AGX Thor with Ubuntu 26.04); a few seconds later it's safe.
+const LOGIN_DELAY: &str = "X-GNOME-Autostart-Delay=15";
+
+fn autostart_file() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".config"))
+        .join("autostart")
+        .join("annex.desktop")
+}
+
+/// Adds the login delay to an autostart entry written by a version without it.
+pub fn add_login_delay() {
+    let file = autostart_file();
+    let Ok(text) = std::fs::read_to_string(&file) else { return };
+    if text.contains("X-GNOME-Autostart-Delay") {
+        return;
+    }
+    let text = format!("{}\n{LOGIN_DELAY}\n", text.trim_end());
+    match std::fs::write(&file, text) {
+        Ok(()) => tracing::info!("settings: open at login now waits 15 s on GNOME"),
+        Err(e) => tracing::warn!("settings: couldn't add the login delay: {e}"),
+    }
+}
+
 /// Open at login: an XDG autostart entry (`~/.config/autostart/annex.desktop`), which every
 /// desktop in docs/LINUX.md honours. `--background` starts in the tray without a window.
 pub fn set_open_at_login(on: bool) -> std::io::Result<()> {
-    let dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".config"))
-        .join("autostart");
-    let file = dir.join("annex.desktop");
+    let file = autostart_file();
+    let dir = file.parent().unwrap_or(&file).to_path_buf();
     if !on {
         return match std::fs::remove_file(&file) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
@@ -255,7 +279,7 @@ pub fn set_open_at_login(on: bool) -> std::io::Result<()> {
         &file,
         format!(
             "[Desktop Entry]\nType=Application\nName=Annex\nExec={exe} --background\nIcon=annex\n\
-             X-GNOME-Autostart-enabled=true\nNoDisplay=true\n"
+             X-GNOME-Autostart-enabled=true\nNoDisplay=true\n{LOGIN_DELAY}\n"
         ),
     )
 }
