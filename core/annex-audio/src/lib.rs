@@ -8,11 +8,13 @@
 mod capture;
 mod codec;
 mod convert;
+mod echo;
 mod play;
 
 pub use capture::{Capture, Source};
 pub use codec::{Decoder, Encoder};
 pub use convert::Converter;
+pub use echo::Echo;
 pub use play::{Output, Player};
 
 /// Samples per second, everywhere between the computers.

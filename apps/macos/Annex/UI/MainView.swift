@@ -1110,7 +1110,7 @@ private struct SettingsPage: View {
             ToggleRow(title: "Hear the other computer", subtitle: "Plays the shared computer's sound here, and a viewer's microphone.",
                       isOn: $settings.hearSound)
             ToggleRow(title: "Send my microphone",
-                      subtitle: "Your voice plays on the computer you're viewing. Use headphones to avoid an echo.",
+                      subtitle: "Your voice plays on the computer you're viewing. Annex takes its sound back out, so neither side hears an echo.",
                       isOn: Binding(get: { settings.sendMicrophone }, set: { model.setSendMicrophone($0) }))
             if model.microphoneDenied {
                 GroupRow(title: "Annex can't use the microphone. Allow it in System Settings → Privacy & Security → Microphone.",
