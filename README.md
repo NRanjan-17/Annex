@@ -81,7 +81,9 @@ controlling the other computer. Not listed under Nearby? Use **Connect by addres
 - [Guide](docs/GUIDE.md): every feature, cables and Wi-Fi, a computer with no one at its screen,
   uninstalling, troubleshooting.
 - [Security](docs/SECURITY.md): TLS 1.3 with mutual authentication, PIN pairing, signed updates.
-  Everything stays on your network; the only internet traffic of its own is the update check.
+  On your own network nothing leaves it. Over the internet (opt-in, with a code), the connection is
+  direct when the two networks allow it, else through an encrypted relay that can't read it
+  ([limits](docs/GUIDE.md#a-computer-somewhere-else)).
 - [Linux](docs/LINUX.md) · [Building from source](docs/BUILDING.md) · [Protocol](docs/PROTOCOL.md) ·
   [Roadmap](docs/PLAN.md)
 

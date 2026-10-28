@@ -133,9 +133,29 @@ work. Details: [docs/CABLES.md](CABLES.md).
 
 ### A computer somewhere else
 
-Annex has no servers, so over the internet it runs on a private network such as Tailscale or
-ZeroTier: install it on both computers, then *Connect by address* with the other computer's VPN
-address. Details: [docs/REMOTE.md](REMOTE.md).
+**With a code (no setup):**
+
+1. On the computer to share, under **Over the internet**, click **Get a Code**. The code is 6
+   characters, works once, and lasts 10 minutes.
+2. On the other computer, choose **Connect by Code or Address…** and type it.
+
+Annex connects the two computers **directly** whenever their networks allow it. Some don't: an
+internet provider that shares one address among many homes, or a college or office network that
+blocks it. Then the session goes through **our relay**. It stays end to end encrypted (the relay
+only forwards packets it can't read), with these limits:
+
+| Relay limit | |
+|---|---|
+| Session length | 20 minutes, then it ends; connect again with a new code |
+| Picture | Held to about 6 Mbit/s, so softer than a direct connection |
+| Per day | 2 relayed sessions per sharing computer's internet address, 20 in total for everyone (reset at midnight UTC) |
+
+Direct connections, and your own TURN relay (**Settings → Internet**), have no limits.
+
+**With a private network:** on Tailscale or ZeroTier, install it on both computers, then
+*Connect by address* with the other computer's VPN address. It's direct far more often and has no
+relay limits. Annex also lists Tailscale computers under Nearby. Details:
+[docs/REMOTE.md](REMOTE.md).
 
 ### A computer with no one at its screen
 
