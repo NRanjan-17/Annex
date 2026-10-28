@@ -48,6 +48,7 @@ name = "annex-cli"
 version = "0.1.0"
 dependencies = [
  "annex-discovery",
+ "annex-log",
  "annex-session",
  "serde_json",
  "tokio",
