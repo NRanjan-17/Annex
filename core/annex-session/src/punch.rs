@@ -209,31 +209,33 @@ impl PunchSocket {
         Ok(public)
     }
 
-    /// Checks what this computer's router does with ports, for the log: asks `stun_server` once
-    /// more on another port (53, or 3478 if that was 53) and compares the answer with `public`,
-    /// the first one. A router that gives each address its own port answers differently.
+    /// Checks what this computer's router does with ports, for the log: asks a second STUN server
+    /// (Cloudflare's TURN server, at another address) and compares its answer with `public`, the
+    /// first one. A router that gives each address its own port answers differently.
     pub async fn check_router(self: &Arc<Self>, public: SocketAddr, stun_server: SocketAddr) -> Router {
         let router = if public.is_ipv6() {
             Router::None
         } else {
-            let other = SocketAddr::new(stun_server.ip(), if stun_server.port() == 53 { 3478 } else { 53 });
-            match self.public_address(other).await {
-                Ok(second) if second == public => Router::SamePort,
-                Ok(second) => {
-                    tracing::debug!(%public, %second, "two STUN ports saw different public addresses");
-                    Router::NewPortEach
-                }
-                Err(e) => {
-                    tracing::debug!("second STUN check: {e}");
-                    Router::Unknown
-                }
+            match second_stun(stun_server).await {
+                None => Router::Unknown,
+                Some(other) => match self.public_address(other).await {
+                    Ok(second) if second == public => Router::SamePort,
+                    Ok(second) => {
+                        tracing::debug!(%public, %second, "two STUN servers saw different public addresses");
+                        Router::NewPortEach
+                    }
+                    Err(e) => {
+                        tracing::debug!("second STUN check: {e}");
+                        Router::Unknown
+                    }
+                },
             }
         };
         let what = match router {
             Router::None => "no address translation (IPv6): others can connect directly",
             Router::SamePort => "one public port for everyone (easy NAT): others can connect directly",
             Router::NewPortEach => "a new public port for each address (hard NAT, often a shared ISP address)",
-            Router::Unknown => "couldn't tell how this router handles ports (no second STUN answer)",
+            Router::Unknown => "couldn't tell how this router handles ports (no second STUN server, or no answer)",
         };
         let port_kept = self.local_addr().is_ok_and(|l| l.port() == public.port());
         tracing::info!(%public, port_kept, "network check: {what}");
@@ -522,6 +524,21 @@ impl PunchSocket {
     fn relay_server(&self) -> Option<SocketAddr> {
         self.relay.lock().unwrap().as_ref().map(|r| r.server)
     }
+}
+
+/// Cloudflare's TURN server, which also answers STUN, from another address than its STUN server.
+const SECOND_STUN: &str = "turn.cloudflare.com:3478";
+
+/// The server to ask second in [`PunchSocket::check_router`]: Cloudflare's TURN server, only when
+/// `stun_server` is Cloudflare's STUN server, so a computer set up with its own STUN server
+/// contacts no one new. (Port 53 on the same server was tried first; some internet providers
+/// block or take over port 53, so it never answered there.)
+async fn second_stun(stun_server: SocketAddr) -> Option<SocketAddr> {
+    let mut ours = tokio::net::lookup_host(crate::DEFAULT_STUN).await.ok()?;
+    if !ours.any(|a| a.ip().to_canonical() == stun_server.ip().to_canonical()) {
+        return None;
+    }
+    tokio::net::lookup_host(SECOND_STUN).await.ok()?.find(|a| a.is_ipv4() == stun_server.is_ipv4())
 }
 
 /// The punch token for a code, however it was typed (case, dashes and spaces don't matter).
