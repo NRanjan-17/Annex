@@ -1,7 +1,9 @@
 import CoreMedia
 import VideoToolbox
 
-/// Low-latency H.264 encoder (VideoToolbox). Output is Annex B with SPS/PPS on keyframes.
+/// Low-latency H.264 or HEVC encoder (VideoToolbox). Output is Annex B with the parameter sets on
+/// keyframes. HEVC gives a sharper picture at the same bitrate; it's used with viewers that
+/// decode it (another Mac), H.264 with everyone else.
 ///
 /// By default this uses the hardware encoder with low-latency rate control (2–4 ms per frame
 /// on Apple Silicon). Apple's software H.264 encoder buffers ~17 frames (~280 ms) even in
@@ -12,6 +14,8 @@ final class H264Encoder {
     private let lock = NSLock()
     private var forceKeyframe = true
     private(set) var usingHardware = false
+    /// "hevc" or "h264", as the core names them.
+    let codec: String
 
     /// Called on a VideoToolbox thread: (Annex B access unit, keyframe, capture time µs).
     var onEncoded: ((Data, Bool, Int64) -> Void)?
@@ -25,7 +29,11 @@ final class H264Encoder {
     /// Creating a session can take from ~0.3 s to many seconds; never call this on the main thread.
     /// `lowLatency: false` asks for the plain hardware encoder, for when the low-latency one
     /// accepts a size but then encodes nothing.
-    init(width: Int, height: Int, fps: Int, bitrate: Int, preferHardware: Bool, lowLatency: Bool = true) throws {
+    init(width: Int, height: Int, fps: Int, bitrate: Int, preferHardware: Bool, lowLatency: Bool = true,
+         codec: String = "h264") throws {
+        let hevc = codec == "hevc"
+        self.codec = hevc ? "hevc" : "h264"
+        let name = hevc ? "HEVC" : "H.264"
         let hardware: [CFString: Any] = [kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true]
         let software: [CFString: Any] = [kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: false]
         let attempts = preferHardware ? (lowLatency ? [hardware, [:]] : [[:]]) : [software, [:]]
@@ -34,7 +42,8 @@ final class H264Encoder {
         var lowLatencyHardware = false
         for (index, spec) in attempts.enumerated() {
             status = VTCompressionSessionCreate(allocator: nil, width: Int32(width), height: Int32(height),
-                                                codecType: kCMVideoCodecType_H264, encoderSpecification: spec as CFDictionary,
+                                                codecType: hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264,
+                                                encoderSpecification: spec as CFDictionary,
                                                 imageBufferAttributes: nil, compressedDataAllocator: nil,
                                                 outputCallback: nil, refcon: nil, compressionSessionOut: &created)
             if status == noErr {
@@ -45,14 +54,14 @@ final class H264Encoder {
             Annex.log(.warn, "[encode] encoder setup \(index + 1) of \(attempts.count) refused \(width)×\(height) (OSStatus \(status))")
         }
         guard status == noErr, let session = created else {
-            throw AnnexError(message: "Could not create H.264 encoder (OSStatus \(status))")
+            throw AnnexError(message: "Could not create \(name) encoder (OSStatus \(status))")
         }
         self.session = session
 
         let props: [CFString: Any] = [
             kVTCompressionPropertyKey_RealTime: true,
             kVTCompressionPropertyKey_AllowFrameReordering: false,
-            kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_High_AutoLevel,
+            kVTCompressionPropertyKey_ProfileLevel: hevc ? kVTProfileLevel_HEVC_Main_AutoLevel : kVTProfileLevel_H264_High_AutoLevel,
             kVTCompressionPropertyKey_AverageBitRate: bitrate,
             kVTCompressionPropertyKey_DataRateLimits: [bitrate * 3 / 2 / 8, 1] as CFArray,
             kVTCompressionPropertyKey_ExpectedFrameRate: fps,
@@ -77,7 +86,7 @@ final class H264Encoder {
         // The property is not reported by low-latency sessions, hence the flag above.
         usingHardware = lowLatencyHardware || (copied == noErr && (hw as? Bool) == true)
         let prepared = VTCompressionSessionPrepareToEncodeFrames(session)
-        Annex.log(.info, "[encode] H.264 \(width)×\(height) at \(fps) fps, \(bitrate / 1000) kbit/s, "
+        Annex.log(.info, "[encode] \(name) \(width)×\(height) at \(fps) fps, \(bitrate / 1000) kbit/s, "
                   + "\(usingHardware ? "hardware" : "software")\(lowLatencyHardware ? " low-latency" : "")"
                   + (prepared == noErr ? "" : ", prepare failed (OSStatus \(prepared))"))
     }

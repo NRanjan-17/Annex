@@ -1077,6 +1077,9 @@ private struct SettingsPage: View {
             ToggleRow(title: "Hardware video encoder",
                       subtitle: model.isHosting ? "Stop sharing to change it." : "Recommended. Lowest delay.",
                       isOn: $settings.preferHardwareEncoder, disabled: model.isHosting)
+            ToggleRow(title: "HEVC between Macs",
+                      subtitle: "A sharper picture at the same speed when both computers are Macs. Applies to the next session.",
+                      isOn: $settings.hevcWithMacs)
             ToggleRow(title: "Peer-to-peer Wi-Fi",
                       subtitle: "Another Mac can connect with no router, like AirDrop. "
                           + (model.isHosting || model.isViewing ? "Applies to the next session." : "Uses a little Wi-Fi speed while on."),

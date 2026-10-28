@@ -352,6 +352,7 @@ async fn run(
         link,
         input,
         pointer_deltas,
+        codecs: vec![],
         peer_os: crate::conn::peer_os(&peer),
     });
     if let Some(conn) = &quic

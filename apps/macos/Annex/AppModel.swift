@@ -278,6 +278,12 @@ final class AppModel: ObservableObject {
             #endif
             // Before the core starts, so its first lines already follow the setting.
             settings.$verboseLogging.removeDuplicates().sink { Annex.setVerboseLogging($0) }.store(in: &cancellables)
+            // HEVC: offered as a viewer when this Mac decodes it in hardware; used as a host with
+            // viewers that decode it. Applies to sessions that start afterwards.
+            settings.$hevcWithMacs.removeDuplicates().sink { [weak self] on in
+                Annex.setViewerHEVC(on && H264SampleBuilder.hardwareDecodesHEVC)
+                self?.host?.hevc = on
+            }.store(in: &cancellables)
             let name = settings.customDeviceName ?? Self.systemName
             let core = try CoreClient(dataDirectory: Self.dataDirectory, deviceName: name)
             self.core = core
@@ -431,6 +437,7 @@ final class AppModel: ObservableObject {
         let h = HostController(core: core, display: display, preferHardware: settings.preferHardwareEncoder)
         h.extendScale = settings.extendScale
         h.shareSound = settings.shareSound
+        h.hevc = settings.hevcWithMacs
         h.onStatus = { [weak self] s in self?.hostStatus = s }
         h.onEvent = { [weak self] e in self?.handleSessionEvent(e) }
         do {

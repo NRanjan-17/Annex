@@ -57,6 +57,17 @@ final class HostController {
     /// What the mirror encoder sends: the full stream, or adaptive bitrate's smaller picture.
     private var mirrorPicture: StreamConfig?
     private var mirrorReduced = false
+    /// Settings → Advanced → HEVC between Macs: encode HEVC for viewers that decode it.
+    var hevc = false {
+        didSet { host?.setHEVC(hevc && !hevcFailed) }
+    }
+    /// This Mac's HEVC encoder wouldn't start: H.264 for everyone from now on.
+    private var hevcFailed = false
+    /// The codecs each mirror viewer decodes. The one mirror encoder serves them all, so it's
+    /// HEVC only while every one of them decodes it.
+    private var mirrorCodecs: [UInt64: Set<String>] = [:]
+    /// The mirror stream's codec as the core has it (it sends frames only to viewers that decode it).
+    private var coreMirrorCodec = "h264"
     private var extendSessions: [UInt64: ExtendSession] = [:]
     private var inputSessions: [UInt64: String] = [:]
     /// Sessions that came through the relay, by session id (their viewer's name).
@@ -123,6 +134,9 @@ final class HostController {
             host = try HostHandle(core: core, port: 0, width: w, height: h, fps: fps, advertise: true, extend: extend,
                                   onEvent: handler)
         }
+        host?.setHEVC(hevc && !hevcFailed)
+        // A new host starts with an H.264 mirror stream.
+        coreMirrorCodec = "h264"
         status.listeningPort = Int(host?.port ?? 0)
         Annex.log(.info, "[host] listening on \(status.listeningPort ?? 0), stream up to \(w)×\(h) at \(fps) fps, extend \(extend)")
     }
@@ -188,13 +202,19 @@ final class HostController {
             }
         case .sessionStarted(let s):
             mirrorSessions[s.sessionId] = s.peerName
+            mirrorCodecs[s.sessionId] = Set(s.codecs ?? ["h264"])
+            var stream = s.stream
+            stream.codec = desiredMirrorCodec
             if encoder == nil, ExtendSession.captureEnabled {
-                startMirrorCapture(stream: s.stream)
+                startMirrorCapture(stream: stream)
+            } else if let full = mirrorFullStream, full.codec != desiredMirrorCodec {
+                Annex.log(.info, "[capture] \(s.peerName) joins; the mirror stream switches to \(desiredMirrorCodec)")
+                switchMirrorCodec()
             } else {
                 Annex.log(.debug, "[capture] \(s.peerName) joins the running mirror capture")
                 // It was told the full size; the picture is smaller for now.
                 if mirrorReduced, let p = mirrorPicture {
-                    host?.setStream(session: s.sessionId, width: p.width, height: p.height, fps: p.fps)
+                    host?.setStream(session: s.sessionId, codec: p.codec, width: p.width, height: p.height, fps: p.fps)
                 }
                 requestMirrorKeyframe()
             }
@@ -210,10 +230,15 @@ final class HostController {
                 ext.stop()
             } else if mirrorSessions.removeValue(forKey: id) != nil {
                 mirrorScales.removeValue(forKey: id)
+                mirrorCodecs.removeValue(forKey: id)
                 if mirrorSessions.isEmpty {
                     Annex.log(.info, "[capture] last mirror viewer left: stopping capture")
                     stopMirrorCapture()
                     status.stream = nil
+                } else if let full = mirrorFullStream, full.codec != desiredMirrorCodec {
+                    // The only viewer that needed H.264 left: back to HEVC.
+                    Annex.log(.info, "[capture] the mirror stream switches to \(desiredMirrorCodec)")
+                    switchMirrorCodec()
                 } else {
                     applyMirrorBitrate()
                 }
@@ -293,7 +318,7 @@ final class HostController {
             let session = try ExtendSession(
                 sessionID: s.sessionId, host: host, viewer: s.viewerDisplay ?? DisplayInfo(widthPx: 1920, heightPx: 1080),
                 viewerFingerprint: s.fingerprint, viewerName: s.peerName, preferHardware: preferHardware,
-                scale: extendScale)
+                scale: extendScale, codec: s.stream.codec)
             let id = s.sessionId
             // Any capture or encoder failure ends the session, which removes the display again.
             session.onError = { [weak self] message in self?.failExtend(id, message) }
@@ -354,8 +379,36 @@ final class HostController {
     /// Tells the mirror viewers the picture's size. They keep their window; it's for their stats
     /// and pointer (the decoders follow the keyframe by themselves).
     private func announceMirrorPicture(_ picture: StreamConfig) {
-        for id in mirrorSessions.keys {
-            host?.setStream(session: id, width: picture.width, height: picture.height, fps: picture.fps)
+        for id in mirrorSessions.keys where mirrorCodecs[id]?.contains(picture.codec) ?? true {
+            host?.setStream(session: id, codec: picture.codec, width: picture.width, height: picture.height, fps: picture.fps)
+        }
+    }
+
+    /// The mirror stream's codec for the viewers now: HEVC while the setting is on, this Mac's
+    /// encoder can do it, and every mirror viewer decodes it; H.264 otherwise.
+    private var desiredMirrorCodec: String {
+        hevc && !hevcFailed && !mirrorCodecs.isEmpty && mirrorCodecs.values.allSatisfy { $0.contains("hevc") } ? "hevc" : "h264"
+    }
+
+    /// Restarts the mirror encoder in `desiredMirrorCodec` (a viewer joined or left). The new
+    /// encoder's first frame is a keyframe, which the viewers' decoders follow by themselves.
+    private func switchMirrorCodec() {
+        guard var full = mirrorFullStream else { return }
+        full.codec = desiredMirrorCodec
+        mirrorFullStream = full
+        let (_, picture) = pictureForBitrate(full)
+        startMirrorEncoding(picture)
+        if mirrorReduced { announceMirrorPicture(picture) }
+    }
+
+    /// Tells the core the mirror stream's codec, so it sends frames only to viewers that decode it.
+    private func syncCoreMirrorCodec(_ codec: String) {
+        guard codec != coreMirrorCodec, let full = mirrorFullStream else { return }
+        do {
+            try host?.setStream(codec: codec, width: full.width, height: full.height, fps: full.fps)
+            coreMirrorCodec = codec
+        } catch {
+            Annex.log(.warn, "[encode] couldn't switch the mirror stream to \(codec): \(error.localizedDescription)")
         }
     }
 
@@ -395,13 +448,16 @@ final class HostController {
         let bitrate = mirrorBaseBitrate
         mirrorPicture = stream
         status.stream = stream
+        // Before the new encoder's first frame: the core then sends it only to viewers that decode it.
+        syncCoreMirrorCodec(stream.codec)
         let preferHardware = self.preferHardware
         Annex.log(.info, "[capture] mirror capture of display \(display.id): \(stream.width)×\(stream.height) at \(stream.fps) fps, "
-                  + "H.264 \(bitrate / 1000) kbit/s, \(preferHardware ? "hardware" : "software") encoder preferred")
+                  + "\(stream.codec == "hevc" ? "HEVC" : "H.264") \(bitrate / 1000) kbit/s, "
+                  + "\(preferHardware ? "hardware" : "software") encoder preferred")
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = Result {
                 try H264Encoder(width: stream.width, height: stream.height, fps: stream.fps, bitrate: bitrate,
-                                preferHardware: preferHardware)
+                                preferHardware: preferHardware, codec: stream.codec)
             }
             await self?.encoderReady(result, stream: stream, generation: gen)
         }
@@ -412,7 +468,15 @@ final class HostController {
         switch result {
         case .success(let e): enc = e
         case .failure(let error):
-            status.error = error.localizedDescription
+            guard stream.codec == "hevc", gen == generation else {
+                status.error = error.localizedDescription
+                return
+            }
+            // No HEVC encoder on this Mac: H.264 for everyone, from now on.
+            Annex.log(.warn, "[encode] no HEVC encoder (\(error.localizedDescription)); using H.264")
+            hevcFailed = true
+            host?.setHEVC(false)
+            switchMirrorCodec()
             return
         }
         guard gen == generation else {

@@ -31,6 +31,9 @@ final class ExtendSession {
     /// Which encoder to use: 0 = low-latency hardware, 1 = plain hardware, 2 = software. Moves up
     /// when one is created fine but encodes nothing (seen at 4096×2304 on a MacBook Air).
     private var encoderTier = 0
+    /// "hevc" when the core chose it for this viewer (another Mac), else "h264". Falls back to
+    /// H.264 if this Mac's HEVC encoder won't start or encodes nothing.
+    private var codec: String
     /// The last capture started before macOS gave the display a mode (it sized from the viewer
     /// instead), so it is restarted once the mode arrives.
     private var startedWithoutMode = false
@@ -55,7 +58,8 @@ final class ExtendSession {
 
     /// `scale`: Settings → Sharing → Extended display scaling (0 = sharpest).
     init(sessionID: UInt64, host: HostHandle, viewer: DisplayInfo, viewerFingerprint: String, viewerName: String,
-         preferHardware: Bool, scale: Int = 0) throws {
+         preferHardware: Bool, scale: Int = 0, codec: String = "h264") throws {
+        self.codec = codec == "hevc" ? "hevc" : "h264"
         guard AnnexVirtualDisplay.isSupported() else {
             Annex.log(.warn, "[display] virtual displays aren't supported on this macOS")
             throw AnnexError(message: "Virtual displays aren't supported on this version of macOS.")
@@ -314,7 +318,7 @@ final class ExtendSession {
         capturer.onFrame = nil
         encoder?.invalidate()
         encoder = nil
-        host.setStream(session: sessionID, width: size.0, height: size.1, fps: fps)
+        host.setStream(session: sessionID, codec: codec, width: size.0, height: size.1, fps: fps)
         Annex.log(.info, "[capture] display mode \(mode?.width ?? 0)×\(mode?.height ?? 0) points, "
                   + "\(mode?.pixelWidth ?? 0)×\(mode?.pixelHeight ?? 0) pixels; streaming \(size.0)×\(size.1) at \(fps) fps")
         let (fps, capturer) = (self.fps, self.capturer)
@@ -323,10 +327,11 @@ final class ExtendSession {
         // Frames get more alike as the rate goes up, so above 60 fps the bitrate grows half as fast.
         let bitrate = max(6_000_000, size.0 * size.1 * (min(fps, 60) + max(fps - 60, 0) / 2) / 8)
         baseBitrate = bitrate
+        let codec = self.codec
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = Result {
                 try H264Encoder(width: size.0, height: size.1, fps: fps, bitrate: bitrate,
-                                preferHardware: preferHardware, lowLatency: lowLatency)
+                                preferHardware: preferHardware, lowLatency: lowLatency, codec: codec)
             }
             await self?.encoderReady(result, generation: gen, size: size, capturer: capturer, displayID: id)
         }
@@ -343,6 +348,12 @@ final class ExtendSession {
         switch result {
         case .success(let e): enc = e
         case .failure(let e):
+            if codec == "hevc" {
+                Annex.log(.warn, "[encode] \(viewerName): no HEVC encoder (\(e.localizedDescription)); using H.264")
+                codec = "h264"
+                restartCapture()
+                return
+            }
             Annex.log(.warn, "[encode] \(viewerName): couldn't create the encoder: \(e.localizedDescription)")
             onError?(e.localizedDescription)
             return
@@ -414,7 +425,13 @@ extension ExtendSession {
                 return
             }
             // Frames were captured but the encoder turned none into video: the viewer would stay
-            // black. Try the next encoder before giving up.
+            // black. HEVC first falls back to H.264, then the next encoder is tried before giving up.
+            if self.codec == "hevc" {
+                Annex.log(.warn, "[encode] \(self.viewerName): frames captured but none encoded as HEVC; using H.264")
+                self.codec = "h264"
+                self.restartCapture()
+                return
+            }
             guard self.preferHardware, self.encoderTier < 2 else {
                 Annex.log(.warn, "[encode] \(self.viewerName): frames captured but none encoded, no encoder left to try")
                 self.onError?("The video encoder produced no picture for the extended display.")

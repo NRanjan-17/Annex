@@ -43,6 +43,8 @@ final class AppSettings: ObservableObject {
     @Published var showTechnicalDetails: Bool { didSet { defaults.set(showTechnicalDetails, forKey: Keys.technical); changed("showTechnicalDetails", showTechnicalDetails) } }
     /// Settings → Developer: log everything at trace (each input event, each frame). Off by default.
     @Published var verboseLogging: Bool { didSet { defaults.set(verboseLogging, forKey: Keys.verboseLogging); changed("verboseLogging", verboseLogging) } }
+    /// HEVC with another Mac (sharper at the same bitrate); H.264 with everyone else either way.
+    @Published var hevcWithMacs: Bool { didSet { defaults.set(hevcWithMacs, forKey: Keys.hevc); changed("hevcWithMacs", hevcWithMacs) } }
     /// Look for a new version on GitHub once a day.
     @Published var checkForUpdates: Bool { didSet { defaults.set(checkForUpdates, forKey: Keys.updates); changed("checkForUpdates", checkForUpdates) } }
     /// Offer pre-releases too. Turning it off offers the newest normal release.
@@ -100,6 +102,7 @@ final class AppSettings: ObservableObject {
         static let quality = "quality"
         static let technical = "showTechnicalDetails"
         static let verboseLogging = "verboseLogging"
+        static let hevc = "hevcWithMacs"
         static let updates = "checkForUpdates"
         static let beta = "betaUpdates"
         static let dismissedUpdate = "dismissedUpdateVersion"
@@ -132,7 +135,7 @@ final class AppSettings: ObservableObject {
         defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true, Keys.updates: true,
                                        Keys.peerToPeer: true, Keys.clipboard: true, Keys.reverseScroll: true, Keys.receiveFiles: true, Keys.notchDrop: true,
                                        Keys.shareSound: true, Keys.hearSound: true, Keys.virtualMicrophone: true,
-                                       Keys.verboseLogging: true])
+                                       Keys.verboseLogging: true, Keys.hevc: true])
         preferHardwareEncoder = defaults.bool(forKey: Keys.hardware)
         startSharingAtLaunch = defaults.bool(forKey: Keys.autoShare)
         headless = defaults.bool(forKey: Keys.headless)
@@ -151,6 +154,7 @@ final class AppSettings: ObservableObject {
         quality = defaults.integer(forKey: Keys.quality)
         showTechnicalDetails = defaults.bool(forKey: Keys.technical)
         verboseLogging = defaults.bool(forKey: Keys.verboseLogging)
+        hevcWithMacs = defaults.bool(forKey: Keys.hevc)
         checkForUpdates = defaults.bool(forKey: Keys.updates)
         // Saved only when the user flips it. Until then it follows what's installed: someone who
         // installed a beta by hand gets betas, not an offer to go back to the last normal release.
@@ -173,7 +177,7 @@ final class AppSettings: ObservableObject {
             + "control when viewing \(controlWhenViewing), full screen \(openFullScreen), reverse scroll \(reverseScrollOnOthers), "
             + "clipboard \(shareClipboard), notch drop \(notchDrop), receive files \(receiveFiles), extend by default \(extendByDefault), "
             + "share sound \(shareSound), hear sound \(hearSound), send microphone \(sendMicrophone), annex microphone \(virtualMicrophone), "
-            + "quality \(quality), technical details \(showTechnicalDetails), verbose \(verboseLogging), "
+            + "quality \(quality), technical details \(showTechnicalDetails), verbose \(verboseLogging), HEVC \(hevcWithMacs), "
             + "update checks \(checkForUpdates), beta \(betaUpdates), extend scale \(extendScale), peer-to-peer \(peerToPeerWiFi), "
             + "custom name \(customDeviceName != nil), server \(rendezvousServer.isEmpty ? "Annex's" : rendezvousServer), "
             + "own relay \(relayURL.isEmpty ? "none" : relayURL) (login \(relayUsername.isEmpty ? "unset" : "set")), "

@@ -127,6 +127,12 @@ int32_t annex_host_start(const AnnexCore *core, uint16_t port, const char *codec
                          uint32_t height, uint32_t fps, bool advertise, bool extend,
                          AnnexEventCallback on_event, void *ctx, AnnexHost **out);
 uint16_t annex_host_port(const AnnexHost *host);
+/* Whether this computer encodes HEVC. Extend sessions then use HEVC with viewers that decode it;
+ * the app chooses the mirror stream's codec (HEVC only when every mirror viewer decodes it). */
+int32_t annex_host_set_hevc(const AnnexHost *host, bool on);
+/* Viewers started after this offer HEVC as well as H.264 (the app checked this computer decodes
+ * it). Off by default. */
+void annex_viewer_set_hevc(bool on);
 int32_t annex_host_set_stream(const AnnexHost *host, const char *codec, uint32_t width,
                               uint32_t height, uint32_t fps);
 /* One encoded access unit (Annex B) for every MIRROR session. Returns ANNEX_SUBMIT_* or < 0. */

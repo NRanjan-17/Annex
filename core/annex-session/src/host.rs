@@ -116,12 +116,17 @@ struct SessionSlot {
     outbox: mpsc::UnboundedSender<Control>,
     /// Clipboard and files, when both sides take them (QUIC sessions only).
     transfers: Option<Arc<crate::transfer::Transfers>>,
+    /// The video codecs this viewer decodes (from its session request).
+    codecs: Vec<Codec>,
 }
 
 struct Shared {
     core: Arc<Core>,
     events: EventSink,
     extend: bool,
+    /// The app can encode HEVC: Extend sessions use it with viewers that decode it, and the app
+    /// may switch the shared mirror stream to it (see [`HostHandle::set_hevc`]).
+    hevc: AtomicBool,
     mirror_stream: Mutex<StreamConfig>,
     sessions: Mutex<HashMap<SessionId, Arc<SessionSlot>>>,
     /// Connections that have claimed a slot (pairing or streaming).
@@ -182,12 +187,22 @@ impl HostHandle {
         self.port
     }
 
-    /// Changes the mirror stream (e.g. the captured display's resolution changed). Every mirror
-    /// session is told with a `stream_config` message.
+    /// Whether this computer encodes HEVC. New Extend sessions use it with viewers that decode it;
+    /// the app picks the mirror stream's codec itself (HEVC only when every mirror viewer decodes
+    /// it: each session's `codecs` come with `session_started`).
+    pub fn set_hevc(&self, on: bool) {
+        self.shared.hevc.store(on, Ordering::Relaxed);
+    }
+
+    /// Changes the mirror stream (e.g. the captured display's resolution changed, or its codec).
+    /// Every mirror session that decodes its codec is told with a `stream_config` message; the
+    /// others get no frames until the stream is back to a codec they decode.
     pub fn set_stream(&self, stream: StreamConfig) {
         *self.shared.mirror_stream.lock().unwrap() = stream.clone();
         for s in self.shared.sessions.lock().unwrap().values().filter(|s| s.mode == Mode::Mirror) {
-            s.stream.send_replace(stream.clone());
+            if s.codecs.contains(&stream.codec) {
+                s.stream.send_replace(stream.clone());
+            }
         }
     }
 
@@ -267,10 +282,19 @@ impl HostHandle {
         self.shared.sessions.lock().unwrap().values().map(|s| (s.id, s.mode)).collect()
     }
 
-    /// Queues one encoded access unit for every **mirror** session. Never blocks.
+    /// Queues one encoded access unit for every **mirror** session that decodes the mirror stream's
+    /// codec. Never blocks.
     pub fn submit_frame(&self, data: &[u8], capture_ts_us: i64, keyframe: bool) -> SubmitResult {
-        let targets: Vec<Arc<SessionSlot>> =
-            self.shared.sessions.lock().unwrap().values().filter(|s| s.mode == Mode::Mirror).cloned().collect();
+        let codec = self.shared.mirror_stream.lock().unwrap().codec;
+        let mut targets: Vec<Arc<SessionSlot>> = Vec::new();
+        for s in self.shared.sessions.lock().unwrap().values().filter(|s| s.mode == Mode::Mirror) {
+            if s.codecs.contains(&codec) {
+                targets.push(s.clone());
+            } else {
+                // Waiting for the app to switch the stream to a codec it decodes: start it on a keyframe.
+                s.need_keyframe.store(true, Ordering::Release);
+            }
+        }
         if targets.is_empty() {
             return SubmitResult::NoSession;
         }
@@ -405,6 +429,7 @@ pub async fn start_host(core: Arc<Core>, cfg: HostConfig, events: EventSink) -> 
         core,
         events: events.clone(),
         extend: cfg.extend,
+        hevc: AtomicBool::new(false),
         mirror_stream: Mutex::new(cfg.stream),
         sessions: Mutex::new(HashMap::new()),
         claimed: AtomicUsize::new(0),
@@ -638,10 +663,18 @@ async fn run_session(
         Control::Bye { reason } => return Err(SessionError::Rejected(reason)),
         _ => return Err(SessionError::Violation("expected session_request".into())),
     };
-    let stream = match req.mode {
+    let mut stream = match req.mode {
         Mode::Mirror => shared.mirror_stream.lock().unwrap().clone(),
         Mode::Extend => extend_stream_for(&req.display),
     };
+    if req.mode == Mode::Extend && shared.hevc.load(Ordering::Relaxed) && req.codecs.contains(&Codec::Hevc) {
+        // Its own encoder: HEVC, a sharper picture at the same bitrate.
+        stream.codec = Codec::Hevc;
+    } else if req.mode == Mode::Mirror && !req.codecs.contains(&stream.codec) && req.codecs.contains(&Codec::H264) {
+        // The shared stream is HEVC and this viewer only decodes H.264: the app switches the
+        // stream back when it sees this session's codecs, and the viewer's frames start then.
+        stream.codec = Codec::H264;
+    }
     let reject = if req.mode == Mode::Extend && !shared.extend {
         Some("extend_not_supported")
     } else if !req.codecs.contains(&stream.codec) {
@@ -672,6 +705,7 @@ async fn run_session(
         next_frame_id: AtomicU32::new(0),
         ended: tokio::sync::Notify::new(),
         outbox,
+        codecs: req.codecs.clone(),
         transfers: match quic {
             Some(conn) if peer.caps.iter().any(|c| c == crate::transfer::CAP) => {
                 // Only from a viewer that asked for, and still has, control of this computer.
@@ -694,7 +728,7 @@ async fn run_session(
         // A `set_stream` between reading the mirror stream above and the insert didn't reach this
         // slot; one after the insert did, and is picked up by `stream_rx.changed()` below.
         let current = shared.mirror_stream.lock().unwrap().clone();
-        if current != stream {
+        if current != stream && slot.codecs.contains(&current.codec) {
             slot.stream.send_replace(current);
         }
     }
@@ -724,6 +758,7 @@ async fn run_session(
         link: link.kind,
         input,
         pointer_deltas: true,
+        codecs: req.codecs.clone(),
         peer_os: crate::conn::peer_os(&peer),
     });
     shared.request_keyframe(&slot);

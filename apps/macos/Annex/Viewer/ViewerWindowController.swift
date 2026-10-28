@@ -14,6 +14,8 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     private var framesReceived = 0
     private var loggedFirstFrame = false
     private var loggedBadFrame = false
+    /// The codec has been logged once (later lines mean it switched).
+    private var loggedCodec = false
     private var sized = false
     /// Full screen, Annex's own: the window covers its screen with the menu bar and Dock hidden.
     /// macOS full screen moves the window to a Space of its own, and closing it slid back to the
@@ -196,10 +198,12 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             Annex.log(.trace, "[viewer] frame \(frameID), \(data.count) bytes\(keyframe ? ", keyframe" : "")")
             if waitingForKeyframe && !keyframe { return Annex.log(.trace, "[viewer] frame \(frameID) skipped: waiting for a keyframe") }
             let before = builder.dimensions
+            let wasHEVC = builder.hevc
             guard let sample = builder.sampleBuffer(from: data) else {
                 if !loggedBadFrame {
                     loggedBadFrame = true
-                    Annex.log(.warn, "[viewer] frame \(frameID) (\(data.count) bytes, key \(keyframe)) could not be read as H.264")
+                    Annex.log(.warn, "[viewer] frame \(frameID) (\(data.count) bytes, key \(keyframe)) could not be read as "
+                              + (builder.hevc ? "HEVC" : "H.264"))
                 }
                 viewer?.requestKeyframe()
                 return
@@ -220,7 +224,12 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
             }
             // The host changed the picture's size (a smaller one on a slow link, or back): start
             // the decoder over at this keyframe. The layer scales whatever size to the window.
-            if let before, let after = builder.dimensions, before.width != after.width || before.height != after.height {
+            if builder.hevc != wasHEVC || !loggedCodec {
+                // The host switched codec (a viewer that needs H.264 joined or left): start over here.
+                if loggedCodec { renderer.flush() }
+                loggedCodec = true
+                Annex.log(.info, "[viewer] picture in \(builder.hevc ? "HEVC" : "H.264")")
+            } else if let before, let after = builder.dimensions, before.width != after.width || before.height != after.height {
                 Annex.log(.info, "[viewer] picture \(before.width)×\(before.height) → \(after.width)×\(after.height)")
                 renderer.flush()
             }

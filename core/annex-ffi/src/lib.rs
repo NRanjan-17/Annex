@@ -822,6 +822,26 @@ pub unsafe extern "C" fn annex_host_port(host: *const AnnexHost) -> u16 {
     unsafe { host.as_ref() }.map(|h| h.handle.port()).unwrap_or(0)
 }
 
+/// Whether this computer encodes HEVC (see `HostHandle::set_hevc`). Extend sessions then use
+/// HEVC with viewers that decode it; the app chooses the mirror stream's codec itself.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn annex_host_set_hevc(host: *const AnnexHost, on: bool) -> i32 {
+    guard(|| {
+        let h = unsafe { host.as_ref() }.ok_or_else(|| invalid("host is null"))?;
+        h.handle.set_hevc(on);
+        Ok(ANNEX_OK)
+    })
+}
+
+/// Viewers started after this offer HEVC as well as H.264 when `on` (the app checked that this
+/// computer decodes it). Off by default.
+static VIEWER_HEVC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn annex_viewer_set_hevc(on: bool) {
+    VIEWER_HEVC.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn annex_host_set_stream(
     host: *const AnnexHost,
@@ -1759,7 +1779,12 @@ unsafe fn viewer_config(
     Ok(ViewerConfig {
         address,
         display,
-        codecs: vec![Codec::H264],
+        // HEVC first when this computer decodes it; H.264 always, which every host sends.
+        codecs: if VIEWER_HEVC.load(std::sync::atomic::Ordering::Relaxed) {
+            vec![Codec::Hevc, Codec::H264]
+        } else {
+            vec![Codec::H264]
+        },
         expected_fingerprint: expected,
         mode: if extend { Mode::Extend } else { Mode::Mirror },
         input,

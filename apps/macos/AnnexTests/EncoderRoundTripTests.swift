@@ -49,6 +49,72 @@ final class EncoderRoundTripTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(count, 6, "\(w)×\(h) at 60 fps encoded only \(count) of 8 frames")
     }
 
+    /// HEVC between Macs: keyframes carry VPS/SPS/PPS, every frame decodes, and the viewer's
+    /// builder follows the stream switching to H.264 (a viewer that needs it joined) and back.
+    func testHEVCEncodeDecodeRoundTrip() throws {
+        guard H264SampleBuilder.hardwareDecodesHEVC else { throw XCTSkip("this Mac doesn't decode HEVC in hardware") }
+        let (w, h) = (640, 360)
+        let units = try encode(width: w, height: h, preferHardware: true, codec: "hevc")
+        XCTAssertGreaterThanOrEqual(units.count, 6, "too many frames dropped")
+        XCTAssertTrue(units[0].1, "first frame must be a keyframe")
+        let firstNals = AnnexB.nalUnits([UInt8](units[0].0)).map { AnnexB.hevcNalType($0) }
+        XCTAssertTrue(firstNals.contains(32) && firstNals.contains(33) && firstNals.contains(34),
+                      "keyframe carries VPS, SPS, PPS: \(firstNals)")
+
+        var builder = H264SampleBuilder()
+        let samples = units.compactMap { builder.sampleBuffer(from: $0.0) }
+        XCTAssertTrue(builder.hevc)
+        XCTAssertEqual(samples.count, units.count)
+        let dims = try XCTUnwrap(builder.dimensions)
+        XCTAssertEqual(Int(dims.width), w)
+        XCTAssertEqual(Int(dims.height), h)
+        XCTAssertEqual(decode(samples, format: builder.format!), samples.count)
+
+        // Switched to H.264 mid-stream, then back to HEVC: the builder follows each keyframe.
+        let h264 = try encode(width: w, height: h, preferHardware: true, codec: "h264")
+        XCTAssertNotNil(builder.sampleBuffer(from: h264[0].0))
+        XCTAssertFalse(builder.hevc)
+        XCTAssertNotNil(builder.sampleBuffer(from: units[0].0))
+        XCTAssertTrue(builder.hevc)
+    }
+
+    /// Encodes 12 frames (a keyframe asked for half-way) and returns (Annex B unit, keyframe).
+    private func encode(width w: Int, height h: Int, preferHardware: Bool, codec: String) throws -> [(Data, Bool)] {
+        let encoder = try H264Encoder(width: w, height: h, fps: 60, bitrate: 2_000_000, preferHardware: preferHardware,
+                                      codec: codec)
+        var units: [(Data, Bool)] = []
+        let lock = NSLock()
+        encoder.onEncoded = { data, key, _ in
+            lock.lock(); units.append((data, key)); lock.unlock()
+        }
+        for i in 0..<12 {
+            if i == 6 { encoder.requestKeyframe() }
+            encoder.encode(makeFrame(width: w, height: h, shade: UInt8(16 + i * 18)), captureMicros: Int64(i) * 16_667)
+            usleep(16_667)
+        }
+        encoder.flush()
+        encoder.invalidate()
+        lock.lock(); defer { lock.unlock() }
+        return units
+    }
+
+    /// Decodes `samples` and returns how many came out as pictures.
+    private func decode(_ samples: [CMSampleBuffer], format: CMVideoFormatDescription) -> Int {
+        var session: VTDecompressionSession?
+        guard VTDecompressionSessionCreate(allocator: nil, formatDescription: format, decoderSpecification: nil,
+                                           imageBufferAttributes: nil, outputCallback: nil, decompressionSessionOut: &session) == noErr,
+              let session else { return 0 }
+        var decoded = 0
+        for s in samples {
+            VTDecompressionSessionDecodeFrame(session, sampleBuffer: s, flags: [], infoFlagsOut: nil) { status, _, image, _, _ in
+                if status == noErr, image != nil { decoded += 1 }
+            }
+        }
+        VTDecompressionSessionWaitForAsynchronousFrames(session)
+        VTDecompressionSessionInvalidate(session)
+        return decoded
+    }
+
     private func roundTrip(preferHardware: Bool) throws {
         let (w, h) = (640, 360)
         let encoder = try H264Encoder(width: w, height: h, fps: 60, bitrate: 2_000_000, preferHardware: preferHardware)

@@ -60,6 +60,8 @@ struct SessionStarted: Decodable, Equatable {
     let pointerDeltas: Bool?
     /// The other computer's system: "macos", "windows" or "linux"; nil from older versions.
     let peerOs: String?
+    /// Host side: the codecs this viewer decodes ("hevc", "h264"); nil from older versions.
+    let codecs: [String]?
 
     var connectionDescription: String {
         let t = transport == "quic" ? "QUIC" : transport == "tcp" ? "TCP" : nil

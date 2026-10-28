@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use annex_proto::{DisplayInfo, InputEvent, Mode, StreamConfig};
+use annex_proto::{Codec, DisplayInfo, InputEvent, Mode, StreamConfig};
 use serde::Serialize;
 
 pub use crate::transport::TransportKind;
@@ -102,6 +102,9 @@ pub enum Event {
         /// The host understands pointer movement ([`annex_proto::InputEvent::MouseDelta`],
         /// protocol 1.2), so the viewer may send that instead of positions.
         pointer_deltas: bool,
+        /// Host side: the video codecs the viewer decodes (empty on the viewer side).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        codecs: Vec<Codec>,
         /// The other computer's system ("macos", "windows", "linux"); absent from older versions.
         #[serde(skip_serializing_if = "Option::is_none")]
         peer_os: Option<String>,

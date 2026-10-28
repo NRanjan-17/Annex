@@ -222,7 +222,7 @@ JSON objects with a `type` field, delivered through the C ABI (`annex.h`):
 | `pairing_pin` | `request_id`, `pin` (`"123 456"`), `peer_name`, `fingerprint_display`: host shows it; `annex_core_cancel_request` to refuse |
 | `pairing_pin_required` | `request_id`, `peer_name`, `fingerprint_display`: viewer asks the user; answer with `annex_core_submit_pin` |
 | `pairing_finished` | `request_id`, `success`, `peer_name` |
-| `session_started` | `session_id` (0 on viewers), `mode`, `peer_name`, `fingerprint`, `stream`, `transport` (`quic`/`tcp`), `link` (`direct`/`network`/`internet`/`relayed`), `viewer_display` (host side only) |
+| `session_started` | `session_id` (0 on viewers), `mode`, `peer_name`, `fingerprint`, `stream`, `transport` (`quic`/`tcp`), `link` (`direct`/`network`/`internet`/`relayed`), `viewer_display` and `codecs` (the codecs the viewer decodes, e.g. `["hevc","h264"]`; host side only) |
 | `stream_config` | `stream` |
 | `keyframe_requested` | `session_id` |
 | `bitrate_hint` | `session_id`, `scale_percent` (host: set the session's encoder bitrate) |

@@ -465,6 +465,49 @@ async fn extend_session_gets_its_own_stream() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn hevc_goes_only_to_viewers_that_decode_it() {
+    let (hev, mut hrx) = channel_sink();
+    let host = start_host(viewer_core("Host"), host_cfg(), hev).await.unwrap();
+    host.set_hevc(true);
+    // A Mac extending onto this one: its own stream is HEVC.
+    let (xe, _xrx) = channel_sink();
+    let mut cfg = viewer_cfg(host.port());
+    cfg.mode = Mode::Extend;
+    cfg.codecs = vec![Codec::Hevc, Codec::H264];
+    let extend = connect_viewer(viewer_core("Mac"), cfg, xe, Arc::new(|_| {}));
+    let Event::SessionStarted { stream: ext, codecs, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(ext.codec, Codec::Hevc);
+    assert_eq!(codecs, vec![Codec::Hevc, Codec::H264]);
+
+    // The app made the mirror stream HEVC. A viewer that only decodes H.264 is accepted with
+    // H.264 and gets none of the HEVC frames.
+    host.set_stream(StreamConfig { codec: Codec::Hevc, ..stream() });
+    let (ms, got) = frame_counter();
+    let (me, _mr) = channel_sink();
+    let pc = connect_viewer(viewer_core("PC"), viewer_cfg(host.port()), me, ms);
+    let Event::SessionStarted { stream: mirror, .. } =
+        wait_for(&mut hrx, |e| matches!(e, Event::SessionStarted { .. })).await
+    else {
+        unreachable!()
+    };
+    assert_eq!(mirror.codec, Codec::H264);
+    assert_eq!(host.submit_frame(b"hevc-key", clock::now_us(), true), SubmitResult::NoSession);
+
+    // The app switches the mirror stream to H.264 for it: frames flow, from a keyframe.
+    host.set_stream(stream());
+    assert_eq!(host.submit_frame(b"h264-key", clock::now_us(), true), SubmitResult::Sent);
+    eventually(|| got.lock().unwrap().len() == 1).await;
+    assert_eq!(got.lock().unwrap()[0], b"h264-key");
+    pc.disconnect().await;
+    extend.disconnect().await;
+    host.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn extend_is_refused_by_mirror_only_hosts() {
     let (hev, _hrx) = channel_sink();
     let host = start_host(viewer_core("Host"), HostConfig { extend: false, ..host_cfg() }, hev).await.unwrap();

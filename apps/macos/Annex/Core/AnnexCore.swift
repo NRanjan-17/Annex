@@ -46,6 +46,11 @@ enum Annex {
         annex_log(level.rawValue, message())
     }
 
+    /// Viewers started after this offer HEVC as well as H.264 (this Mac decodes it).
+    static func setViewerHEVC(_ on: Bool) {
+        annex_viewer_set_hevc(on)
+    }
+
     static func setVerboseLogging(_ on: Bool) {
         verbose = on
         annex_set_log_verbose(on)
@@ -313,9 +318,14 @@ final class HostHandle {
         }
     }
 
-    func setStream(session: UInt64, width: Int, height: Int, fps: Int) {
+    func setStream(session: UInt64, codec: String = "h264", width: Int, height: Int, fps: Int) {
         guard let raw else { return }
-        annex_host_set_session_stream(raw, session, "h264", UInt32(width), UInt32(height), UInt32(fps))
+        annex_host_set_session_stream(raw, session, codec, UInt32(width), UInt32(height), UInt32(fps))
+    }
+
+    /// Whether this Mac encodes HEVC (Extend sessions use it with viewers that decode it).
+    func setHEVC(_ on: Bool) {
+        if let raw { annex_host_set_hevc(raw, on) }
     }
 
     /// Answers a direct-link request that this Mac can't meet.
