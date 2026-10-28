@@ -9,8 +9,8 @@
       },
       {
         "kind": "new",
-        "title": "HEVC between Macs",
-        "detail": "Two Macs send the picture as HEVC: sharper at the same speed. Anyone else still gets H.264. It's in Settings."
+        "title": "HEVC when both computers support it",
+        "detail": "The picture goes as HEVC, sharper at the same speed, between any two computers that support it. Otherwise H.264. It's in Settings."
       },
       {
         "kind": "improved",
