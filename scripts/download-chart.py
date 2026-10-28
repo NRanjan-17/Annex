@@ -158,8 +158,11 @@ def svg(data, theme, face):
     pen = Pencil(json.dumps(data))
     total = sum(sum(v.values()) for _, v in data)
     shown = [s for s in SYSTEMS if any(per[s] for _, per in data)] or SYSTEMS[:1]
-    w, h = 720, 320
-    left, right, top, bottom = 52, 92, 78, 44
+    # Under the versions, a row of numbers per system: GitHub shows the README's SVG as an image,
+    # so the dots' tooltips never appear.
+    row_h = 22
+    w, h = 720, 320 + row_h * len(shown)
+    left, right, top, bottom = 52, 92, 78, 44 + row_h * len(shown)
     plot_w, plot_h = w - left - right, h - top - bottom
     peak = max([per[s] for _, per in data for s in shown] + [1])
     step = nice_step(peak)
@@ -183,7 +186,7 @@ def svg(data, theme, face):
              f'<rect width="{w}" height="{h}" rx="6" fill="{t["surface"]}"/>',
              f'<text x="{left}" y="34" font-size="24" fill="{t["text"]}">Downloads per version</text>',
              f'<text x="{w - 16}" y="34" font-size="18" text-anchor="end" fill="{t["muted"]}">{total:,} in total</text>']
-    # Legend in series order (lines are also labelled at their ends).
+    # Legend in series order (the rows of numbers are labelled too).
     x = left
     for s in shown:
         i = SYSTEMS.index(s)
@@ -201,28 +204,27 @@ def svg(data, theme, face):
         parts.append(f'<text x="{left - 10}" y="{y + 5:.1f}" font-size="15" text-anchor="end" fill="{t["muted"]}">{v:,}</text>')
     g += pen.line(left, top + plot_h, left + plot_w + 8, top + plot_h, t["muted"], width=1.6, wobble=0.8)
     g += pen.line(left, top - 6, left, top + plot_h, t["muted"], width=1.6, wobble=0.8)
+    axis_y = top + plot_h + 28
     for i, (version, _) in enumerate(data):
-        parts.append(f'<text x="{px(i):.1f}" y="{h - 16}" font-size="15" text-anchor="middle" fill="{t["muted"]}">{escape(version)}</text>')
+        parts.append(f'<text x="{px(i):.1f}" y="{axis_y}" font-size="15" text-anchor="middle" fill="{t["muted"]}">{escape(version)}</text>')
+    for r, s in enumerate(shown):
+        y = axis_y + row_h * (r + 1)
+        parts += pen.line(left - 46, y - 5, left - 28, y - 5, t["series"][SYSTEMS.index(s)], width=2.6, wobble=0.6)
+        for i, (_, per) in enumerate(data):
+            parts.append(f'<text x="{px(i):.1f}" y="{y}" font-size="15" text-anchor="middle" fill="{t["text"]}">{per[s]:,}</text>')
+        parts.append(f'<text x="{px(len(data) - 1) + 24:.1f}" y="{y}" font-size="15" fill="{t["muted"]}">{s}</text>')
 
-    # One line per system, with a dot on every version and its name at the end.
-    ends = []
+    # One line per system, with a dot on every version.
     for s in shown:
         i = SYSTEMS.index(s)
         pts = [(px(j), py(per[s])) for j, (_, per) in enumerate(data)]
         g += pen.polyline(pts, t["series"][i])
-        ends.append([pts[-1][1], s, i, data[-1][1][s]])
     g.append("</g>")
     parts += g
     for s in shown:
         i = SYSTEMS.index(s)
         for j, (version, per) in enumerate(data):
             parts += pen.dot(px(j), py(per[s]), t["series"][i], t["surface"], escape(f"{version} {s}: {per[s]:,}"))
-    # End labels, nudged apart so they don't sit on each other.
-    ends.sort()
-    for k in range(1, len(ends)):
-        ends[k][0] = max(ends[k][0], ends[k - 1][0] + 18)
-    for y, s, i, v in ends:
-        parts.append(f'<text x="{px(len(data) - 1) + 12:.1f}" y="{y + 5:.1f}" font-size="17" fill="{t["text"]}">{s} {v:,}</text>')
     parts.append("</svg>")
     return "\n".join(parts) + "\n"
 
