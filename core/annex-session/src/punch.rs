@@ -24,6 +24,8 @@ const STUN_TRY: Duration = Duration::from_millis(700);
 /// How long punch packets keep going: enough for the viewer's QUIC handshake to retry through.
 pub const PUNCH_FOR: Duration = Duration::from_secs(6);
 const PUNCH_EVERY: Duration = Duration::from_millis(200);
+/// At most this many learned addresses per peer are tried (see [`PunchSocket::learned`]).
+pub const MAX_LEARNED: usize = 4;
 /// TURN permissions last 5 minutes (RFC 8656 §9); renew them, and the allocation, before then.
 static RELAY_REFRESH_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(240_000);
 
@@ -231,6 +233,16 @@ impl PunchSocket {
         tracing::info!(%public, port_kept, "network check: {what}");
         *self.router.lock().unwrap() = Some(router);
         router
+    }
+
+    /// Where `peers`' punches really came from, when not from an address they gave: a router that
+    /// picks a new port for each address (hard NAT) sends from a port STUN never saw. Only ports on
+    /// the peers' own IPs, and at most [`MAX_LEARNED`], so stray packets can't fan connections out.
+    pub fn learned(&self, peers: &[SocketAddr]) -> Vec<SocketAddr> {
+        let given: HashSet<SocketAddr> = peers.iter().map(|&p| canonical(p)).collect();
+        let ips: HashSet<IpAddr> = given.iter().map(|p| p.ip()).collect();
+        let heard = self.heard.lock().unwrap();
+        heard.iter().filter(|h| ips.contains(&h.ip()) && !given.contains(h)).take(MAX_LEARNED).copied().collect()
     }
 
     /// Logs why a direct connection with `peers` didn't happen, as far as this side can tell: how

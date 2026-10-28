@@ -692,7 +692,7 @@ async fn connect_internet(
 ) -> Result<Established, SessionError> {
     // Also open this side's router towards the host, in case its first packets beat ours.
     net.udp.punch(addrs.clone());
-    let direct = race(core, cfg, &net.endpoint, addrs.clone()).await;
+    let direct = race(core, cfg, &net.endpoint, addrs.clone(), Some(&net.udp)).await;
     if direct.is_ok() {
         tracing::info!("connected directly over the internet, no relay (end to end encrypted, TLS 1.3)");
     }
@@ -711,7 +711,7 @@ async fn connect_internet(
                  between the two computers); the relay sees only encrypted packets"
             );
             net.through_relay(&relayed);
-            race(core, cfg, &net.endpoint, relayed).await
+            race(core, cfg, &net.endpoint, relayed, None).await
         }
         Ok(_) => {
             tracing::info!("the sharing computer has no relay to offer (it's off, or today's allowance is used up)");
@@ -724,34 +724,64 @@ async fn connect_internet(
     }
 }
 
-/// Tries `addrs` a little apart; the first to connect wins.
+/// Tries `addrs` a little apart; the first to connect wins. With `learn_from`, also tries where
+/// the host's punches really come from while the others are under way: a host behind a router
+/// that picks a new port for each address (hard NAT) is reachable there, not at its STUN port.
+/// Nothing new is opened: those are ports the host's own router mapped towards this computer.
 async fn race(
     core: &Arc<Core>,
     cfg: &ViewerConfig,
     endpoint: &quinn::Endpoint,
     addrs: Vec<std::net::SocketAddr>,
+    learn_from: Option<&Arc<PunchSocket>>,
 ) -> Result<Established, SessionError> {
     let mut tries = tokio::task::JoinSet::new();
-    for (i, addr) in addrs.into_iter().enumerate() {
-        let (core, endpoint, expected) = (core.clone(), endpoint.clone(), cfg.expected_fingerprint.clone());
-        tries.spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100 * i as u64)).await;
-            connect_quic_on(&core, &endpoint, addr, expected).await
-        });
+    for (i, &addr) in addrs.iter().enumerate() {
+        try_addr(&mut tries, core, cfg, endpoint, addr, Duration::from_millis(100 * i as u64));
     }
+    let mut learned: Vec<std::net::SocketAddr> = Vec::new();
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
     let mut last_err = None;
-    while let Some(r) = tries.join_next().await {
-        match r {
-            Ok(Ok(est)) => {
-                tries.abort_all();
-                return Ok(est);
+    loop {
+        tokio::select! {
+            r = tries.join_next() => match r {
+                None => break,
+                Some(Ok(Ok(est))) => {
+                    tries.abort_all();
+                    return Ok(est);
+                }
+                Some(Ok(Err(e))) => {
+                    tracing::info!("internet connect attempt failed: {e}");
+                    last_err = Some(e);
+                }
+                Some(Err(_)) => {}
+            },
+            _ = tick.tick(), if learn_from.is_some() => {
+                for addr in learn_from.map(|u| u.learned(&addrs)).unwrap_or_default() {
+                    if !learned.contains(&addr) {
+                        tracing::info!(%addr, "also trying where the host's packets come from (hard NAT there)");
+                        learned.push(addr);
+                        try_addr(&mut tries, core, cfg, endpoint, addr, Duration::ZERO);
+                    }
+                }
             }
-            Ok(Err(e)) => {
-                tracing::info!("internet connect attempt failed: {e}");
-                last_err = Some(e);
-            }
-            Err(_) => {}
         }
     }
     Err(last_err.unwrap_or(SessionError::Timeout("connect")))
+}
+
+/// One connection attempt to `addr` after `delay`, in `tries`.
+fn try_addr(
+    tries: &mut tokio::task::JoinSet<Result<Established, SessionError>>,
+    core: &Arc<Core>,
+    cfg: &ViewerConfig,
+    endpoint: &quinn::Endpoint,
+    addr: std::net::SocketAddr,
+    delay: Duration,
+) {
+    let (core, endpoint, expected) = (core.clone(), endpoint.clone(), cfg.expected_fingerprint.clone());
+    tries.spawn(async move {
+        tokio::time::sleep(delay).await;
+        connect_quic_on(&core, &endpoint, addr, expected).await
+    });
 }
