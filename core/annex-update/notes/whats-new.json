@@ -1,5 +1,30 @@
 [
   {
+    "version": "0.3.3",
+    "items": [
+      {
+        "kind": "new",
+        "title": "Sound and microphone, device by device",
+        "detail": "Each paired device has Can hear this computer's sound and Its microphone plays here, under the mouse and keyboard switch. Both start on."
+      },
+      {
+        "kind": "new",
+        "title": "A full command line on Linux",
+        "detail": "Control Annex from a terminal or over SSH: annex status, annex set <setting> on|off, annex devices, annex pin and more. Run annex help."
+      },
+      {
+        "kind": "fixed",
+        "title": "Tailscale computers show in Nearby on the Mac",
+        "detail": "Annex could not read Tailscale's list of computers when opened as an app, so Nearby showed only the same Wi-Fi."
+      },
+      {
+        "kind": "improved",
+        "title": "The log explains a missing computer",
+        "detail": "It says how many computers Tailscale listed, how many answered, and why Tailscale couldn't be asked."
+      }
+    ]
+  },
+  {
     "version": "0.3.2",
     "items": [
       {
