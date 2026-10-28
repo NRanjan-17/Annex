@@ -1,5 +1,5 @@
 //! Windows host pipeline: capture a monitor, convert to NV12 at stream size on the GPU, encode
-//! H.264 (hardware if available), hand access units to the caller.
+//! H.264 (hardware if available) or HEVC (hardware only), hand access units to the caller.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -32,6 +32,9 @@ pub struct HostPipelineConfig {
     /// Encode at most this many frames a second (adaptive bitrate's smaller picture); None:
     /// every frame Windows captures.
     pub max_fps: Option<u32>,
+    /// HEVC instead of H.264. Needs a hardware encoder: starting fails without one, and the
+    /// caller falls back to H.264.
+    pub hevc: bool,
 }
 
 /// A graphics card the user can pick for sharing.
@@ -166,8 +169,11 @@ impl HostPipeline {
         output: OutputFn,
     ) -> Result<Self, MediaError> {
         let device = create_device(cfg.gpu)?;
-        let ecfg = EncoderConfig { width: cfg.width, height: cfg.height, fps: cfg.fps, bitrate: cfg.bitrate };
-        let encoder = if cfg.prefer_hardware {
+        let ecfg =
+            EncoderConfig { width: cfg.width, height: cfg.height, fps: cfg.fps, bitrate: cfg.bitrate, hevc: cfg.hevc };
+        let encoder = if cfg.hevc {
+            Encoder::Hardware(HardwareEncoder::new(&device, ecfg, output.clone())?)
+        } else if cfg.prefer_hardware {
             match HardwareEncoder::new(&device, ecfg, output.clone()) {
                 Ok(h) => Encoder::Hardware(h),
                 Err(e) => {
@@ -243,6 +249,7 @@ impl HostPipeline {
         };
         tracing::info!(
             hardware,
+            hevc = cfg.hevc,
             width = cfg.width,
             height = cfg.height,
             max_fps = ?cfg.max_fps,

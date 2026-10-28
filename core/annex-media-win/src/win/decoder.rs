@@ -1,4 +1,5 @@
-//! H.264 decoding with Microsoft's Media Foundation decoder MFT.
+//! H.264 decoding with Microsoft's Media Foundation decoder MFT, and HEVC when Windows has an
+//! HEVC decoder (the HEVC Video Extensions, built in on many PCs, a Store download on others).
 //!
 //! With a D3D11 device the decoder runs on the GPU (DXVA) and returns textures that the
 //! renderer feeds straight into the video processor (no CPU copies). Without one, or if the
@@ -6,7 +7,9 @@
 
 use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Multithread, ID3D11Texture2D};
 use windows::Win32::Media::MediaFoundation::*;
-use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+use windows::Win32::System::Com::{
+    CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
+};
 use windows::core::Interface;
 
 use super::MediaError;
@@ -41,6 +44,36 @@ pub struct H264Decoder {
     visible: (u32, u32),
 }
 
+/// The first HEVC decoder Windows lists, activated; None if there's none.
+unsafe fn hevc_decoder() -> Result<Option<IMFTransform>, MediaError> {
+    unsafe {
+        let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_HEVC };
+        let mut activates: *mut Option<IMFActivate> = std::ptr::null_mut();
+        let mut count = 0u32;
+        let flags = MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER;
+        MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER, flags, Some(&input), None, &mut activates, &mut count)?;
+        let list: Vec<IMFActivate> = if activates.is_null() {
+            Vec::new()
+        } else {
+            let slice = std::slice::from_raw_parts_mut(activates, count as usize);
+            let out = slice.iter_mut().filter_map(|a| a.take()).collect();
+            CoTaskMemFree(Some(activates.cast()));
+            out
+        };
+        let Some(first) = list.first() else { return Ok(None) };
+        Ok(Some(first.ActivateObject()?))
+    }
+}
+
+/// Whether Windows has an HEVC decoder, so a viewer here can offer HEVC.
+pub fn hevc_decoder_available() -> bool {
+    // SAFETY: COM and Media Foundation start-up, then enumeration.
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        super::mf_startup().is_ok() && matches!(hevc_decoder(), Ok(Some(_)))
+    }
+}
+
 fn unpack_size(v: u64) -> (u32, u32) {
     ((v >> 32) as u32, v as u32)
 }
@@ -52,18 +85,27 @@ impl H264Decoder {
 
     /// `device` enables GPU decoding (falls back to software if the decoder refuses it).
     pub fn new(device: Option<&ID3D11Device>) -> Result<Self, MediaError> {
+        Self::new_for(device, false)
+    }
+
+    /// An H.264 or (`hevc`) HEVC decoder.
+    pub fn new_for(device: Option<&ID3D11Device>, hevc: bool) -> Result<Self, MediaError> {
         unsafe {
             // S_FALSE (already initialised) is fine; RPC_E_CHANGED_MODE means the thread uses STA,
             // which the MFT also tolerates.
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
             super::mf_startup()?;
-            let mft: IMFTransform = CoCreateInstance(&CLSID_MSH264DecoderMFT, None, CLSCTX_INPROC_SERVER)?;
+            let mft: IMFTransform = if hevc {
+                hevc_decoder()?.ok_or_else(|| MediaError::Other("no HEVC decoder (HEVC Video Extensions)".into()))?
+            } else {
+                CoCreateInstance(&CLSID_MSH264DecoderMFT, None, CLSCTX_INPROC_SERVER)?
+            };
             if let Ok(attrs) = mft.GetAttributes() {
                 let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
             }
             let input = MFCreateMediaType()?;
             input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-            input.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
+            input.SetGUID(&MF_MT_SUBTYPE, if hevc { &MFVideoFormat_HEVC } else { &MFVideoFormat_H264 })?;
             let manager = device.and_then(|d| match Self::enable_d3d11(&mft, d) {
                 Ok(m) => Some(m),
                 Err(e) => {

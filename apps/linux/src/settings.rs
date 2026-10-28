@@ -32,6 +32,8 @@ pub struct Settings {
     pub drop_at_top: bool,
     /// Sharing: use the graphics chip's video encoder when there is one.
     pub prefer_hardware_encoder: bool,
+    /// HEVC with computers that support it too (sharper at the same bitrate); H.264 otherwise.
+    pub hevc: bool,
     /// Sharing: the size of text and windows on a screen extending this one. 0 = the other
     /// screen's own scale (200 % on a Retina Mac); otherwise a percentage, 100–200.
     pub extend_scale: u32,
@@ -82,6 +84,7 @@ impl Default for Settings {
             receive_files: true,
             drop_at_top: true,
             prefer_hardware_encoder: true,
+            hevc: true,
             extend_scale: 0,
             share_sound: true,
             hear_sound: true,
@@ -150,7 +153,7 @@ impl Settings {
         format!(
             "open_at_login={} start_sharing_at_launch={} headless={} quality={} use_mouse_and_keyboard={} \
              open_full_screen={} extend_by_default={} share_clipboard={} receive_files={} drop_at_top={} \
-             prefer_hardware_encoder={} share_sound={} hear_sound={} send_mic={} virtual_mic={} show_technical_details={} verbose_logging={} own_server={} own_relay={} \
+             prefer_hardware_encoder={} hevc={} share_sound={} hear_sound={} send_mic={} virtual_mic={} show_technical_details={} verbose_logging={} own_server={} own_relay={} \
              screen_token={} last_seen_version={} check_for_updates={} beta_updates={} beta_updates_chosen={}",
             self.open_at_login,
             self.start_sharing_at_launch,
@@ -163,6 +166,7 @@ impl Settings {
             self.receive_files,
             self.drop_at_top,
             self.prefer_hardware_encoder,
+            self.hevc,
             self.share_sound,
             self.hear_sound,
             self.send_mic,

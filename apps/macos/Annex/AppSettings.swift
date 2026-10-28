@@ -43,7 +43,7 @@ final class AppSettings: ObservableObject {
     @Published var showTechnicalDetails: Bool { didSet { defaults.set(showTechnicalDetails, forKey: Keys.technical); changed("showTechnicalDetails", showTechnicalDetails) } }
     /// Settings → Developer: log everything at trace (each input event, each frame). Off by default.
     @Published var verboseLogging: Bool { didSet { defaults.set(verboseLogging, forKey: Keys.verboseLogging); changed("verboseLogging", verboseLogging) } }
-    /// HEVC with another Mac (sharper at the same bitrate); H.264 with everyone else either way.
+    /// HEVC with computers that support it too (sharper at the same bitrate); H.264 otherwise.
     @Published var hevcWithMacs: Bool { didSet { defaults.set(hevcWithMacs, forKey: Keys.hevc); changed("hevcWithMacs", hevcWithMacs) } }
     /// Look for a new version on GitHub once a day.
     @Published var checkForUpdates: Bool { didSet { defaults.set(checkForUpdates, forKey: Keys.updates); changed("checkForUpdates", checkForUpdates) } }

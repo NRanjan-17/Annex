@@ -34,11 +34,31 @@ const DECODERS: &[(&str, &str)] = &[
     ("openh264dec", "openh264dec"),
 ];
 
+/// HEVC decoders, in the same order of preference.
+const HEVC_DECODERS: &[(&str, &str)] = &[
+    ("avdec_h265", "avdec_h265 thread-type=slice"),
+    ("vah265dec", "vah265dec"),
+    ("nvh265dec", "nvh265dec max-display-delay=0"),
+    ("nvv4l2decoder", "nvv4l2decoder disable-dpb=true ! nvvidconv"),
+    ("v4l2slh265dec", "v4l2slh265dec"),
+];
+
 pub fn decoder() -> Option<String> {
     if let Ok(name) = std::env::var("ANNEX_DECODER") {
         return Some(name);
     }
     DECODERS.iter().find(|(f, _)| gst::ElementFactory::find(f).is_some()).map(|(_, d)| d.to_string())
+}
+
+/// An HEVC decoder, if GStreamer has one (`ANNEX_DECODER` names an H.264 one only).
+pub fn hevc_decoder() -> Option<String> {
+    HEVC_DECODERS.iter().find(|(f, _)| gst::ElementFactory::find(f).is_some()).map(|(_, d)| d.to_string())
+}
+
+/// Whether an Annex B access unit carries an HEVC VPS (only HEVC keyframes do): tells the codecs
+/// apart when the stream switches.
+fn has_hevc_vps(data: &[u8]) -> bool {
+    data.windows(5).any(|w| w[..3] == [0, 0, 1] && w[3] == 0x40 && w[4] == 0x01)
 }
 
 struct Decoder {
@@ -47,13 +67,24 @@ struct Decoder {
 }
 
 impl Decoder {
-    fn new(handle: Arc<ViewerHandle>) -> Result<(Decoder, FrameSink), String> {
-        let dec = decoder().ok_or("No H.264 decoder found. Install gstreamer1.0-libav.")?;
-        tracing::info!("viewer decoder: {dec}");
+    /// `hevc`: decode HEVC instead of H.264. A keyframe of the other codec calls `switch` (once)
+    /// with what it is, and frames are dropped until a decoder for it takes over.
+    fn new(
+        handle: Arc<ViewerHandle>,
+        hevc: bool,
+        switch: Arc<dyn Fn(bool) + Send + Sync>,
+    ) -> Result<(Decoder, FrameSink), String> {
+        let dec = if hevc {
+            hevc_decoder().ok_or("No HEVC decoder found. Install gstreamer1.0-libav.")?
+        } else {
+            decoder().ok_or("No H.264 decoder found. Install gstreamer1.0-libav.")?
+        };
+        let (caps, parse) = if hevc { ("video/x-h265", "h265parse") } else { ("video/x-h264", "h264parse") };
+        tracing::info!(hevc, "viewer decoder: {dec}");
         let desc = format!(
             "appsrc name=src is-live=true format=time \
-               caps=video/x-h264,stream-format=byte-stream,alignment=au \
-             ! h264parse ! {dec} ! videoconvert ! gtk4paintablesink name=sink sync=false"
+               caps={caps},stream-format=byte-stream,alignment=au \
+             ! {parse} ! {dec} ! videoconvert ! gtk4paintablesink name=sink sync=false"
         );
         let pipeline = gst::parse::launch(&desc)
             .map_err(|e| e.to_string())?
@@ -93,7 +124,19 @@ impl Decoder {
         handle.request_keyframe();
 
         let started = Arc::new(AtomicBool::new(false));
+        let switching = AtomicBool::new(false);
         let frames: FrameSink = Arc::new(move |f: FrameOut<'_>| {
+            // The host switched codec (a viewer that needs H.264 joined or left): hand over.
+            if f.keyframe && has_hevc_vps(f.data) != hevc {
+                if !switching.swap(true, Ordering::Relaxed) {
+                    tracing::info!(hevc = !hevc, "viewer: the stream switched codec; changing decoder");
+                    switch(!hevc);
+                }
+                return;
+            }
+            if switching.load(Ordering::Relaxed) {
+                return;
+            }
             // A stream can only start at a keyframe.
             if !started.load(Ordering::Relaxed) {
                 if !f.keyframe {
@@ -131,6 +174,31 @@ struct VideoWindow {
     window: gtk::ApplicationWindow,
     _decoder: Decoder,
     size: Rc<RefCell<(u32, u32)>>,
+    picture: gtk::Picture,
+    handle: Arc<ViewerHandle>,
+    target: crate::model::FrameTarget,
+}
+
+/// Called from the frame thread when a keyframe of the other codec arrives: the main thread
+/// builds a decoder for it and puts it in place.
+fn switcher() -> Arc<dyn Fn(bool) + Send + Sync> {
+    Arc::new(|hevc| glib::MainContext::default().invoke(move || switch_decoder(hevc)))
+}
+
+fn switch_decoder(hevc: bool) {
+    WINDOW.with(|w| {
+        let mut w = w.borrow_mut();
+        let Some(v) = w.as_mut() else { return };
+        match Decoder::new(v.handle.clone(), hevc, switcher()) {
+            Ok((decoder, frames)) => {
+                *v.target.lock().unwrap() = Some(frames);
+                v.picture.set_paintable(Some(&decoder.paintable));
+                v._decoder = decoder;
+                tracing::info!(hevc, "viewer: decoder changed");
+            }
+            Err(e) => tracing::error!(hevc, "viewer: can't decode the new codec: {e}"),
+        }
+    });
 }
 
 thread_local! {
@@ -188,7 +256,8 @@ pub fn open(app: &gtk::Application, model: &Shared) {
         };
         (v.handle.clone(), v.frames.clone(), title, m.stream_size.unwrap_or((1920, 1080)), m.settings.open_full_screen)
     };
-    let (decoder, frames) = match Decoder::new(handle.clone()) {
+    // H.264 to start; the first keyframe switches to HEVC if that's what the host sends.
+    let (decoder, frames) = match Decoder::new(handle.clone(), false, switcher()) {
         Ok(d) => d,
         Err(e) => {
             tracing::error!("can't show the stream: {e}");
@@ -201,6 +270,7 @@ pub fn open(app: &gtk::Application, model: &Shared) {
         }
     };
     *target.lock().unwrap() = Some(frames);
+    let target_for_switch = target.clone();
 
     let picture = gtk::Picture::for_paintable(&decoder.paintable);
     picture.set_keep_aspect_ratio(true);
@@ -221,7 +291,7 @@ pub fn open(app: &gtk::Application, model: &Shared) {
     window.set_default_size((sw as f64 * k) as i32, (sh as f64 * k) as i32);
 
     let size = Rc::new(RefCell::new(size));
-    add_input(&window, &picture, handle, model.clone(), size.clone(), app.clone());
+    add_input(&window, &picture, handle.clone(), model.clone(), size.clone(), app.clone());
 
     let (m2, app2) = (model.clone(), app.clone());
     window.connect_close_request(move |_| {
@@ -243,7 +313,16 @@ pub fn open(app: &gtk::Application, model: &Shared) {
     tracing::info!(stream_w = sw, stream_h = sh, full_screen, "viewer: video window opened");
     window.present();
     picture.grab_focus();
-    WINDOW.with(|w| *w.borrow_mut() = Some(VideoWindow { window, _decoder: decoder, size }));
+    WINDOW.with(|w| {
+        *w.borrow_mut() = Some(VideoWindow {
+            window,
+            _decoder: decoder,
+            size,
+            picture,
+            handle,
+            target: target_for_switch,
+        })
+    });
 }
 
 pub fn close() {

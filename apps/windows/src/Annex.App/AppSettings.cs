@@ -12,6 +12,8 @@ public sealed class AppSettings
     /// <summary>The name other devices see; null = the PC's name.</summary>
     public string? DeviceName { get; set; }
     public bool PreferHardwareEncoder { get; set; } = true;
+    /// <summary>HEVC with computers that support it too (sharper at the same bitrate); H.264 otherwise.</summary>
+    public bool Hevc { get; set; } = true;
     /// <summary>Graphics card for sharing (adapter LUID); 0 = automatic.</summary>
     public ulong GpuLuid { get; set; }
     public bool StartSharingAtLaunch { get; set; }
@@ -99,7 +101,7 @@ public sealed class AppSettings
 
     /// <summary>The settings for the log: nothing secret (the relay's username and password stay out).</summary>
     public string Describe() =>
-        $"name {(DeviceName is null ? "(this PC's)" : $"\"{DeviceName}\"")}, hardware encoder {PreferHardwareEncoder}, gpu {GpuLuid:x}, "
+        $"name {(DeviceName is null ? "(this PC's)" : $"\"{DeviceName}\"")}, hardware encoder {PreferHardwareEncoder}, HEVC {Hevc}, gpu {GpuLuid:x}, "
         + $"share at launch {StartSharingAtLaunch}, no one at screen {Headless}, control {UseMouseAndKeyboard}, extend by default {ExtendByDefault}, "
         + $"clipboard {ShareClipboard}, receive files {ReceiveFiles}, drop at top {DropAtTop}, "
         + $"share sound {ShareSound}, hear sound {HearSound}, send microphone {SendMicrophone}, virtual microphone {VirtualMicrophone}, direct Wi-Fi first {ConnectOverDirectWifi}, "

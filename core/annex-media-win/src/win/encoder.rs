@@ -1,4 +1,4 @@
-//! H.264 encoding with Media Foundation.
+//! H.264 or HEVC encoding with Media Foundation (HEVC only on a hardware encoder).
 //!
 //! Prefers a hardware encoder MFT (NVENC / Quick Sync / AMF expose themselves as async MFTs)
 //! fed with D3D11 textures; falls back to Microsoft's software encoder (sync MFT, system
@@ -16,7 +16,7 @@ use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0
 use windows::core::Interface;
 
 use super::MediaError;
-use crate::annexb::with_parameter_sets;
+use crate::annexb::{with_hevc_parameter_sets, with_parameter_sets};
 
 /// One encoded access unit (Annex B; keyframes carry SPS/PPS).
 #[derive(Debug, Clone)]
@@ -66,19 +66,24 @@ pub struct EncoderConfig {
     pub height: u32,
     pub fps: u32,
     pub bitrate: u32,
+    /// HEVC instead of H.264 (hardware encoders only).
+    pub hevc: bool,
 }
 
 unsafe fn configure(mft: &IMFTransform, cfg: EncoderConfig) -> Result<(), MediaError> {
     unsafe {
         let out = MFCreateMediaType()?;
         out.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-        out.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
+        out.SetGUID(&MF_MT_SUBTYPE, if cfg.hevc { &MFVideoFormat_HEVC } else { &MFVideoFormat_H264 })?;
         out.SetUINT32(&MF_MT_AVG_BITRATE, cfg.bitrate)?;
         out.SetUINT64(&MF_MT_FRAME_SIZE, pack(cfg.width, cfg.height))?;
         out.SetUINT64(&MF_MT_FRAME_RATE, pack(cfg.fps, 1))?;
         out.SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack(1, 1))?;
         out.SetUINT32(&MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive.0 as u32)?;
-        out.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
+        // HEVC: the encoder's default profile (Main).
+        if !cfg.hevc {
+            out.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
+        }
         mft.SetOutputType(0, &out, 0)?;
 
         let input = MFCreateMediaType()?;
@@ -132,7 +137,7 @@ unsafe fn sequence_header(mft: &IMFTransform) -> Vec<u8> {
     }
 }
 
-unsafe fn sample_to_frame(sample: &IMFSample, seq: &[u8]) -> Result<EncodedFrame, MediaError> {
+unsafe fn sample_to_frame(sample: &IMFSample, seq: &[u8], hevc: bool) -> Result<EncodedFrame, MediaError> {
     unsafe {
         let buf = sample.ConvertToContiguousBuffer()?;
         let mut p = std::ptr::null_mut();
@@ -142,7 +147,11 @@ unsafe fn sample_to_frame(sample: &IMFSample, seq: &[u8]) -> Result<EncodedFrame
         buf.Unlock()?;
         let keyframe = sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0;
         let capture_us = sample.GetSampleTime().unwrap_or(0) / 10;
-        let data = if keyframe { with_parameter_sets(data, seq) } else { data };
+        let data = match (keyframe, hevc) {
+            (false, _) => data,
+            (true, false) => with_parameter_sets(data, seq),
+            (true, true) => with_hevc_parameter_sets(data, seq),
+        };
         Ok(EncodedFrame { data, keyframe, capture_us })
     }
 }
@@ -230,7 +239,7 @@ impl SoftwareEncoder {
             match r {
                 Ok(()) => {
                     if let Some(s) = sample {
-                        (self.output)(unsafe { sample_to_frame(&s, &seq)? });
+                        (self.output)(unsafe { sample_to_frame(&s, &seq, false)? });
                     }
                 }
                 Err(e) if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(()),
@@ -298,9 +307,10 @@ impl HardwareEncoder {
             // often the other GPU, e.g. NVENC while the Intel GPU drives the screen, and fails
             // with E_UNEXPECTED). Then any other hardware encoder; the first that accepts our
             // device wins.
-            let mut candidates = hardware_encoders(Some(adapter_luid(device)?))?;
-            candidates.extend(hardware_encoders(None)?);
-            let mut last = MediaError::Other("no hardware H.264 encoder".into());
+            let mut candidates = hardware_encoders(Some(adapter_luid(device)?), cfg.hevc)?;
+            candidates.extend(hardware_encoders(None, cfg.hevc)?);
+            let name = if cfg.hevc { "HEVC" } else { "H.264" };
+            let mut last = MediaError::Other(format!("no hardware {name} encoder"));
             let mut chosen = None;
             let mut candidates = candidates.into_iter();
             for activate in candidates.by_ref() {
@@ -419,7 +429,7 @@ fn event_loop(
                     match r {
                         Ok(()) => {
                             if let Some(s) = sample {
-                                output(sample_to_frame(&s, &sequence_header(mft))?);
+                                output(sample_to_frame(&s, &sequence_header(mft), cfg.hevc)?);
                             }
                         }
                         Err(e) if e.code() == MF_E_TRANSFORM_STREAM_CHANGE => configure(mft, cfg)?,
@@ -462,10 +472,29 @@ fn adapter_luid(device: &ID3D11Device) -> Result<u64, MediaError> {
 }
 
 /// Hardware NV12 → H.264 encoders, optionally only those on one adapter.
-fn hardware_encoders(adapter: Option<u64>) -> Result<Vec<IMFActivate>, MediaError> {
+/// Whether this PC has a hardware HEVC encoder (NVENC, Quick Sync, AMF). There's no software one.
+pub fn hevc_encoder_available() -> bool {
+    if super::mf_startup().is_err() {
+        return false;
+    }
+    match hardware_encoders(None, true) {
+        Ok(list) => {
+            let found = !list.is_empty();
+            for a in list {
+                // SAFETY: enumerated, never activated.
+                let _ = unsafe { a.ShutdownObject() };
+            }
+            found
+        }
+        Err(_) => false,
+    }
+}
+
+fn hardware_encoders(adapter: Option<u64>, hevc: bool) -> Result<Vec<IMFActivate>, MediaError> {
     unsafe {
         let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
-        let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
+        let subtype = if hevc { MFVideoFormat_HEVC } else { MFVideoFormat_H264 };
+        let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: subtype };
         let mut attrs = None;
         if let Some(luid) = adapter {
             MFCreateAttributes(&mut attrs, 1)?;

@@ -1160,6 +1160,18 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
             let _ = m.after_setting(Effect::Render);
         }),
     );
+    switch_row(
+        app,
+        model,
+        &g,
+        "HEVC",
+        Some("A sharper picture at the same speed when the other computer supports it too. Applies to the next session."),
+        s.hevc,
+        Box::new(|m, on| {
+            m.settings.hevc = on;
+            let _ = m.after_setting(Effect::Render);
+        }),
+    );
     const SCALES: [u32; 6] = [0, 100, 125, 150, 175, 200];
     let scale = gtk::DropDown::from_strings(&["Match the other screen", "100 %", "125 %", "150 %", "175 %", "200 %"]);
     scale.set_selected(SCALES.iter().position(|&p| p == s.extend_scale).unwrap_or(0) as u32);

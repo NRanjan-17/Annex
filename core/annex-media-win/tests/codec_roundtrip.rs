@@ -23,7 +23,7 @@ fn software_encode_then_decode() {
     let out: Arc<Mutex<Vec<EncodedFrame>>> = Arc::default();
     let sink = out.clone();
     let enc = match SoftwareEncoder::new(
-        EncoderConfig { width: w, height: h, fps: 60, bitrate: 2_000_000 },
+        EncoderConfig { width: w, height: h, fps: 60, bitrate: 2_000_000, hevc: false },
         Arc::new(move |f| sink.lock().unwrap().push(f)),
     ) {
         Ok(e) => e,

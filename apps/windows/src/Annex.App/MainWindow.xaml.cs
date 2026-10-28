@@ -167,6 +167,7 @@ public sealed partial class MainWindow : Window
         {
             // Before the core opens, so its "logging started" line says so.
             if (_settings.VerboseLogging) AnnexLog.SetVerbose(true);
+            AnnexLog.SetHevc(_settings.Hevc);
             _core = CoreClient.Open(DataDirectory, _settings.DeviceName ?? Environment.MachineName);
             _discovery = new DiscoveryHandle(_core, e => _ui.TryEnqueue(() => OnDiscovery(e)));
             _trusted = [.. _core.TrustedPeers];
@@ -1907,6 +1908,9 @@ public sealed partial class MainWindow : Window
         p.Children.Add(Ui.Card("", "Hardware video encoder",
             _host is null ? "Recommended. Lowest delay." : "Stop sharing to change this.",
             Ui.Switch(_settings.PreferHardwareEncoder, on => { Setting("hardware video encoder", on); _settings.PreferHardwareEncoder = on; _settings.Save(); }, enabled: _host is null)));
+        p.Children.Add(Ui.Card("", "HEVC",
+            "A sharper picture at the same speed when the other computer supports it too. Applies to the next session.",
+            Ui.Switch(_settings.Hevc, on => { Setting("HEVC", on); _settings.Hevc = on; AnnexLog.SetHevc(on); _settings.Save(); })));
     }
 
     private void ViewingSection(StackPanel p)

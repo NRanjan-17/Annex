@@ -84,6 +84,15 @@ struct State {
     mirror_scales: Mutex<HashMap<u64, u32>>,
     /// The mirror capture sends adaptive bitrate's smaller picture (guarded with `mirror`).
     mirror_reduced: Mutex<bool>,
+    /// Settings → HEVC, and this computer encodes it on the graphics chip. Cleared if the HEVC
+    /// encoder fails to start.
+    hevc: AtomicBool,
+    /// The codecs each mirror viewer decodes. The one capture serves them all, so it's HEVC only
+    /// while every one of them decodes it.
+    mirror_codecs: Mutex<HashMap<u64, Vec<Codec>>>,
+    /// The mirror capture's codec now (the core has the same: it sends frames only to viewers
+    /// that decode it).
+    mirror_codec: Mutex<Codec>,
     injector: Mutex<Option<Injector>>,
     extends: Mutex<HashMap<u64, ExtendSession>>,
 }
@@ -174,6 +183,9 @@ impl Host {
             mirror_sessions: Mutex::new(HashSet::new()),
             mirror_scales: Mutex::new(HashMap::new()),
             mirror_reduced: Mutex::new(false),
+            hevc: AtomicBool::new(m.settings.hevc && encode::hevc(prefer_hardware)),
+            mirror_codecs: Mutex::new(HashMap::new()),
+            mirror_codec: Mutex::new(Codec::H264),
             injector: Mutex::new(None),
             extends: Mutex::new(HashMap::new()),
         });
@@ -200,7 +212,9 @@ impl Host {
             Ok(h) => h,
             Err(e) => return Err(format!("Couldn't start sharing: {e}")),
         };
-        tracing::info!(port = handle.port(), extend, "sharing: listening");
+        let hevc = state.hevc.load(Ordering::Relaxed);
+        handle.set_hevc(hevc);
+        tracing::info!(port = handle.port(), extend, hevc, "sharing: listening");
         let handle = Arc::new(handle);
         let _ = state.host.set(Arc::downgrade(&handle));
         let advert = m.advertise_host(handle.port(), extend);
@@ -450,7 +464,7 @@ impl State {
     /// The mirror capture, sending `picture` (the full stream or adaptive bitrate's smaller one)
     /// at the full stream's bitrate, scaled to `scale` %.
     fn start_mirror_capture(&self, picture: &StreamConfig, scale: u32) -> Result<Running, String> {
-        let StreamConfig { width, height, fps, .. } = *picture;
+        let StreamConfig { codec, width, height, fps } = *picture;
         let source = match self.screen.lock().unwrap().as_ref() {
             Some(Screen::Portal(p)) => Source::Gst(p.source()),
             Some(Screen::Gnome(g)) => Source::Gst(g.source(None)),
@@ -468,12 +482,82 @@ impl State {
             fps,
             bitrate: encode::bitrate(full.width, full.height, full.fps),
             max_fps: (fps < full.fps).then_some(fps),
+            hevc: codec == Codec::Hevc,
         };
-        let r = self.run(source, shape, self.output(None))?;
+        let r = match self.run(source.clone(), shape, self.output(None)) {
+            Err(e) if shape.hevc => {
+                // The HEVC encoder wouldn't start: H.264 for everyone from now on.
+                tracing::warn!(target: "annex::encode", "sharing: HEVC encoder failed ({e}); using H.264");
+                self.hevc.store(false, Ordering::Relaxed);
+                *self.mirror_codec.lock().unwrap() = Codec::H264;
+                if let Some(host) = self.host() {
+                    host.set_hevc(false);
+                    host.set_stream(self.mirror_full());
+                }
+                self.run(source, Shape { hevc: false, ..shape }, self.output(None))?
+            }
+            r => r?,
+        };
         if scale != 100 {
             r.pipeline().set_bitrate_scale(scale);
         }
         Ok(r)
+    }
+
+    /// The full mirror stream, in the codec the capture uses now.
+    fn mirror_full(&self) -> StreamConfig {
+        StreamConfig { codec: *self.mirror_codec.lock().unwrap(), ..self.stream.clone() }
+    }
+
+    /// The mirror capture's codec for the viewers now: HEVC while it's on and every mirror viewer
+    /// decodes it, else H.264.
+    fn desired_mirror_codec(&self) -> Codec {
+        let codecs = self.mirror_codecs.lock().unwrap();
+        let all = !codecs.is_empty() && codecs.values().all(|c| c.contains(&Codec::Hevc));
+        if self.hevc.load(Ordering::Relaxed) && all { Codec::Hevc } else { Codec::H264 }
+    }
+
+    /// A viewer joined or left: if the capture's codec should change, tell the core (so frames go
+    /// only to viewers that decode them) and restart a running capture in the new codec.
+    fn follow_mirror_codec(self: &Arc<Self>) {
+        let want = self.desired_mirror_codec();
+        {
+            let mut now = self.mirror_codec.lock().unwrap();
+            if *now == want {
+                return;
+            }
+            *now = want;
+        }
+        tracing::info!(target: "annex::encode", codec = ?want, "sharing: the mirror stream switches codec");
+        if let Some(host) = self.host() {
+            host.set_stream(self.mirror_full());
+        }
+        if self.mirror.lock().unwrap().is_some() {
+            let me = self.clone();
+            std::thread::spawn(move || me.restart_mirror());
+        }
+    }
+
+    /// Restarts the running mirror capture as it should be now (codec, picture size).
+    fn restart_mirror(&self) {
+        let mut slot = self.mirror.lock().unwrap();
+        if slot.is_none() {
+            return;
+        }
+        let lowest = self.lowest_mirror_scale();
+        let reduced = *self.mirror_reduced.lock().unwrap();
+        let (_, picture) = self.mirror_picture(lowest, reduced);
+        slot.take();
+        match self.start_mirror_capture(&picture, lowest) {
+            Ok(r) => {
+                *slot = Some(r);
+                self.announce_mirror_picture(&picture);
+            }
+            Err(e) => {
+                drop(slot);
+                self.fail(format!("Screen capture didn't start: {e}"));
+            }
+        }
     }
 
     fn lowest_mirror_scale(&self) -> u32 {
@@ -483,9 +567,9 @@ impl State {
     /// What the mirror capture should send at `scale` % of its normal bitrate, given whether it
     /// sends the smaller picture now: (smaller, picture).
     fn mirror_picture(&self, scale: u32, reduced: bool) -> (bool, StreamConfig) {
-        let full = &self.stream;
+        let full = self.mirror_full();
         let bps = u64::from(encode::bitrate(full.width, full.height, full.fps)) * u64::from(scale) / 100;
-        annex_session::rate::mirror_picture(full, bps, reduced)
+        annex_session::rate::mirror_picture(&full, bps, reduced)
     }
 
     fn log_picture(&self, reduced: bool, scale: u32, picture: &StreamConfig) {
@@ -551,7 +635,7 @@ impl State {
                 tracing::error!(target: "annex::capture", "sharing: capture didn't restart at {}x{}: {e}", picture.width, picture.height);
                 // The full picture worked before: back to it.
                 *self.mirror_reduced.lock().unwrap() = false;
-                let full = self.stream.clone();
+                let full = self.mirror_full();
                 match self.start_mirror_capture(&full, lowest) {
                     Ok(r) => {
                         *slot = Some(r);
@@ -568,7 +652,7 @@ impl State {
 
     fn run(&self, source: Source, shape: Shape, output: encode::Output) -> Result<Running, String> {
         let stop = Arc::new(AtomicBool::new(false));
-        let Shape { width, height, fps, bitrate, max_fps } = shape;
+        let Shape { width, height, fps, bitrate, max_fps, hevc } = shape;
         let cfg = |source: String| encode::Config {
             source,
             width,
@@ -577,6 +661,7 @@ impl State {
             bitrate,
             prefer_hardware: self.prefer_hardware,
             max_fps,
+            hevc,
         };
         let pipeline = match source {
             Source::Gst(s) => Pipeline::start(cfg(s), output)?,
@@ -610,7 +695,8 @@ impl State {
         (f64::from(percent.clamp(100, 300)) / 100.0 * shrink).max(1.0)
     }
 
-    fn start_extend(self: &Arc<Self>, id: u64, display: DisplayInfo) {
+    /// `hevc`: the core chose HEVC for this viewer (it decodes it and this computer encodes it).
+    fn start_extend(self: &Arc<Self>, id: u64, display: DisplayInfo, mut hevc: bool) {
         let Some(host) = self.host() else {
             tracing::debug!(target: "annex::display", id, "extend: sharing stopped first");
             return;
@@ -713,15 +799,24 @@ impl State {
                 break;
             }
             let (sw, sh) = stream_size(size.0, size.1, MAX_H264.0, MAX_H264.1);
-            host.set_session_stream(
-                id,
-                StreamConfig { codec: Codec::H264, width: sw & !1, height: sh & !1, fps: rate },
-            );
-            let shape =
-                Shape { width: sw, height: sh, fps: rate, bitrate: encode::bitrate(sw, sh, rate), max_fps: None };
-            match self.run(source.clone(), shape, self.output(Some(id))) {
+            let codec = if hevc { Codec::Hevc } else { Codec::H264 };
+            host.set_session_stream(id, StreamConfig { codec, width: sw & !1, height: sh & !1, fps: rate });
+            let bitrate = encode::bitrate(sw, sh, rate);
+            let shape = Shape { width: sw, height: sh, fps: rate, bitrate, max_fps: None, hevc };
+            let started = match self.run(source.clone(), shape, self.output(Some(id))) {
+                Err(e) if hevc => {
+                    // No HEVC after all: H.264 for this display.
+                    tracing::warn!(target: "annex::encode", id, "extend: HEVC encoder failed ({e}); using H.264");
+                    hevc = false;
+                    let h264 = StreamConfig { codec: Codec::H264, width: sw & !1, height: sh & !1, fps: rate };
+                    host.set_session_stream(id, h264);
+                    self.run(source.clone(), Shape { hevc: false, ..shape }, self.output(Some(id)))
+                }
+                r => r,
+            };
+            match started {
                 Ok(r) => {
-                    tracing::info!(id, sw, sh, "extend: capturing the new display");
+                    tracing::info!(id, sw, sh, hevc, "extend: capturing the new display");
                     *running.lock().unwrap() = Some(r);
                 }
                 Err(e) => return fail(e),
@@ -777,12 +872,15 @@ impl State {
 
     fn on_event(self: &Arc<Self>, e: &Event) {
         match e {
-            Event::SessionStarted { session_id, mode: Mode::Mirror, .. } => {
+            Event::SessionStarted { session_id, mode: Mode::Mirror, codecs, .. } => {
                 self.mirror_sessions.lock().unwrap().insert(*session_id);
+                let codecs = if codecs.is_empty() { vec![Codec::H264] } else { codecs.clone() };
+                self.mirror_codecs.lock().unwrap().insert(*session_id, codecs);
+                self.follow_mirror_codec();
                 let (me, id) = (self.clone(), *session_id);
                 std::thread::spawn(move || me.start_mirror(id));
             }
-            Event::SessionStarted { session_id, mode: Mode::Extend, viewer_display, .. } => {
+            Event::SessionStarted { session_id, mode: Mode::Extend, viewer_display, stream, .. } => {
                 // Registered now, before SessionEnded can run end_extend.
                 self.extends.lock().unwrap().insert(*session_id, ExtendSession::default());
                 let me = self.clone();
@@ -796,16 +894,20 @@ impl State {
                     scale_percent: 100,
                     refresh_rates: vec![],
                 });
-                std::thread::spawn(move || me.start_extend(id, display));
+                let hevc = stream.codec == Codec::Hevc;
+                std::thread::spawn(move || me.start_extend(id, display, hevc));
             }
             Event::SessionEnded { session_id, .. } => {
                 if self.mirror_sessions.lock().unwrap().remove(session_id) {
                     self.mirror_scales.lock().unwrap().remove(session_id);
+                    self.mirror_codecs.lock().unwrap().remove(session_id);
                     if self.mirror_sessions.lock().unwrap().is_empty() {
                         tracing::info!(target: "annex::capture", "sharing: the last viewer left; capture stopped");
                         self.mirror.lock().unwrap().take();
                         *self.mirror_reduced.lock().unwrap() = false;
                     } else {
+                        // The only viewer that needed H.264 may have left.
+                        self.follow_mirror_codec();
                         // The slowest viewer may have left: the encoder follows the next one.
                         let lowest = self.lowest_mirror_scale();
                         if let Some(r) = self.mirror.lock().unwrap().as_ref() {
@@ -885,6 +987,8 @@ struct Shape {
     bitrate: u32,
     /// Skip frames beyond this rate (sources that send as fast as the screen changes).
     max_fps: Option<u32>,
+    /// HEVC instead of H.264.
+    hevc: bool,
 }
 
 #[derive(Clone)]

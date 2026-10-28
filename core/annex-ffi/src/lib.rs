@@ -833,9 +833,25 @@ pub unsafe extern "C" fn annex_host_set_hevc(host: *const AnnexHost, on: bool) -
     })
 }
 
-/// Viewers started after this offer HEVC as well as H.264 when `on` (the app checked that this
-/// computer decodes it). Off by default.
+/// The HEVC setting. Viewers started after this offer HEVC as well as H.264 when `on` (on Windows
+/// only if Windows has an HEVC decoder; the Mac app checks for itself), and a Windows screen host
+/// started after it uses HEVC with viewers that decode it, when the PC has a hardware HEVC
+/// encoder. Off by default.
 static VIEWER_HEVC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this computer decodes HEVC. Windows: it has an HEVC decoder (checked once: that
+/// activates one). Elsewhere the app decided before turning the setting on.
+fn decodes_hevc_here() -> bool {
+    #[cfg(windows)]
+    {
+        static FOUND: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *FOUND.get_or_init(annex_media_win::hevc_decoder_available)
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn annex_viewer_set_hevc(on: bool) {
@@ -1234,8 +1250,8 @@ mod win_host {
     use std::time::Duration;
 
     use annex_media_win::{
-        EncodedFrame, HostPipeline, HostPipelineConfig, Injector, Monitor, VirtualDisplayDriver, idd, monitor_size,
-        stream_size,
+        EncodedFrame, HostPipeline, HostPipelineConfig, Injector, Monitor, VirtualDisplayDriver, hevc_encoder_available,
+        idd, monitor_size, stream_size,
     };
     use annex_session::{Codec, DisplayInfo, Event, EventSink, HostConfig, HostHandle, MAX_H264, Mode, StreamConfig};
 
@@ -1271,6 +1287,12 @@ mod win_host {
         mirror_scales: Mutex<HashMap<u64, u32>>,
         /// The mirror pipeline sends adaptive bitrate's smaller picture (guarded with `mirror`).
         mirror_reduced: Mutex<bool>,
+        /// The HEVC setting is on and this PC has a hardware HEVC encoder. Cleared if it fails.
+        hevc: AtomicBool,
+        /// The codecs each mirror viewer decodes; the one pipeline is HEVC only while all do.
+        mirror_codecs: Mutex<HashMap<u64, Vec<Codec>>>,
+        /// The mirror pipeline's codec now (the core has the same).
+        mirror_codec: Mutex<Codec>,
         driver: Option<Arc<VirtualDisplayDriver>>,
         extends: Mutex<HashMap<u64, ExtendSession>>,
         injector: Mutex<Injector>,
@@ -1318,10 +1340,57 @@ mod win_host {
             }
         }
 
-        /// The full mirror stream, as sessions start with it.
+        /// The full mirror stream, in the codec the pipeline uses now.
         fn full_mirror_stream(&self) -> StreamConfig {
             let c = &self.mirror_cfg;
-            StreamConfig { codec: Codec::H264, width: c.width, height: c.height, fps: c.fps }
+            StreamConfig { codec: *self.mirror_codec.lock().unwrap(), width: c.width, height: c.height, fps: c.fps }
+        }
+
+        /// HEVC while it's on and every mirror viewer decodes it, else H.264.
+        fn desired_mirror_codec(&self) -> Codec {
+            let codecs = self.mirror_codecs.lock().unwrap();
+            let all = !codecs.is_empty() && codecs.values().all(|c| c.contains(&Codec::Hevc));
+            if self.hevc.load(Ordering::Relaxed) && all { Codec::Hevc } else { Codec::H264 }
+        }
+
+        /// A viewer joined or left: if the pipeline's codec should change, tell the core (so
+        /// frames go only to viewers that decode them) and restart a running pipeline.
+        fn follow_mirror_codec(self: &Arc<Self>) {
+            let want = self.desired_mirror_codec();
+            {
+                let mut now = self.mirror_codec.lock().unwrap();
+                if *now == want {
+                    return;
+                }
+                *now = want;
+            }
+            tracing::info!(codec = ?want, "sharing: the mirror stream switches codec");
+            if let Some(host) = self.host() {
+                host.set_stream(self.full_mirror_stream());
+            }
+            if self.mirror.lock().unwrap().is_some() {
+                let me = self.clone();
+                std::thread::spawn(move || me.restart_mirror());
+            }
+        }
+
+        /// Restarts the running mirror pipeline as it should be now (codec, picture size).
+        fn restart_mirror(&self) {
+            let mut slot = self.mirror.lock().unwrap();
+            if slot.is_none() {
+                return;
+            }
+            let lowest = self.lowest_mirror_scale();
+            let reduced = *self.mirror_reduced.lock().unwrap();
+            let (_, picture) = self.mirror_picture(lowest, reduced);
+            slot.take();
+            match self.start_mirror_pipeline(&picture, lowest) {
+                Ok(p) => {
+                    *slot = Some(p);
+                    self.announce_mirror_picture(&picture);
+                }
+                Err(e) => tracing::error!("screen capture failed to restart: {e}"),
+            }
         }
 
         fn lowest_mirror_scale(&self) -> u32 {
@@ -1376,9 +1445,23 @@ mod win_host {
                 height: picture.height,
                 fps: picture.fps,
                 max_fps: (picture.fps < full.fps).then_some(picture.fps),
+                hevc: picture.codec == Codec::Hevc,
                 ..full.clone()
             };
-            let p = HostPipeline::start(cfg, clock(), output)?;
+            let p = match HostPipeline::start(cfg.clone(), clock(), output.clone()) {
+                Err(e) if cfg.hevc => {
+                    // The HEVC encoder wouldn't start: H.264 for everyone from now on.
+                    tracing::warn!("HEVC encoder failed ({e}); using H.264");
+                    self.hevc.store(false, Ordering::Relaxed);
+                    *self.mirror_codec.lock().unwrap() = Codec::H264;
+                    if let Some(h) = self.host() {
+                        h.set_hevc(false);
+                        h.set_stream(self.full_mirror_stream());
+                    }
+                    HostPipeline::start(HostPipelineConfig { hevc: false, ..cfg }, clock(), output)?
+                }
+                r => r?,
+            };
             if scale != 100 {
                 p.set_bitrate_scale(scale);
             }
@@ -1453,6 +1536,7 @@ mod win_host {
             fingerprint: String,
             stop: Arc<AtomicBool>,
             pipeline: Arc<Mutex<Option<HostPipeline>>>,
+            hevc: bool,
         ) {
             let Some(host) = self.host() else {
                 self.extends.lock().unwrap().remove(&id);
@@ -1516,12 +1600,16 @@ mod win_host {
             let prefer_hardware = self.prefer_hardware;
             let gpu = self.mirror_cfg.gpu;
             let slot = pipeline.clone();
+            // The core chose HEVC for this viewer; H.264 from the first failure on.
+            let hevc = AtomicBool::new(hevc);
             let start = move |m: &Monitor| -> Option<(u32, u32)> {
                 let host = weak_host.upgrade()?;
                 // The virtual monitor's size, within what H.264 can carry (a 4.5K or 5K viewer
                 // screen is bigger: the encoder would reject every frame).
                 let (w, h) = stream_size(m.width, m.height, MAX_H264.0, MAX_H264.1);
-                host.set_session_stream(id, StreamConfig { codec: Codec::H264, width: w, height: h, fps: hz });
+                let use_hevc = hevc.load(Ordering::Relaxed);
+                let codec = if use_hevc { Codec::Hevc } else { Codec::H264 };
+                host.set_session_stream(id, StreamConfig { codec, width: w, height: h, fps: hz });
                 let weak = weak_host.clone();
                 let output = Arc::new(move |f: EncodedFrame| {
                     if let Some(h) = weak.upgrade() {
@@ -1537,8 +1625,18 @@ mod win_host {
                     prefer_hardware,
                     gpu,
                     max_fps: None,
+                    hevc: use_hevc,
                 };
-                match HostPipeline::start(cfg, clock(), output) {
+                let started = match HostPipeline::start(cfg.clone(), clock(), output.clone()) {
+                    Err(e) if use_hevc => {
+                        tracing::warn!(id, "extend: HEVC encoder failed ({e}); using H.264");
+                        hevc.store(false, Ordering::Relaxed);
+                        host.set_session_stream(id, StreamConfig { codec: Codec::H264, width: w, height: h, fps: hz });
+                        HostPipeline::start(HostPipelineConfig { hevc: false, ..cfg }, clock(), output)
+                    }
+                    r => r,
+                };
+                match started {
                     Ok(p) => {
                         tracing::info!(id, w, h, "extend: capturing the virtual monitor");
                         *pipeline.lock().unwrap() = Some(p);
@@ -1580,14 +1678,17 @@ mod win_host {
 
         fn on_event(self: &Arc<Self>, e: &Event) {
             match e {
-                Event::SessionStarted { session_id, mode: Mode::Mirror, .. } => {
+                Event::SessionStarted { session_id, mode: Mode::Mirror, codecs, .. } => {
                     self.mirror_sessions.lock().unwrap().insert(*session_id);
+                    let codecs = if codecs.is_empty() { vec![Codec::H264] } else { codecs.clone() };
+                    self.mirror_codecs.lock().unwrap().insert(*session_id, codecs);
+                    self.follow_mirror_codec();
                     // Capture setup touches COM/WinRT; keep it off the async runtime threads.
                     let me = self.clone();
                     let id = *session_id;
                     std::thread::spawn(move || me.start_mirror(id));
                 }
-                Event::SessionStarted { session_id, mode: Mode::Extend, viewer_display, fingerprint, .. } => {
+                Event::SessionStarted { session_id, mode: Mode::Extend, viewer_display, fingerprint, stream, .. } => {
                     // Registered now, before SessionEnded can run end_extend.
                     let stop = Arc::new(AtomicBool::new(false));
                     let pipeline: Arc<Mutex<Option<HostPipeline>>> = Arc::default();
@@ -1614,15 +1715,19 @@ mod win_host {
                         }),
                         fingerprint.clone(),
                     );
-                    std::thread::spawn(move || me.start_extend(id, display, fp, stop, pipeline));
+                    let hevc = stream.codec == Codec::Hevc;
+                    std::thread::spawn(move || me.start_extend(id, display, fp, stop, pipeline, hevc));
                 }
                 Event::SessionEnded { session_id, .. } => {
                     if self.mirror_sessions.lock().unwrap().remove(session_id) {
                         self.mirror_scales.lock().unwrap().remove(session_id);
+                        self.mirror_codecs.lock().unwrap().remove(session_id);
                         if self.mirror_sessions.lock().unwrap().is_empty() {
                             self.mirror.lock().unwrap().take();
                             *self.mirror_reduced.lock().unwrap() = false;
                         } else {
+                            // The only viewer that needed H.264 may have left.
+                            self.follow_mirror_codec();
                             // The slowest viewer may have left: the encoder follows the next one.
                             let lowest = self.lowest_mirror_scale();
                             if let Some(p) = self.mirror.lock().unwrap().as_ref() {
@@ -1714,6 +1819,7 @@ mod win_host {
                 prefer_hardware,
                 gpu,
                 max_fps: None,
+                hevc: false,
             },
             prefer_hardware,
             host: OnceLock::new(),
@@ -1721,6 +1827,11 @@ mod win_host {
             mirror_sessions: Mutex::new(HashSet::new()),
             mirror_scales: Mutex::new(HashMap::new()),
             mirror_reduced: Mutex::new(false),
+            hevc: AtomicBool::new(
+                prefer_hardware && crate::VIEWER_HEVC.load(Ordering::Relaxed) && hevc_encoder_available(),
+            ),
+            mirror_codecs: Mutex::new(HashMap::new()),
+            mirror_codec: Mutex::new(Codec::H264),
             extends: Mutex::new(HashMap::new()),
             driver,
             injector: Mutex::new(Injector::default()),
@@ -1743,6 +1854,9 @@ mod win_host {
         let cfg =
             HostConfig { port, stream: StreamConfig { codec: Codec::H264, width, height, fps }, extend, udp: None };
         let handle = Arc::new(c.rt.block_on(annex_session::start_host(c.core.clone(), cfg, events))?);
+        let hevc = state.hevc.load(Ordering::Relaxed);
+        handle.set_hevc(hevc);
+        tracing::info!(hevc, "sharing: HEVC with viewers that decode it");
         let _ = state.host.set(Arc::downgrade(&handle));
         Ok((handle, state))
     }
@@ -1780,7 +1894,7 @@ unsafe fn viewer_config(
         address,
         display,
         // HEVC first when this computer decodes it; H.264 always, which every host sends.
-        codecs: if VIEWER_HEVC.load(std::sync::atomic::Ordering::Relaxed) {
+        codecs: if VIEWER_HEVC.load(std::sync::atomic::Ordering::Relaxed) && decodes_hevc_here() {
             vec![Codec::Hevc, Codec::H264]
         } else {
             vec![Codec::H264]

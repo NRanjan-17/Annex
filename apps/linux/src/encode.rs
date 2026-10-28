@@ -1,5 +1,6 @@
-//! Screen → H.264 with GStreamer. Annex ships no codec: it uses the encoders the system has,
-//! the graphics chip's first (docs/LINUX.md, "Video").
+//! Screen → H.264 or HEVC with GStreamer. Annex ships no codec: it uses the encoders the
+//! system has, the graphics chip's first (docs/LINUX.md, "Video"). HEVC only on the graphics
+//! chip: in software it costs too much time and CPU.
 
 use std::sync::{Arc, Mutex};
 
@@ -49,6 +50,16 @@ const ENCODERS: &[Encoder] = &[
     Encoder { factory: "openh264enc", hardware: false, input: Input::I420, bitrate: Bitrate::Bps },
 ];
 
+/// HEVC encoders, all on the graphics chip, configured like their H.264 siblings.
+const HEVC_ENCODERS: &[Encoder] = &[
+    Encoder { factory: "vah265enc", hardware: true, input: Input::Nv12, bitrate: Bitrate::Kbps },
+    Encoder { factory: "vah265lpenc", hardware: true, input: Input::Nv12, bitrate: Bitrate::Kbps },
+    Encoder { factory: "vaapih265enc", hardware: true, input: Input::Nv12, bitrate: Bitrate::Kbps },
+    Encoder { factory: "nvh265enc", hardware: true, input: Input::Nv12, bitrate: Bitrate::Kbps },
+    Encoder { factory: "nvcudah265enc", hardware: true, input: Input::Nv12, bitrate: Bitrate::Kbps },
+    Encoder { factory: "nvv4l2h265enc", hardware: true, input: Input::Nvmm, bitrate: Bitrate::Bps },
+];
+
 fn usable(prefer_hardware: bool) -> impl Iterator<Item = &'static Encoder> {
     let forced = std::env::var("ANNEX_ENCODER").ok();
     ENCODERS
@@ -62,6 +73,18 @@ fn usable(prefer_hardware: bool) -> impl Iterator<Item = &'static Encoder> {
 
 fn pick(prefer_hardware: bool) -> Option<&'static Encoder> {
     usable(prefer_hardware).next()
+}
+
+fn pick_hevc(prefer_hardware: bool) -> Option<&'static Encoder> {
+    if !prefer_hardware {
+        return None;
+    }
+    HEVC_ENCODERS.iter().find(|e| gst::ElementFactory::find(e.factory).is_some())
+}
+
+/// Whether this computer can encode HEVC on its graphics chip.
+pub fn hevc(prefer_hardware: bool) -> bool {
+    pick_hevc(prefer_hardware).is_some()
 }
 
 /// "x264enc (software)", for About.
@@ -104,6 +127,8 @@ pub struct Config {
     /// sources that send as fast as the screen changes. A skipped last change still shows:
     /// pipewiresrc repeats its last frame every half second (keepalive-time).
     pub max_fps: Option<u32>,
+    /// HEVC instead of H.264 (only when [`hevc`] says this computer can).
+    pub hevc: bool,
 }
 
 /// A running capture → encode pipeline. Dropping it stops it.
@@ -122,7 +147,12 @@ impl Pipeline {
 
     /// `setup` sees the pipeline before it plays (to find an appsrc by name).
     pub fn start_with(cfg: Config, output: Output, setup: impl FnOnce(&gst::Pipeline)) -> Result<Pipeline, String> {
-        let kind = *pick(cfg.prefer_hardware).ok_or("No H.264 encoder found. Install gstreamer1.0-plugins-ugly.")?;
+        let kind = if cfg.hevc {
+            *pick_hevc(cfg.prefer_hardware).ok_or("No HEVC encoder on the graphics chip.")?
+        } else {
+            *pick(cfg.prefer_hardware).ok_or("No H.264 encoder found. Install gstreamer1.0-plugins-ugly.")?
+        };
+        let (parse, caps) = if cfg.hevc { ("h265parse", "video/x-h265") } else { ("h264parse", "video/x-h264") };
         if let Ok(forced) = std::env::var("ANNEX_ENCODER") {
             tracing::info!(forced, "encoder named by ANNEX_ENCODER");
         }
@@ -139,8 +169,8 @@ impl Pipeline {
         let desc = format!(
             "{source} ! queue max-size-buffers=1 leaky=downstream \
              ! {convert} \
-             ! {enc} name=enc ! h264parse config-interval=-1 \
-             ! video/x-h264,stream-format=byte-stream,alignment=au \
+             ! {enc} name=enc ! {parse} config-interval=-1 \
+             ! {caps},stream-format=byte-stream,alignment=au \
              ! appsink name=out sync=false max-buffers=2 drop=true",
             source = cfg.source,
             enc = kind.factory,
@@ -283,25 +313,25 @@ fn configure(e: &gst::Element, kind: &Encoder, bps: u32, fps: u32) {
             set(e, "gop-size", &gop);
             set(e, "multi-thread", "4");
         }
-        "vah264enc" | "vah264lpenc" => {
+        "vah264enc" | "vah264lpenc" | "vah265enc" | "vah265lpenc" => {
             set(e, "rate-control", "cbr");
             set(e, "key-int-max", &gop);
             set(e, "b-frames", "0");
             set(e, "target-usage", "6");
         }
-        "vaapih264enc" => {
+        "vaapih264enc" | "vaapih265enc" => {
             set(e, "rate-control", "cbr");
             set(e, "keyframe-period", &gop);
             set(e, "max-bframes", "0");
         }
-        "nvh264enc" | "nvcudah264enc" => {
+        "nvh264enc" | "nvcudah264enc" | "nvh265enc" | "nvcudah265enc" => {
             set(e, "rc-mode", "cbr");
             set(e, "zerolatency", "true");
             set(e, "gop-size", &gop);
             set(e, "bframes", "0");
             set(e, "preset", "low-latency-hq");
         }
-        "nvv4l2h264enc" => {
+        "nvv4l2h264enc" | "nvv4l2h265enc" => {
             set(e, "control-rate", "1");
             set(e, "iframeinterval", &gop);
             set(e, "idrinterval", &gop);

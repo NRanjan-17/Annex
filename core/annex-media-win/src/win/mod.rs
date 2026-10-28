@@ -10,9 +10,9 @@ mod virtual_display;
 mod wifi;
 mod window;
 
-pub use decoder::{DecodedFrame, H264Decoder, Picture};
+pub use decoder::{DecodedFrame, H264Decoder, Picture, hevc_decoder_available};
 pub use display::{Monitor, monitors, primary_display_info};
-pub use encoder::{EncoderConfig, OutputFn, SoftwareEncoder};
+pub use encoder::{EncoderConfig, OutputFn, SoftwareEncoder, hevc_encoder_available};
 pub use input::Injector;
 pub use screen_host::{EncodedFrame, Gpu, HostPipeline, HostPipelineConfig, gpus, stream_size};
 pub use virtual_display::{DriverState, VirtualDisplayDriver, driver_state, monitor_size};

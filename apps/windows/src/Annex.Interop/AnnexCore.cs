@@ -75,6 +75,15 @@ public static class AnnexLog
     /// <summary>Verbose logging is on: check it before building a trace line on a busy path.</summary>
     public static bool Verbose { get; private set; } = Environment.GetEnvironmentVariable("ANNEX_LOG") == "verbose";
 
+    /// <summary>The HEVC setting: viewers offer HEVC when Windows has an HEVC decoder, and sharing
+    /// started afterwards uses it with viewers that decode it when this PC has a hardware HEVC
+    /// encoder. H.264 otherwise.</summary>
+    public static void SetHevc(bool on)
+    {
+        try { NativeMethods.annex_viewer_set_hevc(on); }
+        catch (Exception e) when (e is DllNotFoundException or EntryPointNotFoundException) { }
+    }
+
     /// <summary>Verbose logging: trace lines too (each input event, each progress step). Off by default.</summary>
     public static void SetVerbose(bool verbose)
     {

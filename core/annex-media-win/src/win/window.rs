@@ -361,6 +361,8 @@ fn run(
             None
         }
     };
+    // H.264 to start; a keyframe of the other codec (the host switched) swaps the decoder.
+    let mut hevc = false;
     let mut waiting_for_key = true;
     let mut user_closed = false;
     'outer: loop {
@@ -396,6 +398,19 @@ fn run(
                 Msg::Frame { data, frame_id, keyframe } => {
                     if waiting_for_key && !keyframe {
                         continue;
+                    }
+                    if keyframe && crate::annexb::has_hevc_vps(&data) != hevc {
+                        hevc = !hevc;
+                        decoder = match H264Decoder::new_for(Some(renderer.device()), hevc) {
+                            Ok(d) => {
+                                tracing::info!(hevc, hardware = d.is_hardware(), "stream switched codec; new decoder");
+                                Some(d)
+                            }
+                            Err(e) => {
+                                tracing::error!(hevc, "no decoder for the stream's codec: {e}");
+                                None
+                            }
+                        };
                     }
                     waiting_for_key = false;
                     let Some(dec) = decoder.as_mut() else { continue };

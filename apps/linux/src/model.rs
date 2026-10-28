@@ -722,7 +722,12 @@ impl Model {
         let cfg = ViewerConfig {
             address,
             display,
-            codecs: vec![annex_session::Codec::H264],
+            // HEVC first when it's on and GStreamer has a decoder for it; H.264 always.
+            codecs: if self.settings.hevc && crate::viewer::hevc_decoder().is_some() {
+                vec![annex_session::Codec::Hevc, annex_session::Codec::H264]
+            } else {
+                vec![annex_session::Codec::H264]
+            },
             expected_fingerprint: expected,
             mode: if extend { Mode::Extend } else { Mode::Mirror },
             input: self.settings.use_mouse_and_keyboard,
