@@ -118,6 +118,20 @@ enter a PIN again next time. Rename this computer in **Settings → General → 
 - On Windows, Annex turns on Wi-Fi's *media streaming mode* (no background scans, no power saving)
   while a session runs.
 
+### A sharper picture: HEVC
+
+When both computers support it, Annex sends the picture as HEVC instead of H.264: sharper at
+the same speed. It needs nothing from you; **Settings → HEVC** turns it off.
+
+| | Sending HEVC | Receiving HEVC |
+|---|---|---|
+| Mac | Apple silicon, and Intel Macs with an HEVC encoder | Macs that decode HEVC in hardware |
+| Windows | A graphics card with an HEVC encoder (NVIDIA, Intel, AMD) | Windows' HEVC decoder: the *HEVC Video Extensions*, built into many PCs, otherwise from the Microsoft Store |
+| Linux | An HEVC encoder on the graphics chip (Intel and AMD through VA-API, NVIDIA, Jetson) | A GStreamer HEVC decoder (`gstreamer1.0-libav` has one) |
+
+If either side lacks it, that session uses H.264. When several computers watch one screen, it's
+HEVC only while all of them support it, and switches by itself as they come and go.
+
 ### Fastest connection: a cable
 
 Annex runs over any cable that makes a **network link** between the two computers, and prefers it
@@ -151,6 +165,38 @@ Direct connections, and your own TURN relay (**Settings → Internet**), have no
 *Connect by address* with the other computer's VPN address. It's direct far more often and has no
 relay limits. Annex also lists Tailscale computers under Nearby. Details:
 [docs/REMOTE.md](REMOTE.md).
+
+### Your own code server and relay
+
+Annex's code server (`connect.getannex.dev`) only swaps the two computers' addresses, and its
+relay is only used when a direct connection is blocked. You can use your own instead, in
+**Settings → Internet**:
+
+| Setting | What to enter |
+|---|---|
+| **Server** | Your code server, e.g. `wss://rendezvous.example.com`. Leave it empty for Annex's. **Both computers must use the same server**, or a code from one won't be found by the other. |
+| **Your relay** | A TURN server, e.g. `turn:relay.example.com:3478` (UDP). Then fill in **Relay username** and **Relay password** (kept in the Keychain on a Mac, encrypted for your account on Windows). Leave it empty to use Annex's relay. |
+
+Your own relay has no daily limit, and the relay only needs to be set on the computer that
+shares its screen. On Linux the same settings work from a terminal too:
+
+```sh
+annex set server wss://rendezvous.example.com
+annex set relay turn:relay.example.com:3478
+annex set relay-username me
+annex set relay-password          # asks for it
+annex set server default          # back to Annex's
+```
+
+**Running your own:**
+
+- **Code server:** it's a small Cloudflare Worker in this repository; the free plan is enough.
+  Deploy it with `npx wrangler deploy` from `server/rendezvous`, then enter its address with
+  `wss://` in front. Step by step: [server/rendezvous/README.md](../server/rendezvous/README.md).
+- **Relay:** any standard TURN server that speaks UDP, such as [coturn](https://github.com/coturn/coturn)
+  on a small cloud server, or a hosted TURN service. Open its UDP port (3478) and the relay
+  port range in the server's firewall. The session stays end to end encrypted through it: the
+  relay only forwards packets it can't read.
 
 ### A computer with no one at its screen
 
