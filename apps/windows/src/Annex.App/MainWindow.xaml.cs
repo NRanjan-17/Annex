@@ -1941,7 +1941,7 @@ public sealed partial class MainWindow : Window
             Ui.Switch(_settings.ShareSound, on => { Setting("share this computer's sound", on); _settings.ShareSound = on; _settings.Save(); ApplyAudio(); })));
         p.Children.Add(Ui.Card("", "Hear the other computer", "Plays the shared computer's sound here, and a viewer's microphone.",
             Ui.Switch(_settings.HearSound, on => { Setting("hear the other computer", on); _settings.HearSound = on; _settings.Save(); ApplyAudio(); })));
-        p.Children.Add(Ui.Card("", "Send my microphone", "Your voice plays on the computer you're viewing. Use headphones to avoid an echo.",
+        p.Children.Add(Ui.Card("", "Send my microphone", "Your voice plays on the computer you're viewing. Annex takes its sound back out, so neither side hears an echo.",
             Ui.Switch(_settings.SendMicrophone, on => { Setting("send my microphone", on); _settings.SendMicrophone = on; _settings.Save(); ApplyAudio(); })));
         if (CoreClient.VirtualMicrophoneSupported)
             p.Children.Add(Ui.Card("", "Use a viewer's microphone as Annex Microphone",

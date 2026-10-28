@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use annex_audio::{Capture, Converter, Decoder, Encoder, Output, Player, Source};
+use annex_audio::{Capture, Converter, Decoder, Echo, Encoder, Output, Player, Source};
 use annex_proto::audio::{AudioHeader, AudioKind};
 use tokio::sync::mpsc;
 
@@ -60,6 +60,9 @@ pub(crate) struct SoundHub {
     /// While a viewer's microphone plays aloud here, this computer's sound is turned down so the
     /// viewer doesn't hear themselves back. Milliseconds since `start`.
     ducked_until: Arc<AtomicU64>,
+    /// Viewers' microphones played aloud here, taken back out of this computer's sound (the Mac
+    /// leaves Annex's own playback out of its capture; Windows and Linux record everything).
+    echo: Arc<Mutex<Echo>>,
     start: Instant,
 }
 
@@ -76,21 +79,21 @@ struct Sender {
     seq: u32,
     viewers: Arc<Mutex<Vec<(u64, quinn::Connection)>>>,
     ducked_until: Arc<AtomicU64>,
+    echo: Arc<Mutex<Echo>>,
     start: Instant,
-    quiet: Vec<f32>,
+    buf: Vec<f32>,
 }
 
 impl Sender {
     fn send(&mut self, frame: &[f32]) {
+        self.buf.clear();
+        self.buf.extend_from_slice(frame);
+        self.echo.lock().unwrap().clean(&mut self.buf);
         let ms = self.start.elapsed().as_millis() as u64;
-        let frame = if ms < self.ducked_until.load(Ordering::Relaxed) {
-            self.quiet.clear();
-            self.quiet.extend(frame.iter().map(|s| s * 0.1));
-            &self.quiet[..]
-        } else {
-            frame
-        };
-        let Ok(packet) = self.enc.encode(frame) else { return };
+        if ms < self.ducked_until.load(Ordering::Relaxed) {
+            self.buf.iter_mut().for_each(|s| *s *= 0.1);
+        }
+        let Ok(packet) = self.enc.encode(&self.buf) else { return };
         let h = AudioHeader { seq: self.seq, capture_ts_us: now_us(self.start), kind: AudioKind::Sound };
         let datagram = bytes::Bytes::from(h.with(packet));
         self.seq = self.seq.wrapping_add(1);
@@ -107,6 +110,7 @@ impl SoundHub {
             capture: Mutex::new(None),
             pushed: Mutex::new(None),
             ducked_until: Arc::default(),
+            echo: Arc::new(Mutex::new(Echo::new(false))),
             start: Instant::now(),
         }
     }
@@ -117,8 +121,9 @@ impl SoundHub {
             seq: 0,
             viewers: self.viewers.clone(),
             ducked_until: self.ducked_until.clone(),
+            echo: self.echo.clone(),
             start: self.start,
-            quiet: Vec::new(),
+            buf: Vec::new(),
         })
     }
 
@@ -180,6 +185,11 @@ impl SoundHub {
         conv.push(samples, |f| sender.send(f));
     }
 
+    /// A viewer's microphone, as it plays aloud here.
+    fn played(&self, frame: &[f32]) {
+        self.echo.lock().unwrap().played(frame);
+    }
+
     fn duck(&self) {
         let until = self.start.elapsed().as_millis() as u64 + 400;
         self.ducked_until.store(until, Ordering::Relaxed);
@@ -236,6 +246,8 @@ async fn run(core: Arc<Core>, conn: quinn::Connection, id: u64, viewer: Option<S
     let mut player: Option<Player> = None;
     let mut player_failed = false;
     let mut decoder = Decoder::new().ok();
+    // Viewer: the other computer's sound, as it plays here, is taken out of the microphone.
+    let echo = Arc::new(Mutex::new(Echo::new(true)));
     let (mut received, mut bad) = (0u64, 0u64);
     let seq = Arc::new(AtomicU32::new(0));
     let start = Instant::now();
@@ -252,7 +264,7 @@ async fn run(core: Arc<Core>, conn: quinn::Connection, id: u64, viewer: Option<S
                     }
                 } else if s.send_mic != mic.is_some() && !(s.send_mic && mic_failed) {
                     if s.send_mic {
-                        match start_mic(conn.clone(), seq.clone(), start) {
+                        match start_mic(conn.clone(), seq.clone(), start, echo.clone()) {
                             Ok(c) => {
                                 tracing::info!(target: "annex::audio", "sending the microphone");
                                 mic = Some(c);
@@ -313,7 +325,16 @@ async fn run(core: Arc<Core>, conn: quinn::Connection, id: u64, viewer: Option<S
                     }
                 }
                 let (Some(p), Some(dec)) = (player.as_mut(), decoder.as_mut()) else { continue };
-                if let Err(e) = dec.decode(h.seq, packet, |f| p.push(f)) {
+                let aloud = output == Output::Speakers;
+                let played = |f: &[f32]| {
+                    if aloud && host {
+                        core.sound.played(f);
+                    } else if aloud {
+                        echo.lock().unwrap().played(f);
+                    }
+                    p.push(f)
+                };
+                if let Err(e) = dec.decode(h.seq, packet, played) {
                     tracing::debug!(target: "annex::audio", "bad sound packet: {e}");
                 }
                 if host && output == Output::Speakers {
@@ -337,10 +358,19 @@ async fn next(conn: &quinn::Connection, incoming: &mut Incoming) -> Option<Vec<u
     }
 }
 
-fn start_mic(conn: quinn::Connection, seq: Arc<AtomicU32>, start: Instant) -> Result<Capture, String> {
+fn start_mic(
+    conn: quinn::Connection,
+    seq: Arc<AtomicU32>,
+    start: Instant,
+    echo: Arc<Mutex<Echo>>,
+) -> Result<Capture, String> {
     let mut enc = Encoder::new(true, MIC_BITS)?;
+    let mut buf = Vec::new();
     Capture::start(Source::Microphone, move |frame| {
-        let Ok(packet) = enc.encode(frame) else { return };
+        buf.clear();
+        buf.extend_from_slice(frame);
+        echo.lock().unwrap().clean(&mut buf);
+        let Ok(packet) = enc.encode(&buf) else { return };
         let h = AudioHeader {
             seq: seq.fetch_add(1, Ordering::Relaxed),
             capture_ts_us: now_us(start),

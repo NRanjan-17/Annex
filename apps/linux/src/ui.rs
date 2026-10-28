@@ -1199,7 +1199,7 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         ),
         (
             "Send my microphone",
-            "Your voice plays on the computer you're viewing. Use headphones to avoid an echo.",
+            "Your voice plays on the computer you're viewing. Annex takes its sound back out, so neither side hears an echo.",
             s.send_mic,
             |s, on| s.send_mic = on,
         ),
