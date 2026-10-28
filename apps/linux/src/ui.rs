@@ -780,10 +780,24 @@ fn build(app: &gtk::Application, model: &Shared) {
     {
         let (app, model) = (app.clone(), model.clone());
         share_switch.connect_state_set(move |_, on| {
+            // Rendering sets the switch too. Only a change the model doesn't already show is the
+            // user's: queuing the others let a stale one undo a newer state, and two of them
+            // flipped sharing on and off for good.
+            let ours = model.try_borrow().map(|m| m.is_hosting() == on).unwrap_or(true);
+            if ours {
+                return glib::Propagation::Proceed;
+            }
             tracing::debug!(target: "annex::host", on, "ui: Share This Screen switch");
             let (app, model) = (app.clone(), model.clone());
-            // After the switch's own handler: hosting may open a portal dialog.
-            glib::idle_add_local_once(move || act(&app, &model, |m| m.set_hosting(on)));
+            // After the switch's own handler: hosting may open a portal dialog. Checked again then,
+            // in case sharing changed meanwhile.
+            glib::idle_add_local_once(move || {
+                act(&app, &model, |m| {
+                    if m.is_hosting() != on {
+                        m.set_hosting(on)
+                    }
+                })
+            });
             glib::Propagation::Proceed
         });
     }

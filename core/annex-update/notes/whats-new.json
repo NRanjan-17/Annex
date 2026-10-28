@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.3.6",
+    "items": [
+      {
+        "kind": "fixed",
+        "title": "Sharing stays on or off",
+        "detail": "On Linux, a share that failed right after starting could flip on and off by itself. It no longer does."
+      }
+    ]
+  },
+  {
     "version": "0.3.5",
     "items": [
       {
