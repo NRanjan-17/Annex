@@ -122,7 +122,6 @@ final class AppModel: ObservableObject {
     }
     private var viewerWindow: ViewerWindowController?
     /// Viewer: the host's system ("macos", "windows", "linux"), for scroll direction.
-    private var viewerPeerOS: String?
     private let clipboard = ClipboardSync()
     let notch = NotchDrop()
     /// Viewer: something was copied on this Mac while the viewer window wasn't in front.
@@ -307,12 +306,6 @@ final class AppModel: ObservableObject {
             settings.$shareClipboard.sink { [weak self] on in
                 guard let self else { return }
                 if on { clipboard.start() } else { clipboard.stop(); copiedWhileAway = false }
-            }.store(in: &cancellables)
-            settings.$reverseScrollOnOthers.sink { [weak self] on in
-                guard let self, let viewerWindow else { return }
-                let reverse = on && viewerPeerOS.map { $0 != "macos" } == true
-                Annex.log(.info, "[scroll] reverse scrolling \(reverse ? "on" : "off") (setting \(on), host \(viewerPeerOS ?? "unknown"))")
-                viewerWindow.setReverseScroll(reverse)
             }.store(in: &cancellables)
             deviceName = core.deviceName
             // Show up under Nearby on other computers as soon as Annex is open.
@@ -846,14 +839,10 @@ final class AppModel: ObservableObject {
             }
             if !holdingWindow { viewerWindow?.show(fullScreen: settings.openFullScreen) }
             controllingHost = s.input ?? false
-            viewerPeerOS = s.peerOs
-            let reverse = settings.reverseScrollOnOthers && s.peerOs.map { $0 != "macos" } == true
             let relative = s.mode == "extend" && s.pointerDeltas == true
             Annex.log(.info, "[viewer] \(holdingWindow ? "window waits for direct Wi-Fi" : "window shown\(settings.openFullScreen ? " full screen" : "")")"
                       + " (\(route.isEmpty ? "on the network" : route.lowercased())), controlling \(controllingHost), "
                       + "pointer \(relative ? "movement" : "positions")")
-            Annex.log(.info, "[scroll] reverse scrolling \(reverse ? "on" : "off") (setting \(settings.reverseScrollOnOthers), host \(s.peerOs ?? "unknown"))")
-            viewerWindow?.setReverseScroll(reverse)
             viewerWindow?.setRelativePointer(relative)
             if settings.controlWhenViewing {
                 viewerWindow?.setControlling(controllingHost, hostName: label(s.peerName))
@@ -905,7 +894,6 @@ final class AppModel: ObservableObject {
             peerToPeerTunnel = nil
             latency = nil
             controllingHost = false
-            viewerPeerOS = nil
             copiedWhileAway = false
             viewerExtends = nil
             holdingWindow = false
