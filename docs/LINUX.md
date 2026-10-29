@@ -277,6 +277,7 @@ Every setting (`annex settings` shows their values):
 | `open-full-screen` | on, off | Viewing: open the other screen full screen |
 | `extend-by-default` | on, off | Connecting uses the other computer as a display instead of showing its screen |
 | `hardware-encoder` | on, off | Sharing: the graphics chip's video encoder (next time sharing turns on) |
+| `hevc` | on, off | HEVC with computers that support it too: sharper at the same speed (next session) |
 | `extend-scale` | auto, 100, 125, 150, 175, 200 | Sharing: text size on a computer extending this one; auto matches its screen (next time sharing turns on) |
 | `share-sound` | on, off | Sound: people viewing this computer hear what it plays |
 | `hear-sound` | on, off | Sound: play the other computer's sound here |

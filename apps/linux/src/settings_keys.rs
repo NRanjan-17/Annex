@@ -175,6 +175,12 @@ pub const KEYS: &[Key] = &[
         Effect::Render,
         "Sharing: the graphics chip's video encoder (next time sharing turns on)"
     ),
+    switch_key!(
+        "hevc",
+        hevc,
+        Effect::Render,
+        "HEVC with computers that support it too: sharper at the same speed (next session)"
+    ),
     Key {
         name: "extend-scale",
         kind: Kind::Choice(SCALES),
@@ -384,6 +390,7 @@ mod tests {
                 "receiveFiles" => "receive-files",
                 "dropAtTop" => "drop-island",
                 "preferHardwareEncoder" => "hardware-encoder",
+                "hevc" => "hevc",
                 "extendScale" => "extend-scale",
                 "shareSound" => "share-sound",
                 "hearSound" => "hear-sound",
