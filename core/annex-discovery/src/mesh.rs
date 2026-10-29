@@ -427,10 +427,13 @@ mod tests {
     #[test]
     fn probe_finds_a_responder() {
         let me = Arc::new(Mutex::new(Some(me())));
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-        let port = socket.local_addr().unwrap().port();
-        drop(socket);
-        let _r = Responder::start(me, port).unwrap();
+        // Another test can take a free port between finding it and binding it again: try a few.
+        let (port, _r) = (0..20)
+            .find_map(|_| {
+                let port = UdpSocket::bind("0.0.0.0:0").ok()?.local_addr().ok()?.port();
+                Responder::start(me.clone(), port).ok().map(|r| (port, r))
+            })
+            .expect("a free port");
         let found = probe(&["127.0.0.1".parse().unwrap()], port, Duration::from_secs(1));
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].1.name, "Dev's Mac");

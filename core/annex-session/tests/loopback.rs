@@ -53,17 +53,23 @@ fn channel_sink() -> (EventSink, mpsc::UnboundedReceiver<Event>) {
 }
 
 async fn wait_for(rx: &mut mpsc::UnboundedReceiver<Event>, pred: impl Fn(&Event) -> bool) -> Event {
-    // Generous: CI runners are slow and run every test at once.
-    tokio::time::timeout(Duration::from_secs(30), async {
+    // Generous: CI runners are slow and run every test at once. On a timeout, the last few events
+    // that did come say where it got stuck.
+    let mut last = std::collections::VecDeque::new();
+    let found = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let e = rx.recv().await.expect("event channel closed");
             if pred(&e) {
                 return e;
             }
+            if last.len() == 5 {
+                last.pop_front();
+            }
+            last.push_back(format!("{e:?}"));
         }
     })
-    .await
-    .expect("timed out waiting for event")
+    .await;
+    found.unwrap_or_else(|_| panic!("timed out waiting for an event; the last others: {last:?}"))
 }
 
 #[tokio::test(flavor = "multi_thread")]
