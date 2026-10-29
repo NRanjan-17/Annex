@@ -26,6 +26,9 @@ use crate::{Core, SessionError};
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(130);
 const STATS_INTERVAL: Duration = Duration::from_secs(2);
+/// How long to wait for an asked-for keyframe before asking again: a round trip, an encode and
+/// a few hundred KB on the wire, with room to spare.
+const KEYFRAME_RETRY: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Clone)]
 pub struct ViewerConfig {
@@ -420,6 +423,9 @@ async fn run(
 
     // QUIC: video arrives as FEC-protected datagrams; a lost frame triggers a keyframe request.
     let (lost_tx, mut lost_rx) = mpsc::unbounded_channel::<()>();
+    // Set by a lost frame, cleared by the next keyframe. Deltas in between reference the lost
+    // frame, so they're held back, and the request is repeated until the keyframe arrives.
+    let awaiting_key = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // Sound shares the datagrams; it's handed to the session's sound task.
     let (audio_tx, audio_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let _audio = match &quic {
@@ -432,7 +438,9 @@ async fn run(
         let deliver = deliver.clone();
         let quic = quic.clone();
         let counters = counters.clone();
+        let awaiting_key = awaiting_key.clone();
         async move {
+            use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed};
             let Some(conn) = quic else { return std::future::pending::<()>().await };
             let mut reassembler = annex_proto::fragment::Reassembler::default();
             while let Ok(d) = conn.read_datagram().await {
@@ -447,11 +455,23 @@ async fn run(
                         let rebuilt = (reassembler.shards_recovered - recovered_before) as u32;
                         counters.recovered.fetch_add(rebuilt, std::sync::atomic::Ordering::Relaxed);
                         if !out.lost.is_empty() {
-                            counters.lost.fetch_add(out.lost.len() as u32, std::sync::atomic::Ordering::Relaxed);
+                            counters.lost.fetch_add(out.lost.len() as u32, Relaxed);
+                            if !awaiting_key.swap(true, AcqRel) {
+                                tracing::debug!(lost = ?out.lost, "video: frames lost; holding the picture until a keyframe");
+                            }
                             let _ = lost_tx.send(());
                         }
                         for f in out.frames {
-                            deliver(f.frame_id, f.capture_ts_us, f.flags.keyframe(), &f.data);
+                            let key = f.flags.keyframe();
+                            if key {
+                                if awaiting_key.swap(false, AcqRel) {
+                                    tracing::debug!(frame = f.frame_id, "video: keyframe arrived; picture resumes");
+                                }
+                            } else if awaiting_key.load(Acquire) {
+                                counters.frames.fetch_add(1, Relaxed); // it did arrive
+                                continue;
+                            }
+                            deliver(f.frame_id, f.capture_ts_us, key, &f.data);
                         }
                     }
                     Err(e) => tracing::debug!("bad video datagram: {e}"),
@@ -507,6 +527,8 @@ async fn run(
         let mut stats_ticks = 0u32;
         let mut report = tokio::time::interval(Duration::from_secs(1));
         report.tick().await;
+        let mut keyframe_retry = tokio::time::interval(Duration::from_millis(100));
+        keyframe_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 _ = ping.tick() => {
@@ -554,6 +576,17 @@ async fn run(
                 Some(()) = lost_rx.recv() => {
                     // At most a few requests per second; the host answers with one IDR anyway.
                     if last_keyframe_request.elapsed() > Duration::from_millis(250) {
+                        last_keyframe_request = std::time::Instant::now();
+                        writer.send_control(&Control::KeyframeRequest).await?;
+                    }
+                }
+                _ = keyframe_retry.tick() => {
+                    // The keyframe is the biggest frame, so the likeliest to be lost too, often
+                    // inside the throttle above. Ask again rather than wait for the periodic one.
+                    if awaiting_key.load(std::sync::atomic::Ordering::Acquire)
+                        && last_keyframe_request.elapsed() > KEYFRAME_RETRY
+                    {
+                        tracing::debug!("video: still no keyframe; asking again");
                         last_keyframe_request = std::time::Instant::now();
                         writer.send_control(&Control::KeyframeRequest).await?;
                     }
