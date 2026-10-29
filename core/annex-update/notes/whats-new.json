@@ -1,21 +1,16 @@
 [
   {
-    "version": "0.3.9-pre.2",
-    "items": [
-      {
-        "kind": "new",
-        "title": "Windows and Linux shortcuts go to the computer you control",
-        "detail": "With the viewer in front, the Windows key, Alt+Tab and Print Screen (Super and Alt+Tab on Linux) work on the other computer. Click away and they're yours again. Ctrl+Alt+Shift+Q disconnects."
-      }
-    ]
-  },
-  {
-    "version": "0.3.9-pre.1",
+    "version": "0.3.9",
     "items": [
       {
         "kind": "new",
         "title": "Mac shortcuts go to the Mac you control",
         "detail": "With the viewer in front, ⌘Space, ⌘Tab, ⌃←/→, Mission Control and screenshot keys work on the other Mac. Click away, or swipe to another desktop, and they're yours again. ⌃⌥⇧Q disconnects."
+      },
+      {
+        "kind": "new",
+        "title": "Windows and Linux shortcuts go to the computer you control",
+        "detail": "With the viewer in front, the Windows key, Alt+Tab and Print Screen (Super and Alt+Tab on Linux) work on the other computer. Click away and they're yours again. Ctrl+Alt+Shift+Q disconnects."
       },
       {
         "kind": "improved",
