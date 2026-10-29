@@ -118,10 +118,19 @@ impl SessionRole {
 #[derive(Clone, PartialEq, Debug)]
 pub enum InternetShare {
     Starting,
-    Code { code: String, expires: std::time::Instant },
+    Code {
+        code: String,
+        expires: std::time::Instant,
+    },
     Joining(String),
     /// `left` of `per_day` sessions on our relay are left today, when ours was asked.
-    Relay { name: String, relayed: bool, limited: bool, left: Option<u32>, per_day: Option<u32> },
+    Relay {
+        name: String,
+        relayed: bool,
+        limited: bool,
+        left: Option<u32>,
+        per_day: Option<u32>,
+    },
     Ended(Option<String>),
 }
 
