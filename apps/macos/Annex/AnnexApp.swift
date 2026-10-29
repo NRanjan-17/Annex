@@ -6,6 +6,12 @@ struct AnnexApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
+    init() {
+        // A copy started only to give the system shortcuts back if this one crashes: it never
+        // becomes the app.
+        SystemShortcuts.runGuardIfAsked()
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuContent(model: model)
@@ -42,6 +48,14 @@ extension Notification.Name {
 /// Clicking Annex in the Dock while it runs without a window: SwiftUI only reopens WindowGroups
 /// by itself, so bring the Annex window back here.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        SystemShortcuts.restoreLeftovers()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        SystemShortcuts.capture(false)
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         NotificationCenter.default.post(name: .annexShowMainWindow, object: nil)
         return true

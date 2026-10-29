@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.3.9-pre.1",
+    "items": [
+      {
+        "kind": "new",
+        "title": "Mac shortcuts go to the Mac you control",
+        "detail": "With the viewer in front, ⌘Space, ⌘Tab, ⌃←/→, Mission Control and screenshot keys work on the other Mac. Click away, or swipe to another desktop, and they're yours again. ⌃⌥⇧Q disconnects."
+      },
+      {
+        "kind": "improved",
+        "title": "Scrolling turns the way it does on your Mac",
+        "detail": "Reverse Mouse Wheel is gone: on every computer you control, scrolling now follows your Mac's own natural-scrolling setting, trackpad and mouse wheel alike."
+      }
+    ]
+  },
+  {
     "version": "0.3.8",
     "items": [
       {
