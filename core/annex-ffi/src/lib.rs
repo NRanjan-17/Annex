@@ -1250,8 +1250,8 @@ mod win_host {
     use std::time::Duration;
 
     use annex_media_win::{
-        EncodedFrame, HostPipeline, HostPipelineConfig, Injector, Monitor, VirtualDisplayDriver, hevc_encoder_available,
-        idd, monitor_size, stream_size,
+        EncodedFrame, HostPipeline, HostPipelineConfig, Injector, Monitor, VirtualDisplayDriver,
+        hevc_encoder_available, idd, monitor_size, stream_size,
     };
     use annex_session::{Codec, DisplayInfo, Event, EventSink, HostConfig, HostHandle, MAX_H264, Mode, StreamConfig};
 
@@ -1688,7 +1688,9 @@ mod win_host {
                     let id = *session_id;
                     std::thread::spawn(move || me.start_mirror(id));
                 }
-                Event::SessionStarted { session_id, mode: Mode::Extend, viewer_display, fingerprint, stream, .. } => {
+                Event::SessionStarted {
+                    session_id, mode: Mode::Extend, viewer_display, fingerprint, stream, ..
+                } => {
                     // Registered now, before SessionEnded can run end_extend.
                     let stop = Arc::new(AtomicBool::new(false));
                     let pipeline: Arc<Mutex<Option<HostPipeline>>> = Arc::default();

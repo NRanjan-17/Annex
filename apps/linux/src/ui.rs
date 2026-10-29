@@ -1165,7 +1165,9 @@ fn settings_page(app: &gtk::Application, model: &Shared) -> gtk::Box {
         model,
         &g,
         "HEVC",
-        Some("A sharper picture at the same speed when the other computer supports it too. Applies to the next session."),
+        Some(
+            "A sharper picture at the same speed when the other computer supports it too. Applies to the next session.",
+        ),
         s.hevc,
         Box::new(|m, on| {
             m.settings.hevc = on;

@@ -314,14 +314,8 @@ pub fn open(app: &gtk::Application, model: &Shared) {
     window.present();
     picture.grab_focus();
     WINDOW.with(|w| {
-        *w.borrow_mut() = Some(VideoWindow {
-            window,
-            _decoder: decoder,
-            size,
-            picture,
-            handle,
-            target: target_for_switch,
-        })
+        *w.borrow_mut() =
+            Some(VideoWindow { window, _decoder: decoder, size, picture, handle, target: target_for_switch })
     });
 }
 
