@@ -319,6 +319,29 @@ pub fn open(app: &gtk::Application, model: &Shared) {
     });
 }
 
+/// The other computer let this one control it (or stopped): its system shortcuts follow.
+pub fn controlling(on: bool) {
+    WINDOW.with(|w| {
+        if let Some(v) = w.borrow().as_ref() {
+            system_shortcuts(&v.window, on);
+        }
+    });
+}
+
+/// While controlling, system shortcuts (Super, Alt+Tab, workspace keys…) go to the other computer
+/// instead of this one; view only, they're this computer's again. The compositor applies it only
+/// while the video window is in front, and ends it by itself if Annex quits or crashes.
+fn system_shortcuts(window: &gtk::ApplicationWindow, on: bool) {
+    let Some(t) = window.surface().and_then(|s| s.downcast::<gdk::Toplevel>().ok()) else { return };
+    if on {
+        tracing::debug!(target: "annex::input", "viewer: system shortcuts go to the other computer");
+        t.inhibit_system_shortcuts(None::<&gdk::Event>);
+    } else {
+        tracing::debug!(target: "annex::input", "viewer: system shortcuts are this computer's again");
+        t.restore_system_shortcuts();
+    }
+}
+
 pub fn close() {
     if let Some(v) = WINDOW.with(|w| w.borrow_mut().take()) {
         tracing::debug!("viewer: video window removed");
@@ -457,11 +480,8 @@ fn add_input(
     {
         let ctl = controlling.clone();
         window.connect_realize(move |w| {
-            if ctl()
-                && let Some(t) = w.surface().and_then(|s| s.downcast::<gdk::Toplevel>().ok())
-            {
-                tracing::debug!(target: "annex::input", "viewer: system shortcuts go to the other computer");
-                t.inhibit_system_shortcuts(None::<&gdk::Event>);
+            if ctl() {
+                system_shortcuts(w, true);
             }
         });
     }

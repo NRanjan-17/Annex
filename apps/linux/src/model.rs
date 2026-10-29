@@ -92,6 +92,8 @@ pub enum Change {
         width: u32,
         height: u32,
     },
+    /// The other computer let this one control it, or stopped letting it.
+    ViewerControlling(bool),
 }
 
 /// This computer's part in a live session, said from its own side.
@@ -825,6 +827,7 @@ impl Model {
             }
             Event::InputAllowed { allowed, .. } => {
                 self.controlling = allowed;
+                self.emit(Change::ViewerControlling(allowed));
             }
             Event::LatencyStats { stats, .. } => {
                 self.latency = Some(stats);

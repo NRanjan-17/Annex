@@ -270,6 +270,7 @@ pub fn apply(app: &gtk::Application, model: &Shared) {
                 Change::ViewerOpen => crate::viewer::open(app, model),
                 Change::ViewerClose => crate::viewer::close(),
                 Change::ViewerStream { width, height } => crate::viewer::stream_size(width, height),
+                Change::ViewerControlling(on) => crate::viewer::controlling(on),
             }
         }
     }

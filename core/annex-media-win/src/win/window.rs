@@ -13,7 +13,8 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_SHIFT,
+    GetAsyncKeyState, GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RWIN,
+    VK_SHIFT, VK_SNAPSHOT, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, w};
@@ -75,6 +76,11 @@ thread_local! {
     static CURSOR_HIDDEN: Cell<bool> = const { Cell::new(false) };
     static LAST_MOVE: Cell<Option<Instant>> = const { Cell::new(None) };
     static INPUT: RefCell<Option<InputState>> = const { RefCell::new(None) };
+    /// The keyboard hook taking Windows' own shortcuts for the host, and the window it's for.
+    static SYSTEM_KEYS: Cell<Option<(HHOOK, HWND)>> = const { Cell::new(None) };
+    /// Shortcut keys taken while down (bits, see [`take_system_key`]): only their release is
+    /// taken too, so a key pressed before the window came to the front is let go of here.
+    static TAKEN: Cell<u8> = const { Cell::new(0) };
 }
 
 fn key_held(vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY) -> bool {
@@ -193,6 +199,101 @@ fn forward_input(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
     })
 }
 
+/// While the window is in front, Windows' own shortcuts (the Windows key, Alt+Tab, Alt+Esc,
+/// Ctrl+Esc, Print Screen) go to the host while forwarding input, like every other key: Windows
+/// acts on them before any window sees them, so a low-level keyboard hook takes them first. It's
+/// only installed while the window has the focus, and Windows removes it by itself if Annex ends,
+/// so the shortcuts can't stay taken. Ctrl+Alt+Del and Windows+L always stay with this PC.
+fn hook_system_keys(hwnd: HWND, on: bool) {
+    SYSTEM_KEYS.with(|k| match (on, k.get()) {
+        (true, None) => {
+            // SAFETY: a hook procedure in this module, removed below or when the process ends.
+            let hook = unsafe {
+                let module = GetModuleHandleW(None).ok();
+                SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), module.map(Into::into), 0)
+            };
+            match hook {
+                Ok(h) => k.set(Some((h, hwnd))),
+                Err(e) => tracing::warn!("viewer: can't take Windows' shortcuts for the host: {e}"),
+            }
+        }
+        (false, Some((h, _))) => {
+            // SAFETY: the hook installed above.
+            let _ = unsafe { UnhookWindowsHookEx(h) };
+            k.set(None);
+            TAKEN.with(|t| t.set(0));
+        }
+        _ => {}
+    });
+}
+
+unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // SAFETY: for HC_ACTION, lparam points at the key's KBDLLHOOKSTRUCT.
+    let key = (code == HC_ACTION as i32).then(|| unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) });
+    if key.is_some_and(|k| std::panic::catch_unwind(|| take_system_key(&k)).unwrap_or(false)) {
+        return LRESULT(1);
+    }
+    // SAFETY: passing the key on, as every hook must.
+    unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+/// Sends a Windows shortcut key to the host instead of this PC, if it is one and the window is in
+/// front forwarding input. True: taken.
+fn take_system_key(k: &KBDLLHOOKSTRUCT) -> bool {
+    let flags = k.flags.0;
+    if flags & LLKHF_INJECTED.0 != 0 {
+        return false;
+    }
+    let held = |vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY| {
+        // SAFETY: GetAsyncKeyState has no preconditions.
+        (unsafe { GetAsyncKeyState(vk.0 as i32) }) < 0
+    };
+    let (alt, down) = (flags & LLKHF_ALTDOWN.0 != 0, flags & LLKHF_UP.0 == 0);
+    let vk = k.vkCode as u16;
+    let bit = match vk {
+        v if v == VK_LWIN.0 => 1,
+        v if v == VK_RWIN.0 => 2,
+        v if v == VK_SNAPSHOT.0 => 4,
+        v if v == VK_TAB.0 => 8,
+        v if v == VK_ESCAPE.0 => 16,
+        _ => return false,
+    };
+    let taken = TAKEN.with(|t| t.get());
+    if !down {
+        if taken & bit == 0 {
+            return false;
+        }
+        TAKEN.with(|t| t.set(taken & !bit));
+    } else {
+        // Tab and Esc are shortcuts only with Alt (or Ctrl, for Esc).
+        let shortcut = match bit {
+            8 => alt,
+            16 => alt || held(VK_CONTROL),
+            _ => true,
+        };
+        let Some((_, hwnd)) = SYSTEM_KEYS.with(|s| s.get()) else { return false };
+        // SAFETY: no preconditions.
+        if !shortcut || unsafe { GetForegroundWindow() } != hwnd {
+            return false;
+        }
+    }
+    let sent = INPUT.with(|cell| {
+        let Ok(guard) = cell.try_borrow() else { return false };
+        let Some(st) = guard.as_ref().filter(|st| st.active.load(Ordering::Acquire)) else { return false };
+        let scan = (k.scanCode & 0xFF) as u16;
+        let code = if flags & LLKHF_EXTENDED.0 != 0 { 0xE000 | scan } else { scan };
+        if let Some(usage) = annex_proto::keys::hid_from_windows(code) {
+            (st.sink)(InputEvent::Key { usage, down });
+        }
+        true
+    });
+    if down && sent {
+        TAKEN.with(|t| t.set(taken | bit));
+    }
+    // A release is always taken once its press was, even if forwarding stopped in between.
+    sent || !down
+}
+
 /// Raw relative mouse movement from a WM_INPUT message, if that's what it carries.
 fn raw_mouse_delta(lparam: LPARAM) -> Option<(i32, i32)> {
     const RIM_TYPEMOUSE: u32 = 0;
@@ -250,9 +351,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 }
 
 fn handle_message(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // Another window in front, or closing: the pointer is free again.
+    // Another window in front, or closing: the pointer and Windows' shortcuts are free again.
     if msg == WM_KILLFOCUS || msg == WM_DESTROY || (msg == WM_ACTIVATE && wparam.0 & 0xFFFF == 0) {
         release_cursor();
+        hook_system_keys(hwnd, false);
+    }
+    if msg == WM_SETFOCUS {
+        hook_system_keys(hwnd, true);
     }
     if msg == WM_MOUSEMOVE {
         LAST_MOVE.with(|t| t.set(Some(Instant::now())));
