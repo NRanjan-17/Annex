@@ -13,6 +13,10 @@
 //! - clean intervals → 10 % more each time (at least three points) and slowly less parity.
 //!   Growing by a share of the current rate, not of the nominal one, keeps a slow link from being
 //!   overshot again within a second of recovering.
+//! - after a cut, hold for [`HOLD_REPORTS`], then climb as usual only to 90 % of the rate frames
+//!   were lost at, and one point a report above it. Climbing straight back in 3 s lost frames
+//!   again every few seconds, and a lost keyframe froze the picture. The rate is forgotten after
+//!   [`FORGET_REPORTS`] clean ones, in case the link got faster.
 //!
 //! The scale is a percentage of the app's normal bitrate for the stream, so the core needs no
 //! codec knowledge.
@@ -30,6 +34,10 @@ pub const MAX_FEC: u32 = 40;
 /// The "best" RTT is the lowest of this many recent reports (about 10 s), so one lucky sample
 /// doesn't make a steady, higher RTT look congested for the rest of the session.
 const RTT_WINDOW: usize = 10;
+/// Clean reports (one a second) to hold the rate after a cut before climbing again.
+const HOLD_REPORTS: u32 = 3;
+/// Clean reports in a row after which the rate frames were lost at no longer slows the climb.
+const FORGET_REPORTS: u32 = 30;
 
 #[derive(Debug, Clone)]
 pub struct RateController {
@@ -41,6 +49,12 @@ pub struct RateController {
     ceiling: u32,
     /// Reports in a row with a lost frame.
     lost_streak: u32,
+    /// Clean reports still to wait after a cut before climbing.
+    hold: u32,
+    /// The scale frames were last lost at; the climb slows near it.
+    loss_scale: Option<u32>,
+    /// Clean reports in a row.
+    clean_streak: u32,
 }
 
 impl Default for RateController {
@@ -130,12 +144,21 @@ pub struct RateDecision {
 impl RateController {
     pub fn new(quality: Quality) -> Self {
         let ceiling = quality_ceiling(quality);
-        RateController { scale: ceiling.min(100), fec: 15, recent_rtt_us: VecDeque::new(), ceiling, lost_streak: 0 }
+        RateController::with_ceiling(ceiling)
     }
 
     /// Capped at `ceiling` percent (e.g. [`relay_ceiling`]), which may be below [`MIN_SCALE`].
     pub fn with_ceiling(ceiling: u32) -> Self {
-        RateController { scale: ceiling.min(100), fec: 15, recent_rtt_us: VecDeque::new(), ceiling, lost_streak: 0 }
+        RateController {
+            scale: ceiling.min(100),
+            fec: 15,
+            recent_rtt_us: VecDeque::new(),
+            ceiling,
+            lost_streak: 0,
+            hold: 0,
+            loss_scale: None,
+            clean_streak: 0,
+        }
     }
 
     pub fn scale_percent(&self) -> u32 {
@@ -171,21 +194,45 @@ impl RateController {
             self.recent_rtt_us.push_back(r.rtt_us);
         }
 
+        let clean = !rtt_queued
+            && !(lost_again || frame_loss > 0.05 || shard_loss > 0.05 || rtt_congested)
+            && r.lost == 0
+            && !rtt_rising
+            && shard_loss <= 0.02
+            && r.frames > 0;
+        self.clean_streak = if clean { self.clean_streak.saturating_add(1) } else { 0 };
+        if self.clean_streak >= FORGET_REPORTS {
+            self.loss_scale = None;
+        }
         if rtt_queued {
+            self.loss_scale = Some(before);
+            self.hold = HOLD_REPORTS;
             self.scale = (self.scale / 2).max(MIN_SCALE.min(self.ceiling));
             self.fec = (self.fec + 5).min(MAX_FEC);
         } else if lost_again || frame_loss > 0.05 || shard_loss > 0.05 || rtt_congested {
+            self.loss_scale = Some(before);
+            self.hold = HOLD_REPORTS;
             self.scale = (self.scale * 4 / 5).max(MIN_SCALE.min(self.ceiling));
             self.fec = (self.fec + 5).min(MAX_FEC);
         } else if r.lost > 0 {
             self.fec = (self.fec + 5).min(MAX_FEC);
         } else if rtt_rising {
+            self.hold = HOLD_REPORTS;
             self.scale = (self.scale * 9 / 10).max(MIN_SCALE.min(self.ceiling));
         } else if shard_loss > 0.02 {
             self.fec = (self.fec + 2).min(MAX_FEC);
         } else if r.frames > 0 {
-            self.scale = (self.scale + (self.scale / 10).max(3)).min(self.ceiling);
             self.fec = self.fec.saturating_sub(1).max(MIN_FEC);
+            if self.hold > 0 {
+                self.hold -= 1;
+            } else {
+                let mut step = (self.scale / 10).max(3);
+                if let Some(lost_at) = self.loss_scale {
+                    let knee = lost_at * 9 / 10;
+                    step = if self.scale >= knee { 1 } else { step.min(knee - self.scale) };
+                }
+                self.scale = (self.scale + step).min(self.ceiling);
+            }
         }
         RateDecision { scale_percent: self.scale, fec_percent: self.fec, scale_changed: self.scale != before }
     }
@@ -255,6 +302,36 @@ mod tests {
         }
         assert_eq!(c.scale_percent(), MIN_SCALE);
         assert_eq!(c.fec_percent(), MAX_FEC);
+    }
+
+    #[test]
+    fn after_a_cut_the_climb_slows_near_the_rate_frames_were_lost_at() {
+        // A 17 ms link that lost frames at 150 %: it used to be back at 150 % three seconds after
+        // the cut, and lost frames again.
+        let mut c = RateController::default();
+        for _ in 0..20 {
+            c.on_report(&report(60, 0, 1500, 0, 17_000));
+        }
+        assert_eq!(c.scale_percent(), 150);
+        c.on_report(&report(57, 2, 1500, 20, 17_000));
+        c.on_report(&report(57, 3, 1500, 20, 17_000));
+        assert_eq!(c.scale_percent(), 120);
+        for _ in 0..HOLD_REPORTS {
+            c.on_report(&report(60, 0, 1500, 0, 17_000));
+        }
+        assert_eq!(c.scale_percent(), 120, "held after the cut");
+        for _ in 0..2 {
+            c.on_report(&report(60, 0, 1500, 0, 17_000));
+        }
+        assert_eq!(c.scale_percent(), 135, "the usual climb stops at 90 % of 150");
+        for _ in 0..5 {
+            c.on_report(&report(60, 0, 1500, 0, 17_000));
+        }
+        assert_eq!(c.scale_percent(), 140, "then a point a second");
+        for _ in 0..FORGET_REPORTS {
+            c.on_report(&report(60, 0, 1500, 0, 17_000));
+        }
+        assert_eq!(c.scale_percent(), MAX_SCALE, "a link that stays clean gets its rate back");
     }
 
     #[test]
