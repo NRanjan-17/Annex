@@ -6,6 +6,12 @@ struct AnnexApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
+    init() {
+        // A copy started only to give the system shortcuts back if this one crashes: it never
+        // becomes the app.
+        SystemShortcuts.runGuardIfAsked()
+    }
+
     var body: some Scene {
         MenuBarExtra {
             MenuContent(model: model)
