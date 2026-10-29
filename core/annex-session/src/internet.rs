@@ -77,13 +77,18 @@ async fn share(
         },
         None => None,
     };
-    let addrs = host.internet_candidates(resolve_stun(&servers.stun).await?).await?;
+    let stun = resolve_stun(&servers.stun).await?;
+    let addrs = host.internet_candidates(stun).await?;
     let device = host.fingerprint();
     let waiting = rendezvous::host(&servers.rendezvous, name, &addrs, own_relay.is_some(), Some(&device)).await?;
     host.set_punch_code(&waiting.code());
     tracing::info!(addrs = ?addrs, own_relay = own_relay.is_some(), "code ready; waiting for a viewer");
     events(Event::InternetCode { code: waiting.code(), expires_in: waiting.expires_in().as_secs() as u32 });
-    let mut matched = waiting.wait().await?;
+    // The public address the code carries has to still work when the viewer comes.
+    let mut matched = tokio::select! {
+        m = waiting.wait() => m?,
+        () = host.keep_open(stun, addrs[0]) => unreachable!("keeps going until the viewer comes"),
+    };
     let peer = matched.peer.clone();
     tracing::info!(name = %peer.name, addrs = ?peer.addrs, "a viewer joined by code");
     events(Event::InternetJoined { peer_name: peer.name.clone() });

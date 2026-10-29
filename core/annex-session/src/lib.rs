@@ -30,7 +30,7 @@ pub use host::{
 pub use internet::{DEFAULT_STUN, InternetServers, OwnRelay, resolve_stun, share_code};
 pub use punch::TurnServer;
 #[doc(hidden)]
-pub use punch::set_relay_refresh;
+pub use punch::{set_keep_open, set_relay_refresh};
 pub use stats::LatencyStats;
 pub use transport::is_link_local;
 pub use viewer::{InternetSocket, JoinCode, ViewerConfig, ViewerHandle, connect_viewer};

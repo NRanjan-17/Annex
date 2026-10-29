@@ -9,7 +9,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use annex_session::*;
 use quinn::udp::{RecvMeta, Transmit};
@@ -49,6 +49,23 @@ struct Router {
     out: HashMap<(SocketAddr, Option<SocketAddr>), u16>,
     /// public port → inside socket, and the far ends it has sent to from that port.
     inbound: HashMap<u16, (SocketAddr, HashSet<SocketAddr>)>,
+    /// Gives a port away once nothing went out of it for this long (`None`: never), as some
+    /// carrier routers do after half a minute.
+    forget_after: Option<Duration>,
+    /// public port → when something last went out of it.
+    last_out: HashMap<u16, Instant>,
+}
+
+impl Router {
+    fn forget_idle(&mut self) {
+        let Some(after) = self.forget_after else { return };
+        let idle: Vec<u16> = self.last_out.iter().filter(|(_, t)| t.elapsed() > after).map(|(&p, _)| p).collect();
+        for p in idle {
+            self.last_out.remove(&p);
+            self.inbound.remove(&p);
+            self.out.retain(|_, q| *q != p);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -72,8 +89,14 @@ impl Net {
             next_port: 40000,
             out: HashMap::new(),
             inbound: HashMap::new(),
+            forget_after: None,
+            last_out: HashMap::new(),
         });
         s.routers.len() - 1
+    }
+
+    fn forget_idle_after(&self, router: usize, after: Duration) {
+        self.0.lock().unwrap().routers[router].forget_after = Some(after);
     }
 
     fn socket(self: &Arc<Self>, addr: &str, router: Option<usize>) -> Arc<SimSocket> {
@@ -93,6 +116,7 @@ impl Net {
         let src = match s.behind.get(&from).copied() {
             Some(r) => {
                 let router = &mut s.routers[r];
+                router.forget_idle();
                 let key = (from, matches!(router.kind, Nat::Symmetric).then_some(to));
                 let port = match router.out.get(&key) {
                     Some(&p) => p,
@@ -104,16 +128,20 @@ impl Net {
                     }
                 };
                 router.inbound.entry(port).or_insert_with(|| (from, HashSet::new())).1.insert(to);
+                router.last_out.insert(port, Instant::now());
                 SocketAddr::new(router.public_ip, port)
             }
             None => from,
         };
         // In through the receiver's router, if `to` is one of its public addresses.
-        let dest = match s.routers.iter().find(|r| r.public_ip == to.ip()) {
-            Some(router) => match router.inbound.get(&to.port()) {
-                Some((inside, allowed)) if allowed.contains(&src) => *inside,
-                _ => return, // unsolicited: dropped
-            },
+        let dest = match s.routers.iter_mut().find(|r| r.public_ip == to.ip()) {
+            Some(router) => {
+                router.forget_idle();
+                match router.inbound.get(&to.port()) {
+                    Some((inside, allowed)) if allowed.contains(&src) => *inside,
+                    _ => return, // unsolicited: dropped
+                }
+            }
             None => to,
         };
         if let Some(sock) = s.sockets.get(&dest).and_then(Weak::upgrade) {
@@ -410,11 +438,24 @@ struct Outcome {
     refreshes: usize,
 }
 
+/// The code waits a while before the viewer comes, and the host's router forgets idle ports.
+struct Wait {
+    /// The host's router gives a port away after this long with nothing going out.
+    forgets_after: Duration,
+    waits: Duration,
+    /// The host keeps its port open meanwhile, as sharing a code does.
+    keep_open: bool,
+}
+
+async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome {
+    connect_across_after(host_nat, viewer_nat, relay, None).await
+}
+
 /// Runs what the rendezvous server arranges: each side learns its public address from STUN,
 /// they swap candidates, the host punches, the viewer connects (to the host's relay address, if
 /// `relay` is set: what happens after a direct attempt fails). Returns the host's and the
 /// viewer's events once the session has started or the viewer gave up.
-async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome {
+async fn connect_across_after(host_nat: Nat, viewer_nat: Nat, relay: Relay, wait: Option<Wait>) -> Outcome {
     // Refresh the relay several times within the session, as hours of real use would.
     set_relay_refresh(Duration::from_millis(150));
     let net = Arc::new(Net::default());
@@ -435,6 +476,18 @@ async fn connect_across(host_nat: Nat, viewer_nat: Nat, relay: Relay) -> Outcome
     let host = start_host(core("Host"), cfg, hev).await.unwrap();
     let host_candidates = host.internet_candidates(stun_addr).await.unwrap();
     assert_eq!(host_candidates[0].ip().to_string(), "203.0.113.10", "STUN reports the router's public address");
+    if let Some(w) = wait {
+        net.forget_idle_after(home, w.forgets_after);
+        let idle = tokio::time::sleep(w.waits);
+        if w.keep_open {
+            tokio::select! {
+                () = idle => {}
+                () = host.keep_open(stun_addr, host_candidates[0]) => {}
+            }
+        } else {
+            idle.await;
+        }
+    }
 
     let viewer_sock = InternetSocket::with_socket(net.socket("192.168.1.5:50000", Some(away))).unwrap();
     let viewer_candidates = viewer_sock.candidates(stun_addr).await.unwrap();
@@ -528,6 +581,22 @@ async fn two_home_routers_connect_directly() {
     let o = connect_across(Nat::PortRestricted, Nat::PortRestricted, Relay::None).await;
     assert_eq!(started(&o.viewer), (LinkKind::Internet, TransportKind::Quic));
     assert_eq!(started(&o.host).0, LinkKind::Internet, "the host knows the session came over the internet");
+    assert!(o.frames >= 15, "only {} of 20 frames arrived", o.frames);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_router_that_forgets_idle_ports_loses_a_waiting_code() {
+    let wait = Wait { forgets_after: Duration::from_millis(400), waits: Duration::from_millis(1200), keep_open: false };
+    let o = connect_across_after(Nat::PortRestricted, Nat::PortRestricted, Relay::None, Some(wait)).await;
+    assert!(matches!(o.viewer, Some(Event::SessionEnded { .. })), "expected no direct connection, got {:?}", o.viewer);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn keeping_the_port_open_lets_a_waiting_code_connect_directly() {
+    set_keep_open(Duration::from_millis(100));
+    let wait = Wait { forgets_after: Duration::from_millis(400), waits: Duration::from_millis(1200), keep_open: true };
+    let o = connect_across_after(Nat::PortRestricted, Nat::PortRestricted, Relay::None, Some(wait)).await;
+    assert_eq!(started(&o.viewer), (LinkKind::Internet, TransportKind::Quic));
     assert!(o.frames >= 15, "only {} of 20 frames arrived", o.frames);
 }
 

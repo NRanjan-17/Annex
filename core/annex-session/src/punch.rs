@@ -31,10 +31,20 @@ const MAX_HEARD: usize = 32;
 /// TURN permissions last 5 minutes (RFC 8656 §9); renew them, and the allocation, before then.
 static RELAY_REFRESH_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(240_000);
 
+/// Some routers (seen on an ISP sharing one address among many homes) forget a port nothing went
+/// out of for half a minute, and a code waits up to ten: ask STUN this often while it does.
+static KEEP_OPEN_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(15_000);
+
 /// Tests: refresh the relay this often instead (to see refreshes within a short test).
 #[doc(hidden)]
 pub fn set_relay_refresh(every: Duration) {
     RELAY_REFRESH_MS.store(every.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Tests: keep the router's port open this often instead (see [`PunchSocket::keep_open`]).
+#[doc(hidden)]
+pub fn set_keep_open(every: Duration) {
+    KEEP_OPEN_MS.store(every.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// A relay (TURN server) and the login for it.
@@ -207,6 +217,30 @@ impl PunchSocket {
         let public = SocketAddr::new(a.ip().to_canonical(), a.port());
         tracing::debug!(%stun_server, %public, "public address from STUN");
         Ok(public)
+    }
+
+    /// Keeps `public`, the address a code carries, working until the viewer comes: asks the STUN
+    /// server again every few seconds, so the router doesn't give the port away while nothing else
+    /// goes out of it. Logs when the router moved it anyway (the viewer will try the old one).
+    /// Never returns; drop it when the viewer comes.
+    pub async fn keep_open(self: &Arc<Self>, stun_server: SocketAddr, public: SocketAddr) {
+        let mut last = public;
+        loop {
+            let every = KEEP_OPEN_MS.load(std::sync::atomic::Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_millis(every)).await;
+            match self.public_address(stun_server).await {
+                Ok(now) if now != last => {
+                    tracing::info!(
+                        %public,
+                        %now,
+                        "network check: the router moved this computer's public port while the code waited"
+                    );
+                    last = now;
+                }
+                Ok(_) => {}
+                Err(e) => tracing::debug!("keeping the router's port open: {e}"),
+            }
+        }
     }
 
     /// Checks what this computer's router does with ports, for the log: asks a second STUN server

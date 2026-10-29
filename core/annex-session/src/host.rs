@@ -232,6 +232,15 @@ impl HostHandle {
         Ok(out)
     }
 
+    /// Keeps `public` (from [`internet_candidates`](Self::internet_candidates)) working while a
+    /// code waits for a viewer (see [`PunchSocket::keep_open`]). Never returns.
+    pub async fn keep_open(&self, stun_server: SocketAddr, public: SocketAddr) {
+        match &self.shared.udp {
+            Some(udp) => udp.keep_open(stun_server, public).await,
+            None => std::future::pending().await,
+        }
+    }
+
     /// Punches carry a token made from `code` (see [`PunchSocket::set_punch_code`]).
     pub fn set_punch_code(&self, code: &str) {
         if let Some(udp) = &self.shared.udp {
