@@ -19,7 +19,6 @@ final class AppSettings: ObservableObject {
     @Published var openFullScreen: Bool { didSet { defaults.set(openFullScreen, forKey: Keys.fullScreen); changed("openFullScreen", openFullScreen) } }
     /// Viewer: scroll the other way on Windows and Linux, so this Mac's scrolling feels the same
     /// on them. On by default.
-    @Published var reverseScrollOnOthers: Bool { didSet { defaults.set(reverseScrollOnOthers, forKey: Keys.reverseScroll); changed("reverseScrollOnOthers", reverseScrollOnOthers) } }
     /// Copy on one computer, paste on the other, while one controls the other. On by default.
     @Published var shareClipboard: Bool { didSet { defaults.set(shareClipboard, forKey: Keys.clipboard); changed("shareClipboard", shareClipboard) } }
     /// Drag files to the notch (or the middle of the menu bar) to send them. On by default.
@@ -90,7 +89,6 @@ final class AppSettings: ObservableObject {
         static let control = "useMouseAndKeyboard"
         static let fullScreen = "openFullScreen"
         static let clipboard = "shareClipboard"
-        static let reverseScroll = "reverseScrollOnOthers"
         static let receiveFiles = "receiveFiles"
         static let notchDrop = "notchDrop"
         static let extend = "extendByDefault"
@@ -133,7 +131,7 @@ final class AppSettings: ObservableObject {
         let data = (try? FileManager.default.contentsOfDirectory(atPath: AppModel.dataDirectory.path)) ?? []
         usedBefore = !saved.isEmpty || !data.isEmpty
         defaults.register(defaults: [Keys.hardware: true, Keys.fullScreen: true, Keys.control: true, Keys.updates: true,
-                                       Keys.peerToPeer: true, Keys.clipboard: true, Keys.reverseScroll: true, Keys.receiveFiles: true, Keys.notchDrop: true,
+                                       Keys.peerToPeer: true, Keys.clipboard: true, Keys.receiveFiles: true, Keys.notchDrop: true,
                                        Keys.shareSound: true, Keys.hearSound: true, Keys.virtualMicrophone: true,
                                        Keys.verboseLogging: true, Keys.hevc: true])
         preferHardwareEncoder = defaults.bool(forKey: Keys.hardware)
@@ -142,7 +140,6 @@ final class AppSettings: ObservableObject {
         controlWhenViewing = defaults.bool(forKey: Keys.control)
         openFullScreen = defaults.bool(forKey: Keys.fullScreen)
         shareClipboard = defaults.bool(forKey: Keys.clipboard)
-        reverseScrollOnOthers = defaults.bool(forKey: Keys.reverseScroll)
         receiveFiles = defaults.bool(forKey: Keys.receiveFiles)
         notchDrop = defaults.bool(forKey: Keys.notchDrop)
         extendByDefault = defaults.bool(forKey: Keys.extend)
@@ -174,7 +171,7 @@ final class AppSettings: ObservableObject {
     /// Every setting for the log at startup (the relay login only as set or not).
     var snapshot: String {
         "hardware encoder \(preferHardwareEncoder), share at launch \(startSharingAtLaunch), headless \(headless), "
-            + "control when viewing \(controlWhenViewing), full screen \(openFullScreen), reverse scroll \(reverseScrollOnOthers), "
+            + "control when viewing \(controlWhenViewing), full screen \(openFullScreen), "
             + "clipboard \(shareClipboard), notch drop \(notchDrop), receive files \(receiveFiles), extend by default \(extendByDefault), "
             + "share sound \(shareSound), hear sound \(hearSound), send microphone \(sendMicrophone), annex microphone \(virtualMicrophone), "
             + "quality \(quality), technical details \(showTechnicalDetails), verbose \(verboseLogging), HEVC \(hevcWithMacs), "
