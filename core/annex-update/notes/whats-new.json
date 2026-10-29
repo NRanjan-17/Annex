@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.3.10",
+    "items": [
+      {
+        "kind": "fixed",
+        "title": "A Mac trackpad scrolls the right way on another Mac",
+        "detail": "Controlling a Mac from a Mac, the trackpad and Magic Mouse scroll as on your own Mac."
+      },
+      {
+        "kind": "improved",
+        "title": "Reverse Mouse Wheel is back",
+        "detail": "On Windows and Linux, a plain mouse wheel turns the way it does on a PC. The trackpad and Magic Mouse keep natural scrolling. It's in Settings → Advanced → Viewing."
+      }
+    ]
+  },
+  {
     "version": "0.3.9",
     "items": [
       {
