@@ -175,6 +175,11 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         videoView.relative = on
     }
 
+    /// Scroll the other way on the host, for Windows and Linux, which don't scroll like a Mac.
+    func setReverseScroll(_ on: Bool) {
+        videoView.reverseScroll = on
+    }
+
     /// The host allowed (or revoked) control by this Mac's mouse and keyboard.
     func setControlling(_ on: Bool, hostName: String) {
         Annex.log(.info, "[input] \(on ? "controlling" : "view only:") \(hostName)")
@@ -300,6 +305,8 @@ final class VideoView: NSView {
             updatePointerLock()
         }
     }
+    /// Flip scroll direction (see ViewerWindowController.setReverseScroll).
+    var reverseScroll = false
     /// Send mouse movement instead of positions (see ViewerWindowController.setRelativePointer).
     var relative = false {
         didSet { updatePointerLock() }
@@ -417,17 +424,18 @@ final class VideoView: NSView {
 
     override func scrollWheel(with event: NSEvent) {
         guard controlling else { return super.scrollWheel(with: event) }
-        // Precise (trackpad) deltas are pixels; wheel deltas are lines of roughly 10 pixels. They
-        // already follow this Mac's natural scrolling, and every host applies them as they are, so
-        // scrolling turns the same way as on this Mac whatever the other computer is.
-        let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 10
+        // Precise (trackpad) deltas are pixels; wheel deltas are lines of roughly 10 pixels.
+        // Only a mouse wheel under natural scrolling is reversed, so it turns like the PC's own wheel.
+        // A trackpad (or Magic Mouse) keeps natural scrolling: its precise deltas are never flipped.
+        let flip = reverseScroll && event.isDirectionInvertedFromDevice && !event.hasPreciseScrollingDeltas
+        let scale: CGFloat = (event.hasPreciseScrollingDeltas ? 1 : 10) * (flip ? -1 : 1)
         scrollRest.x += event.scrollingDeltaX * scale
         scrollRest.y += event.scrollingDeltaY * scale
         let dx = scrollRest.x.rounded(.towardZero), dy = scrollRest.y.rounded(.towardZero)
         scrollRest.x -= dx
         scrollRest.y -= dy
         if dx != 0 || dy != 0 {
-            Annex.log(.trace, "[scroll] \(Int(dx)), \(Int(dy)) px")
+            Annex.log(.trace, "[scroll] \(Int(dx)), \(Int(dy)) px\(flip ? ", reversed" : "")")
             viewer?.sendScroll(dx: Int32(dx), dy: Int32(dy))
         }
     }

@@ -16,6 +16,13 @@ final class InputInjector: @unchecked Sendable {
     private var lastClick: (button: CGMouseButton, time: TimeInterval, at: CGPoint, count: Int64)?
     /// An event couldn't be made: logged once, not for every one after it.
     private var reportedFailure = false
+    /// This Mac's natural scrolling, as last logged.
+    private var loggedNatural: Bool?
+
+    /// System Settings → Trackpad / Mouse → Natural scrolling (on unless switched off).
+    private static var naturalScrolling: Bool {
+        UserDefaults.standard.object(forKey: "com.apple.swipescrolldirection") as? Bool ?? true
+    }
 
     /// Posting input events needs the Accessibility ("Device Control") permission.
     /// CGPreflightPostEventAccess is the exact check for CGEventPost; AXIsProcessTrusted can stay
@@ -94,7 +101,18 @@ final class InputInjector: @unchecked Sendable {
             if down { buttonsDown.insert(button) } else { buttonsDown.remove(button) }
             post(mouseType(button, down: down), button: button, clickState: down ? clickCount(button) : lastClick?.count ?? 1)
         case .scroll(let dx, let dy):
-            guard let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else {
+            // The viewer sends scrolling the way it should move on screen, its own computer's
+            // natural scrolling already applied. Trackpad-style events posted here get this Mac's
+            // natural scrolling applied too, which would turn them around a second time (a Mac
+            // trackpad scrolled backwards on another Mac), so they're turned back first.
+            let natural = Self.naturalScrolling
+            if loggedNatural != natural {
+                loggedNatural = natural
+                Annex.log(.info, "[scroll] this Mac's natural scrolling is \(natural ? "on: replayed scrolling is turned back for it" : "off")")
+            }
+            let sign: Int32 = natural ? -1 : 1
+            guard let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
+                                  wheel1: dy * sign, wheel2: dx * sign, wheel3: 0) else {
                 return failed("scroll")
             }
             // Trackpad-style: apps scroll by exactly these pixels instead of animating each event

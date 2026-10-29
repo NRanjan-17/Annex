@@ -1102,6 +1102,9 @@ private struct SettingsPage: View {
         GroupSection("Viewing") {
             ToggleRow(title: "Open in full screen", isOn: $settings.openFullScreen)
             ToggleRow(title: "Extend display by default", isOn: $settings.extendByDefault)
+            ToggleRow(title: "Reverse Mouse Wheel on Windows and Linux",
+                      subtitle: "With natural scrolling on, a mouse wheel turns the way it does on a PC. The trackpad stays natural.",
+                      isOn: $settings.reverseScrollOnOthers)
         }
     }
 
