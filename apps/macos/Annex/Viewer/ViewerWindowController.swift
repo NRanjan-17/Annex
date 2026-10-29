@@ -184,6 +184,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
     func setControlling(_ on: Bool, hostName: String) {
         Annex.log(.info, "[input] \(on ? "controlling" : "view only:") \(hostName)")
         videoView.controlling = on
+        updateShortcutCapture()
         if on {
             videoView.showHUD("Controlling \(hostName)", detail: "Press ⌃⌥⇧Q to disconnect")
         } else {
@@ -243,7 +244,13 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         Annex.log(.debug, "[viewer] window focused")
         videoView.updatePointerLock()
         updatePresentation()
+        updateShortcutCapture()
         onFocus?()
+    }
+
+    /// While this window is in front and controlling, ⌘Space, ⌘Tab and the like go to the host.
+    private func updateShortcutCapture() {
+        SystemShortcuts.capture(videoView.controlling && window?.isKeyWindow == true)
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -255,6 +262,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         videoView.relative = false  // frees this Mac's pointer
         covering = false
         updatePresentation()
+        SystemShortcuts.capture(false)
         onClose?()
     }
 
@@ -264,6 +272,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         videoView.releaseHeldInput()
         videoView.updatePointerLock()
         updatePresentation()
+        updateShortcutCapture()
     }
 }
 
