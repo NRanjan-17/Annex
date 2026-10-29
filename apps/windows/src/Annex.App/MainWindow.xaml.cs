@@ -656,8 +656,9 @@ public sealed partial class MainWindow : Window
         public sealed record Starting : InternetShare;
         public sealed record Code(string Value, DateTimeOffset Expires) : InternetShare;
         public sealed record Joining(string Name) : InternetShare;
-        /// <summary>The viewer couldn't connect directly. <c>Relayed</c>: it got a relay (<c>Limited</c>: ours).</summary>
-        public sealed record Relay(string Name, bool Relayed, bool Limited) : InternetShare;
+        /// <summary>The viewer couldn't connect directly. <c>Relayed</c>: it got a relay (<c>Limited</c>: ours).
+        /// <c>Left</c> of <c>PerDay</c> sessions on our relay are left today, when ours was asked.</summary>
+        public sealed record Relay(string Name, bool Relayed, bool Limited, int? Left, int? PerDay) : InternetShare;
         /// <summary>The code no longer works: why (null when it was used).</summary>
         public sealed record Ended(string? Why) : InternetShare;
     }
@@ -684,11 +685,13 @@ public sealed partial class MainWindow : Window
                 break;
             case InternetShare.Relay { Relayed: true } r:
                 p.Children.Add(Ui.Card("", $"Connecting {r.Name} through the relay…",
-                    r.Limited ? "Their network blocks direct connections. Our relay passes it on, still end to end encrypted."
-                        : "Their network blocks direct connections. Using your relay.", Ui.Spinner()));
+                    (r.Limited ? "Their network blocks direct connections. Our relay passes it on, still end to end encrypted."
+                        : "Their network blocks direct connections. Using your relay.")
+                    + (RelaySessionsLeft(r.Left, r.PerDay) is { } left ? " " + left : ""), Ui.Spinner()));
                 break;
             case InternetShare.Relay r:
-                p.Children.Add(Ui.Card("", $"{r.Name} couldn't connect directly", "No relay is available right now."));
+                p.Children.Add(Ui.Card("", $"{r.Name} couldn't connect directly",
+                    r.Left == 0 ? RelayUsedUp(r.PerDay) : "No relay is available right now."));
                 break;
             case InternetShare.Ended { Why: null }:
                 p.Children.Add(Ui.Card("", "Code used", "Get another one for the next computer.",
@@ -777,12 +780,13 @@ public sealed partial class MainWindow : Window
                 _internet = new InternetShare.Joining(j.PeerName);
                 break;
             case CoreEvent.InternetRelay r when _internet is InternetShare.Joining j:
-                _internet = new InternetShare.Relay(j.Name, r.Relayed, r.Limited);
+                _internet = new InternetShare.Relay(j.Name, r.Relayed, r.Limited, r.RelayLeft, r.RelayPerDay);
                 break;
             case CoreEvent.InternetCodeEnded ended:
                 _internet = (ended.Reason, _internet) switch
                 {
                     ("stopped", _) => null,
+                    ("used", InternetShare.Relay { Relayed: false, Left: 0 } r) => new InternetShare.Ended(RelayUsedUp(r.PerDay)),
                     ("used", InternetShare.Relay { Relayed: false }) => new InternetShare.Ended(
                         "The other computer's network blocks direct connections, and no relay was available. "
                         + "Add your own relay in Settings → Advanced."),
@@ -815,6 +819,15 @@ public sealed partial class MainWindow : Window
         };
         _codeTimer.Start();
     }
+
+    /// <summary>"9 of 10 relay sessions left today.", when our relay was asked and said so.</summary>
+    private static string? RelaySessionsLeft(int? left, int? perDay) =>
+        left is { } l && perDay is { } d ? $"{l} of {d} relay sessions left today." : null;
+
+    /// <summary>Our relay's sessions for today are all used.</summary>
+    private static string RelayUsedUp(int? perDay) =>
+        $"Today's {(perDay is { } d ? $"{d} " : "")}relay sessions are used up (they reset at midnight UTC). "
+        + "Add your own relay and server in Settings → Advanced → Internet.";
 
     private static string FriendlyInternetError(string r)
     {

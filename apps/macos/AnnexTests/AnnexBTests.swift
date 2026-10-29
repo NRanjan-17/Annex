@@ -110,7 +110,11 @@ final class AnnexBTests: XCTestCase {
                        .internetCode(code: "K7P-4QX", expiresIn: 600))
         XCTAssertEqual(decode(#"{"type":"internet_joined","peer_name":"Office PC"}"#), .internetJoined(peerName: "Office PC"))
         XCTAssertEqual(decode(#"{"type":"internet_relay","relayed":true,"limited":true}"#),
-                       .internetRelay(relayed: true, limited: true))
+                       .internetRelay(relayed: true, limited: true, left: nil, perDay: nil))
+        XCTAssertEqual(decode(#"{"type":"internet_relay","relayed":true,"limited":true,"relay_left":9,"relay_per_day":10}"#),
+                       .internetRelay(relayed: true, limited: true, left: 9, perDay: 10))
+        XCTAssertEqual(decode(#"{"type":"internet_relay","relayed":false,"limited":false,"relay_left":0,"relay_per_day":10}"#),
+                       .internetRelay(relayed: false, limited: false, left: 0, perDay: 10))
         XCTAssertEqual(decode(#"{"type":"internet_code_ended","reason":"expired"}"#), .internetCodeEnded(reason: "expired"))
     }
 

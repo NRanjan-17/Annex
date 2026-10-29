@@ -95,17 +95,26 @@ async fn share(
     host.punch(peer.addrs.clone());
 
     // The viewer asks for the relay only if the direct connection fails.
-    let Some(login) = matched.relay_request().await? else {
+    let Some(ask) = matched.relay_request().await? else {
         tracing::info!("code used: the viewer didn't ask for the relay (it connected directly)");
         return Ok("used");
     };
-    tracing::info!(our_relay = login.is_some(), own_relay = own_relay.is_some(), "the viewer asked for the relay");
+    tracing::info!(
+        our_relay = ask.login.is_some(),
+        own_relay = own_relay.is_some(),
+        left_today = ?ask.left,
+        "the viewer asked for the relay"
+    );
     host.log_why_not_direct(&peer.addrs);
-    let relay = match (own_relay, login) {
+    let relay = match (own_relay, ask.login) {
         (Some(own), _) => Some((own, false)),
         (None, Some(login)) => login.server().await.ok().map(|s| (s, true)),
+        (None, None) if ask.left == Some(0) => {
+            tracing::info!(per_day = ?ask.per_day, "no relay to offer: today's sessions on ours are used up");
+            None
+        }
         (None, None) => {
-            tracing::info!("no relay to offer: the server gave no login (relay off, or today's allowance is used up)");
+            tracing::info!("no relay to offer: the server gave no login (relay off, or it couldn't get one)");
             None
         }
     };
@@ -126,7 +135,12 @@ async fn share(
     if relayed.is_some() {
         tracing::info!("switching to the relay: the session passes through it, still end to end encrypted (TLS 1.3)");
     }
-    events(Event::InternetRelay { relayed: relayed.is_some(), limited: relay.is_some_and(|(_, l)| l) });
+    events(Event::InternetRelay {
+        relayed: relayed.is_some(),
+        limited: relay.is_some_and(|(_, l)| l),
+        relay_left: ask.left,
+        relay_per_day: ask.per_day,
+    });
     matched.answer_relay(relayed).await?;
     Ok("used")
 }

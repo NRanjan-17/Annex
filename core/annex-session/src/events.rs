@@ -54,10 +54,13 @@ pub enum Event {
     },
     /// Host: the viewer couldn't connect directly. `relayed`: it was given this computer's
     /// address on a relay (`limited`: ours, with its time and bitrate limits); otherwise there was
-    /// no relay to give.
+    /// no relay to give. When ours was asked: `relay_left` of `relay_per_day` sessions on it are
+    /// left today (0: used up, which is why there was no relay).
     InternetRelay {
         relayed: bool,
         limited: bool,
+        relay_left: Option<u32>,
+        relay_per_day: Option<u32>,
     },
     /// Host: the code no longer works. `reason`: "used", "expired", "stopped", or what went wrong.
     InternetCodeEnded {

@@ -34,7 +34,8 @@ async fn host_and_viewer_swap_addresses_once_then_the_relay() {
     // relayed address. (No TURN key on a dev server, so no login from ours.)
     let relayed: SocketAddr = "198.51.100.5:61000".parse().unwrap();
     let viewer = tokio::spawn(joined.ask_relay());
-    assert_eq!(matched.relay_request().await.unwrap(), Some(None));
+    let ask = matched.relay_request().await.unwrap().expect("the viewer asked for the relay");
+    assert_eq!((ask.login, ask.left, ask.per_day), (None, None, None));
     matched.answer_relay(Some(relayed)).await.unwrap();
     assert_eq!(viewer.await.unwrap().unwrap(), Some(vec![relayed]));
 

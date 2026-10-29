@@ -95,8 +95,9 @@ public abstract record CoreEvent
     public sealed record InternetCode(string Code, int ExpiresIn) : CoreEvent;
     /// <summary>Host: someone typed the code; their connection comes next.</summary>
     public sealed record InternetJoined(string PeerName) : CoreEvent;
-    /// <summary>Host: a direct connection failed. <c>Relayed</c>: a relay is set up; <c>Limited</c>: it's ours (capped).</summary>
-    public sealed record InternetRelay(bool Relayed, bool Limited) : CoreEvent;
+    /// <summary>Host: a direct connection failed. <c>Relayed</c>: a relay is set up; <c>Limited</c>: it's ours (capped).
+    /// When ours was asked, <c>RelayLeft</c> of <c>RelayPerDay</c> sessions on it are left today (0: used up).</summary>
+    public sealed record InternetRelay(bool Relayed, bool Limited, int? RelayLeft = null, int? RelayPerDay = null) : CoreEvent;
     /// <summary>Host: the code is done ("used", "expired", "stopped", or an error).</summary>
     public sealed record InternetCodeEnded(string Reason) : CoreEvent;
     /// <summary>The other computer copied text ("text/plain;charset=utf-8") or a picture ("image/png").</summary>

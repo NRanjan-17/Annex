@@ -158,6 +158,8 @@ internet provider that shares one address among many homes, or a college or offi
 blocks it. Only then does the session go through **our relay**. It stays end to end encrypted (the
 relay only forwards packets it can't read) and runs at the same quality as a direct connection. Each
 sharing computer can use it for **10 sessions a day** (reset at midnight UTC), each up to 24 hours.
+While a session goes through it, the sharing computer shows how many are left today; once they're
+used up, it says so.
 
 Direct connections, and your own TURN relay (**Settings → Internet**), have no limits.
 

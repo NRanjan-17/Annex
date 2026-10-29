@@ -1941,14 +1941,21 @@ fn render_share(ui: &mut Ui, m: &Model, model: &Shared) {
             Some(InternetShare::Joining(name)) => {
                 ui.code.append(&label(&format!("{} is connecting…", m.label(name)), ""))
             }
-            Some(InternetShare::Relay { name, relayed, limited }) => {
-                let text = match (relayed, limited) {
+            Some(InternetShare::Relay { name, relayed, limited, left, per_day }) => {
+                let mut text = match (relayed, limited) {
                     (true, true) => {
                         format!("{} is connecting through Annex's relay (still end to end encrypted).", m.label(name))
                     }
                     (true, false) => format!("{} is connecting through your relay.", m.label(name)),
+                    (false, _) if *left == Some(0) => {
+                        let why = crate::model::relay_used_up(*per_day);
+                        format!("{} couldn't connect directly. {why}", m.label(name))
+                    }
                     (false, _) => format!("{} couldn't connect directly.", m.label(name)),
                 };
+                if *relayed && let Some(left) = crate::model::relay_sessions_left(*left, *per_day) {
+                    text = format!("{text} {left}");
+                }
                 ui.code.append(&label(&text, ""));
             }
             Some(InternetShare::Ended(why)) => {

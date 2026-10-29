@@ -590,14 +590,15 @@ private struct InternetShareSection: View {
         case .joining(let name):
             GroupRow(title: "\(name) is connecting…", subtitle: "Typed the code. The PIN comes next if it's new.",
                      status: .spinner)
-        case .relay(let name, true, let limited):
+        case .relay(let name, true, let limited, let left, let perDay):
             GroupRow(title: "Connecting \(name) through the relay…",
-                     subtitle: limited ? "Their network blocks direct connections. Our relay passes it on, still end to end encrypted."
-                                       : "Their network blocks direct connections. Using your relay.",
+                     subtitle: (limited ? "Their network blocks direct connections. Our relay passes it on, still end to end encrypted."
+                                        : "Their network blocks direct connections. Using your relay.")
+                         + (AppModel.relaySessionsLeft(left, perDay).map { " " + $0 } ?? ""),
                      status: .spinner)
-        case .relay(let name, false, _):
+        case .relay(let name, false, _, let left, let perDay):
             GroupRow(title: "\(name) couldn't connect directly",
-                     subtitle: "No relay is available right now.",
+                     subtitle: left == 0 ? AppModel.relayUsedUp(perDay) : "No relay is available right now.",
                      status: .symbol("exclamationmark.triangle.fill", .orange))
         case .ended(nil):
             getCode(title: "Code used", subtitle: "Get another one for the next computer.", again: true)

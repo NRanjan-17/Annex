@@ -482,7 +482,8 @@ final class AppModel: ObservableObject {
         case code(String, expires: Date)
         case joining(String)
         /// The viewer couldn't connect directly. `relayed`: it got a relay address (`limited`: ours).
-        case relay(String, relayed: Bool, limited: Bool)
+        /// `left` of `perDay` sessions on our relay are left today, when ours was asked.
+        case relay(String, relayed: Bool, limited: Bool, left: Int?, perDay: Int?)
         /// The code no longer works: why (nil when it was used).
         case ended(String?)
     }
@@ -513,14 +514,17 @@ final class AppModel: ObservableObject {
             internetShare = .code(code, expires: Date().addingTimeInterval(TimeInterval(seconds)))
         case .internetJoined(let name):
             internetShare = .joining(name)
-        case .internetRelay(let relayed, let limited):
+        case .internetRelay(let relayed, let limited, let left, let perDay):
             if case .joining(let name) = internetShare {
-                internetShare = .relay(name, relayed: relayed, limited: limited)
+                internetShare = .relay(name, relayed: relayed, limited: limited, left: left, perDay: perDay)
             }
         case .internetCodeEnded(let reason):
             switch (reason, internetShare) {
             case ("stopped", _): internetShare = nil
-            case ("used", .relay(_, false, _)):
+            case ("used", .relay(_, false, _, 0?, let perDay)):
+                Annex.log(.warn, "[network] the code was used, but today's sessions on our relay are used up")
+                internetShare = .ended(Self.relayUsedUp(perDay))
+            case ("used", .relay(_, false, _, _, _)):
                 Annex.log(.warn, "[network] the code was used, but no direct path or relay reached the other computer")
                 internetShare = .ended("The other computer's network blocks direct connections, and no relay was available. "
                                        + "Add your own relay in Settings → Advanced.")
@@ -530,6 +534,18 @@ final class AppModel: ObservableObject {
             }
         default: break
         }
+    }
+
+    /// "9 of 10 relay sessions left today.", when our relay was asked and said so.
+    static func relaySessionsLeft(_ left: Int?, _ perDay: Int?) -> String? {
+        guard let left, let perDay else { return nil }
+        return "\(left) of \(perDay) relay sessions left today."
+    }
+
+    /// Our relay's sessions for today are all used.
+    static func relayUsedUp(_ perDay: Int?) -> String {
+        "Today's \(perDay.map { "\($0) " } ?? "")relay sessions are used up (they reset at midnight UTC). "
+            + "Add your own relay and server in Settings → Advanced → Internet."
     }
 
     static func friendlyInternetError(_ r: String) -> String {

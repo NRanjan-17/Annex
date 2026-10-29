@@ -120,7 +120,8 @@ pub enum InternetShare {
     Starting,
     Code { code: String, expires: std::time::Instant },
     Joining(String),
-    Relay { name: String, relayed: bool, limited: bool },
+    /// `left` of `per_day` sessions on our relay are left today, when ours was asked.
+    Relay { name: String, relayed: bool, limited: bool, left: Option<u32>, per_day: Option<u32> },
     Ended(Option<String>),
 }
 
@@ -989,14 +990,23 @@ impl Model {
                 });
             }
             Event::InternetJoined { peer_name } => self.internet = Some(InternetShare::Joining(peer_name)),
-            Event::InternetRelay { relayed, limited } => {
+            Event::InternetRelay { relayed, limited, relay_left, relay_per_day } => {
                 if let Some(InternetShare::Joining(name)) = &self.internet {
-                    self.internet = Some(InternetShare::Relay { name: name.clone(), relayed, limited });
+                    self.internet = Some(InternetShare::Relay {
+                        name: name.clone(),
+                        relayed,
+                        limited,
+                        left: relay_left,
+                        per_day: relay_per_day,
+                    });
                 }
             }
             Event::InternetCodeEnded { reason } => {
                 self.internet = match (reason.as_str(), &self.internet) {
                     ("stopped", _) => None,
+                    ("used", Some(InternetShare::Relay { relayed: false, left: Some(0), per_day, .. })) => {
+                        Some(InternetShare::Ended(Some(relay_used_up(*per_day))))
+                    }
                     ("used", Some(InternetShare::Relay { relayed: false, .. })) => {
                         Some(InternetShare::Ended(Some("It couldn't connect directly, and no relay was free.".into())))
                     }
@@ -1538,6 +1548,20 @@ pub fn friendly_reason(reason: &str, peer: &str, by_code: bool) -> String {
         r if by_code => format!("Couldn't connect over the internet: {r}"),
         r => format!("Couldn't connect to {peer}: {r}"),
     }
+}
+
+/// "9 of 10 relay sessions left today.", when our relay was asked and said so.
+pub fn relay_sessions_left(left: Option<u32>, per_day: Option<u32>) -> Option<String> {
+    Some(format!("{} of {} relay sessions left today.", left?, per_day?))
+}
+
+/// Our relay's sessions for today are all used.
+pub fn relay_used_up(per_day: Option<u32>) -> String {
+    let per_day = per_day.map(|n| format!("{n} ")).unwrap_or_default();
+    format!(
+        "Today's {per_day}relay sessions are used up (they reset at midnight UTC). Add your own relay and server in \
+         Settings → Advanced → Internet."
+    )
 }
 
 fn friendly_internet_error(r: &str) -> String {

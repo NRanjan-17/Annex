@@ -47,6 +47,15 @@ pub struct TurnLogin {
     pub ttl: u32,
 }
 
+/// The viewer asked for the relay: a login for ours if the server gave one, and how many of
+/// today's this computer has left (`left` 0: used up). The counts come only when ours was asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayAsk {
+    pub login: Option<TurnLogin>,
+    pub left: Option<u32>,
+    pub per_day: Option<u32>,
+}
+
 /// Without the credential, so it can't reach the log.
 impl std::fmt::Debug for TurnLogin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -118,6 +127,11 @@ enum Msg {
     NeedRelay {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn: Option<TurnLogin>,
+        /// Our relay's logins this computer has left today (after this one), and how many a day.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_left: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay_per_day: Option<u32>,
     },
     Relay {
         addrs: Vec<String>,
@@ -178,12 +192,14 @@ pub struct Matched {
 
 impl Matched {
     /// Waits briefly for the viewer to ask for the relay (its direct connection failed). `None`:
-    /// it didn't ask. `Some(login)`: it did, with a login for our relay if the server gave one.
-    pub async fn relay_request(&mut self) -> Result<Option<Option<TurnLogin>>, SessionError> {
+    /// it didn't ask.
+    pub async fn relay_request(&mut self) -> Result<Option<RelayAsk>, SessionError> {
         loop {
             match self.ws.next().await {
                 Some(Ok(Message::Text(t))) => match serde_json::from_str::<Msg>(&t) {
-                    Ok(Msg::NeedRelay { turn }) => return Ok(Some(turn)),
+                    Ok(Msg::NeedRelay { turn, relay_left, relay_per_day }) => {
+                        return Ok(Some(RelayAsk { login: turn, left: relay_left, per_day: relay_per_day }));
+                    }
                     Ok(Msg::NoRelay) => return Ok(None),
                     _ => {}
                 },
@@ -220,7 +236,7 @@ impl Joined {
     /// The direct connection failed: asks the sharing computer for its address on a relay.
     /// `None` if it has none.
     pub async fn ask_relay(mut self) -> Result<Option<Vec<SocketAddr>>, SessionError> {
-        send(&mut self.ws, &Msg::NeedRelay { turn: None }).await?;
+        send(&mut self.ws, &Msg::NeedRelay { turn: None, relay_left: None, relay_per_day: None }).await?;
         // The sharing computer may need a few seconds to get a relay address.
         loop {
             match timeout(Duration::from_secs(15), self.ws.next()).await? {

@@ -365,12 +365,21 @@ async fn share_over_internet(
     let events: EventSink = Arc::new(|e: Event| match e {
         Event::InternetCode { code, .. } => eprintln!("internet code: {code}"),
         Event::InternetJoined { peer_name } => eprintln!("\"{peer_name}\" is connecting"),
-        Event::InternetRelay { relayed: true, limited } => {
-            eprintln!("relaying ({})", if limited { "our relay, limited" } else { "your relay" })
+        Event::InternetRelay { relayed: true, limited, relay_left, relay_per_day } => {
+            let left = match (relay_left, relay_per_day) {
+                (Some(left), Some(per_day)) => format!("; {left} of {per_day} relay sessions left today"),
+                _ => String::new(),
+            };
+            eprintln!("relaying ({}{left})", if limited { "our relay, limited" } else { "your relay" })
         }
-        Event::InternetRelay { relayed: false, .. } => {
-            eprintln!("no relay available (ours is off or used up for today)")
+        Event::InternetRelay { relayed: false, relay_left: Some(0), relay_per_day, .. } => {
+            let per_day = relay_per_day.map(|n| format!("{n} ")).unwrap_or_default();
+            eprintln!(
+                "no relay: today's {per_day}relay sessions are used up (they reset at midnight UTC). Use your own \
+                 relay and server (--turn, --turn-user, --turn-pass, --rendezvous)"
+            )
         }
+        Event::InternetRelay { relayed: false, .. } => eprintln!("no relay available right now"),
         Event::InternetCodeEnded { reason } => eprintln!("code ended: {reason}"),
         _ => {}
     });

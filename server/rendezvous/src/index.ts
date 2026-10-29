@@ -13,14 +13,16 @@
 // After the match both sockets stay open for MATCH_WINDOW, for the relay fallback:
 //   Viewer (direct failed)                → {"type":"need_relay"}
 //   Sharing computer                      ← {"type":"need_relay","turn":{"urls":[…],"username":"…",
-//                                            "credential":"…","ttl":1200}}   (or "turn":null)
+//                                            "credential":"…","ttl":1200},
+//                                            "relay_left":9,"relay_per_day":10}   (or "turn":null)
 //                                         → {"type":"relay","addrs":["198.51.100.5:61000"]}
 //                                           (its relayed address; or {"type":"no_relay"})
 //   Viewer                                ← {"type":"relay","addrs":[…]}  or  {"type":"no_relay"}
 // "turn" is a short-lived login for our relay (Cloudflare TURN), only if the sharing computer has
 // no relay of its own ("own_relay"), the relay is configured, and that computer hasn't used up its
-// logins for the day (see Budget). The relay is only ever the fallback, after a direct connection
-// fails.
+// logins for the day (see Budget). "relay_left" (after this one) and "relay_per_day" come whenever
+// our relay was asked, so the app can say how many are left, or that today's are used up. The
+// relay is only ever the fallback, after a direct connection fails.
 // A code works once. Unknown or used codes get HTTP 404 before the upgrade; too many attempts
 // from one address get 429. Clients keep the socket alive with WebSocket pings, which the
 // runtime answers without waking the Durable Object (so a waiting host costs nothing).
@@ -188,8 +190,8 @@ export class CodeRoom extends DurableObject<Env> {
     // The identity code isn't secret (apps show it), so it's counted together with the address:
     // nobody elsewhere can spend another computer's logins.
     const who = host?.device ? `device:${host.device}@${host.ip}` : `ip:${host?.ip}`;
-    const turn = host && !host.ownRelay ? await relayLogin(this.env, who) : null;
-    hostWs.send(JSON.stringify({ type: "need_relay", turn }));
+    const grant: RelayGrant = host && !host.ownRelay ? await relayLogin(this.env, who) : { turn: null };
+    hostWs.send(JSON.stringify({ type: "need_relay", ...grant }));
   }
 
   private async fromHostAfterMatch(message: string | ArrayBuffer): Promise<void> {
@@ -239,17 +241,17 @@ export class Budget extends DurableObject<Env> {
     });
   }
 
-  /** Counts one login for `who` today (UTC); false once it has had `perDay`. (The column is
-   * still called `ip`: it holds `device:…` or `ip:…`.) */
-  take(who: string, perDay: number): boolean {
+  /** Counts one login for `who` today (UTC) and returns how many it has left after it; null once
+   * it has had `perDay`. (The column is still called `ip`: it holds `device:…` or `ip:…`.) */
+  take(who: string, perDay: number): number | null {
     const day = new Date().toISOString().slice(0, 10);
     this.ctx.storage.sql.exec("DELETE FROM logins WHERE day <> ?", day);
     const used = this.ctx.storage.sql
       .exec<{ n: number }>("SELECT COUNT(*) AS n FROM logins WHERE day = ? AND ip = ?", day, who)
       .one().n;
-    if (used >= perDay) return false;
+    if (used >= perDay) return null;
     this.ctx.storage.sql.exec("INSERT INTO logins (day, ip) VALUES (?, ?)", day, who);
-    return true;
+    return perDay - used - 1;
   }
 }
 
@@ -260,22 +262,33 @@ export interface TurnLogin {
   ttl: number;
 }
 
+/** What the sharing computer gets when its viewer needs the relay. */
+export interface RelayGrant {
+  turn: TurnLogin | null;
+  /** Logins this computer has left today, after this one (0 when they're used up), and how many
+   * a day. Absent when our relay is off. */
+  relay_left?: number;
+  relay_per_day?: number;
+}
+
 function numberVar(value: string | undefined, fallback: number): number {
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
-/** A login for our relay, or null: relay not configured (no TURN key), or `who` (a device or an
- * address) has used up today's logins. */
+/** A login for our relay, with what's left of today's, or no login: relay not configured (no TURN
+ * key), or `who` (a device or an address) has used up today's logins. */
 /** Set with `wrangler secret put` (so not in wrangler.jsonc's types). Both unset: our relay is off. */
 type Secrets = { TURN_KEY_ID?: string; TURN_KEY_API_TOKEN?: string };
 
-export async function relayLogin(env: Env, who: string, fetcher: typeof fetch = fetch): Promise<TurnLogin | null> {
+export async function relayLogin(env: Env, who: string, fetcher: typeof fetch = fetch): Promise<RelayGrant> {
   const { TURN_KEY_ID, TURN_KEY_API_TOKEN } = env as Env & Secrets;
-  if (!TURN_KEY_ID || !TURN_KEY_API_TOKEN) return null;
   const ttl = numberVar(env.RELAY_TTL_SECONDS, 86400);
+  if (!TURN_KEY_ID || !TURN_KEY_API_TOKEN || ttl === 0) return { turn: null };
   const perDevice = numberVar(env.RELAY_PER_DEVICE_PER_DAY, 10);
-  if (ttl === 0 || !(await env.BUDGET.getByName("global").take(who, perDevice))) return null;
+  const left = await env.BUDGET.getByName("global").take(who, perDevice);
+  if (left === null) return { turn: null, relay_left: 0, relay_per_day: perDevice };
+  const counts = { relay_left: left, relay_per_day: perDevice };
   const response = await fetcher(
     `https://rtc.live.cloudflare.com/v1/turn/keys/${TURN_KEY_ID}/credentials/generate-ice-servers`,
     {
@@ -284,13 +297,14 @@ export async function relayLogin(env: Env, who: string, fetcher: typeof fetch = 
       body: JSON.stringify({ ttl }),
     },
   );
-  if (!response.ok) return null;
+  if (!response.ok) return { turn: null, ...counts };
   const body = (await response.json()) as { iceServers?: { urls: string[]; username?: string; credential?: string }[] };
   const turn = body.iceServers?.find((s) => s.username && s.credential);
-  if (!turn?.username || !turn.credential) return null;
+  if (!turn?.username || !turn.credential) return { turn: null, ...counts };
   // UDP only: that's what the core's relay client speaks.
   const urls = turn.urls.filter((u) => u.startsWith("turn:") && u.includes("transport=udp"));
-  return urls.length ? { urls, username: turn.username, credential: turn.credential, ttl } : null;
+  const login = urls.length ? { urls, username: turn.username, credential: turn.credential, ttl } : null;
+  return { turn: login, ...counts };
 }
 
 /** Sliding-window counters for one client address. */

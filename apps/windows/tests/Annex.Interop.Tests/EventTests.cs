@@ -66,6 +66,10 @@ public class EventTests
         Assert.Equal(new CoreEvent.InternetCode("K7P-4QX", 600), CoreEvent.Parse("""{"type":"internet_code","code":"K7P-4QX","expires_in":600}"""));
         Assert.Equal(new CoreEvent.InternetJoined("Office Mac"), CoreEvent.Parse("""{"type":"internet_joined","peer_name":"Office Mac"}"""));
         Assert.Equal(new CoreEvent.InternetRelay(true, true), CoreEvent.Parse("""{"type":"internet_relay","relayed":true,"limited":true}"""));
+        Assert.Equal(new CoreEvent.InternetRelay(true, true, 9, 10),
+            CoreEvent.Parse("""{"type":"internet_relay","relayed":true,"limited":true,"relay_left":9,"relay_per_day":10}"""));
+        Assert.Equal(new CoreEvent.InternetRelay(false, false, 0, 10),
+            CoreEvent.Parse("""{"type":"internet_relay","relayed":false,"limited":false,"relay_left":0,"relay_per_day":10}"""));
         Assert.Equal(new CoreEvent.InternetCodeEnded("expired"), CoreEvent.Parse("""{"type":"internet_code_ended","reason":"expired"}"""));
         var s = Assert.IsType<CoreEvent.SessionStarted>(CoreEvent.Parse(
             """{"type":"session_started","session_id":0,"mode":"mirror","peer_name":"Mac","fingerprint":"ab","stream":{"codec":"h264","width":1,"height":1,"fps":60},"transport":"quic","link":"relayed"}"""));
