@@ -1,5 +1,15 @@
 [
   {
+    "version": "0.3.7-pre.4",
+    "items": [
+      {
+        "kind": "fixed",
+        "title": "The picture no longer freezes while the pointer moves",
+        "detail": "When a moment of a session was lost on the way, the picture could stay stuck for up to 30 seconds while the pointer kept moving. The viewer now asks again until the picture is back, usually within a second."
+      }
+    ]
+  },
+  {
     "version": "0.3.7-pre.3",
     "items": [
       {
