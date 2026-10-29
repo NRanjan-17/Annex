@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.3.7-pre.3",
+    "items": [
+      {
+        "kind": "improved",
+        "title": "More direct connections with a code",
+        "detail": "While a code waits, Annex keeps the way in open, so a code typed minutes later can still connect directly instead of through the relay."
+      },
+      {
+        "kind": "improved",
+        "title": "Relay sessions left today",
+        "detail": "The sharing page shows how many of today's 10 relay sessions are left, and says when they're used up. Your own relay and server have no limit."
+      }
+    ]
+  },
+  {
     "version": "0.3.7-pre.2",
     "items": [
       {
