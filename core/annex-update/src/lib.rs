@@ -129,7 +129,9 @@ pub fn find(releases_json: &str, version: &str, asset_suffix: &str) -> Result<Op
     let releases: Vec<Release> =
         serde_json::from_str(releases_json).map_err(|e| UpdateError::BadReleases(e.to_string()))?;
     let v = version.trim_start_matches('v');
-    let Some(r) = releases.iter().find(|r| !r.draft && r.tag_name.trim_start_matches('v') == v) else { return Ok(None) };
+    let Some(r) = releases.iter().find(|r| !r.draft && r.tag_name.trim_start_matches('v') == v) else {
+        return Ok(None);
+    };
     let names = [format!("Annex-{v}{asset_suffix}"), format!("Annex-Setup-{v}{asset_suffix}")];
     let (Some(asset), Some(sums), Some(sig)) = (
         r.assets.iter().find(|a| names.contains(&a.name)),
@@ -302,7 +304,8 @@ mod tests {
 
     #[test]
     fn find_returns_exactly_that_signed_version() {
-        let json = list(&[release("v0.4.1", false, true), release("v0.4.0", false, true), release("v0.3.9", false, false)]);
+        let json =
+            list(&[release("v0.4.1", false, true), release("v0.4.0", false, true), release("v0.3.9", false, false)]);
         let u = find(&json, "0.4.0", "-macos-universal.dmg").unwrap().unwrap();
         assert_eq!((u.version.as_str(), u.asset_name.as_str()), ("0.4.0", "Annex-0.4.0-macos-universal.dmg"));
         assert!(find(&json, "0.3.9", "-macos-universal.dmg").unwrap().is_none(), "unsigned");
