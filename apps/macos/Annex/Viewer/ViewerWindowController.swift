@@ -180,6 +180,13 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         videoView.reverseScroll = on
     }
 
+    /// ⌘ works like Ctrl on the host (Windows and Linux; see PCShortcuts).
+    func setCommandAsControl(_ on: Bool) {
+        guard on != (videoView.pcShortcuts != nil) else { return }
+        videoView.releaseHeldInput()
+        videoView.pcShortcuts = on ? PCShortcuts() : nil
+    }
+
     /// The host allowed (or revoked) control by this Mac's mouse and keyboard.
     func setControlling(_ on: Bool, hostName: String) {
         Annex.log(.info, "[input] \(on ? "controlling" : "view only:") \(hostName)")
@@ -257,7 +264,7 @@ final class ViewerWindowController: NSWindowController, NSWindowDelegate {
         queue.async { [self] in
             if !loggedFirstFrame { Annex.log(.warn, "[viewer] closed without a picture; \(framesReceived) frames received") }
         }
-        Annex.log(.info, "[viewer] window closed")
+        Annex.log(.info, "[viewer] window closed; \(videoView.keyPresses) key press(es) sent to the host")
         videoView.releaseHeldInput()
         videoView.relative = false  // frees this Mac's pointer
         covering = false
@@ -307,6 +314,8 @@ final class VideoView: NSView {
     }
     /// Flip scroll direction (see ViewerWindowController.setReverseScroll).
     var reverseScroll = false
+    /// Mac shortcuts as the host's own (see ViewerWindowController.setCommandAsControl).
+    var pcShortcuts: PCShortcuts?
     /// Send mouse movement instead of positions (see ViewerWindowController.setRelativePointer).
     var relative = false {
         didSet { updatePointerLock() }
@@ -341,7 +350,12 @@ final class VideoView: NSView {
     }
     var onLeave: (() -> Void)?
 
+    /// Keys held on this Mac, and the keys held down on the host (they differ with pcShortcuts).
     private var heldKeys: Set<UInt16> = []
+    private var sentKeys: Set<UInt16> = []
+    /// Keys pressed while controlling, for the log when the window closes ("shortcuts did nothing"
+    /// then tells apart keys that never reached Annex from keys the host ignored).
+    private(set) var keyPresses = 0
     private var heldButtons: Set<UInt32> = []
     private let hud = HUDView()
     private var hudTimer: Timer?
@@ -467,10 +481,14 @@ final class VideoView: NSView {
     }
 
     private func key(_ code: UInt16, down: Bool) {
-        if down { heldKeys.insert(code) } else { heldKeys.remove(code) }
+        if down { heldKeys.insert(code); keyPresses += 1 } else { heldKeys.remove(code) }
         // Never which key.
         Annex.log(.trace, "[input] key event")
-        viewer?.sendKey(macKeyCode: code, down: down)
+        let keys = pcShortcuts != nil ? pcShortcuts!.translate(code, down: down) : [(code, down)]
+        for (k, d) in keys {
+            if d { sentKeys.insert(k) } else { sentKeys.remove(k) }
+            viewer?.sendKey(macKeyCode: k, down: d)
+        }
     }
 
     override func keyDown(with event: NSEvent) {
@@ -532,12 +550,14 @@ final class VideoView: NSView {
     }
 
     func releaseHeldInput() {
-        if !heldKeys.isEmpty || !heldButtons.isEmpty {
-            Annex.log(.debug, "[input] releasing \(heldKeys.count) held key(s) and \(heldButtons.count) button(s) on the host")
+        if !sentKeys.isEmpty || !heldButtons.isEmpty {
+            Annex.log(.debug, "[input] releasing \(sentKeys.count) held key(s) and \(heldButtons.count) button(s) on the host")
         }
-        for k in heldKeys { viewer?.sendKey(macKeyCode: k, down: false) }
+        for k in sentKeys { viewer?.sendKey(macKeyCode: k, down: false) }
         for b in heldButtons { viewer?.sendMouseButton(b, down: false) }
+        if pcShortcuts != nil { pcShortcuts = PCShortcuts() }
         heldKeys.removeAll()
+        sentKeys.removeAll()
         heldButtons.removeAll()
     }
 }
