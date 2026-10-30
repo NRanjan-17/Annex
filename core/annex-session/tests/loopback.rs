@@ -388,7 +388,8 @@ fn frame_counter() -> (FrameSink, Arc<Mutex<Vec<Vec<u8>>>>) {
 }
 
 async fn eventually(mut check: impl FnMut() -> bool) {
-    for _ in 0..200 {
+    // As generous as `wait_for`: two seconds wasn't always enough on a busy Windows runner.
+    for _ in 0..3000 {
         if check() {
             return;
         }
