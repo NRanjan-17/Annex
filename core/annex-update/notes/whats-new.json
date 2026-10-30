@@ -1,5 +1,25 @@
 [
   {
+    "version": "0.4.1",
+    "items": [
+      {
+        "kind": "fixed",
+        "title": "No more black screen from a Windows PC",
+        "detail": "Some PCs, often laptops with two graphics chips, sent no picture at all: only the pointer moved. Annex now checks that the PC's video encoder really produces frames and switches to another one if it doesn't."
+      },
+      {
+        "kind": "improved",
+        "title": "The log says why a picture doesn't arrive",
+        "detail": "If no video goes out in the first seconds, annex.log names the likely cause, and the PC's log names the video encoder it chose."
+      },
+      {
+        "kind": "improved",
+        "title": "Saidev Dhal is credited on Windows too",
+        "detail": "The installer and Apps & features name both makers, Nalinish Ranjan and Saidev Dhal."
+      }
+    ]
+  },
+  {
     "version": "0.4.0",
     "items": [
       {
