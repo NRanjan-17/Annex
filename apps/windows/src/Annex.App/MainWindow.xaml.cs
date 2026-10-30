@@ -1120,19 +1120,54 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>Nothing found yet: what to do on the other computer, and what usually hides it.</summary>
-    private StackPanel Waiting()
+    /// <summary>Soft rings widening out from the icon while Annex looks, as on the Mac: three, a third
+    /// of the way apart, each fading as it grows. Width and height grow (not a scale), so the line
+    /// stays one pixel; each ring runs only while it's on screen.</summary>
+    private static Grid PulseRings(double start = 72, double grow = 90, double seconds = 2.4)
     {
-        var art = new Grid { Width = 168, Height = 168, HorizontalAlignment = HorizontalAlignment.Center };
-        foreach (var (size, alpha) in new[] { (168.0, 0.06), (128.0, 0.1), (92.0, 0.16) })
-            art.Children.Add(new Microsoft.UI.Xaml.Shapes.Ellipse
+        var art = new Grid { Width = start + grow, Height = start + grow, HorizontalAlignment = HorizontalAlignment.Center };
+        for (var i = 0; i < 3; i++)
+        {
+            var ring = new Microsoft.UI.Xaml.Shapes.Ellipse
             {
-                Width = size,
-                Height = size,
-                Stroke = Ui.White(alpha),
+                Width = start,
+                Height = start,
+                Stroke = Ui.White(1),
                 StrokeThickness = 1,
+                Opacity = 0,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
-            });
+            };
+            var story = new Microsoft.UI.Xaml.Media.Animation.Storyboard
+            {
+                RepeatBehavior = Microsoft.UI.Xaml.Media.Animation.RepeatBehavior.Forever,
+            };
+            var span = new Duration(TimeSpan.FromSeconds(seconds));
+            foreach (var (property, from, to) in new[] { ("Width", start, start + grow), ("Height", start, start + grow), ("Opacity", 0.28, 0.0) })
+            {
+                var a = new Microsoft.UI.Xaml.Media.Animation.DoubleAnimation
+                {
+                    From = from, To = to, Duration = span, EnableDependentAnimation = property != "Opacity",
+                };
+                Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTarget(a, ring);
+                Microsoft.UI.Xaml.Media.Animation.Storyboard.SetTargetProperty(a, property);
+                story.Children.Add(a);
+            }
+            var offset = TimeSpan.FromSeconds(seconds * i / 3);
+            ring.Loaded += (_, _) =>
+            {
+                story.Begin();
+                story.Seek(offset);
+            };
+            ring.Unloaded += (_, _) => story.Stop();
+            art.Children.Add(ring);
+        }
+        return art;
+    }
+
+    private StackPanel Waiting()
+    {
+        var art = PulseRings();
         var icon = Ui.AppIcon(60);
         icon.HorizontalAlignment = HorizontalAlignment.Center;
         icon.VerticalAlignment = VerticalAlignment.Center;
