@@ -91,7 +91,8 @@ pub async fn start(token: Option<String>, virtual_display: bool) -> Result<Start
                                 PortalInput::Delta { dx, dy } => rd.notify_pointer_motion(&session, dx, dy).await,
                                 PortalInput::Button { code, down } => rd.notify_pointer_button(&session, code, state(down)).await,
                                 PortalInput::Scroll { dx, dy } => {
-                                    let r = rd.notify_pointer_axis(&session, dx, dy, true).await;
+                                    // Not finished: GNOME drops the distance of a finished scroll.
+                                    let r = rd.notify_pointer_axis(&session, dx, dy, false).await;
                                     if r.is_err() && dy != 0.0 {
                                         rd.notify_pointer_axis_discrete(&session, Axis::Vertical, if dy > 0.0 { 1 } else { -1 }).await
                                     } else {

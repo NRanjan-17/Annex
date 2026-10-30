@@ -14,6 +14,8 @@ use crate::portal::PortalInput;
 
 const RD: &str = "org.gnome.Mutter.RemoteDesktop";
 const SC: &str = "org.gnome.Mutter.ScreenCast";
+/// NotifyPointerAxis flag: the scroll comes from a continuous source.
+const AXIS_CONTINUOUS: u32 = 8;
 
 pub struct Started {
     pub node: u32,
@@ -112,9 +114,11 @@ pub async fn start(virtual_display: bool) -> Result<Started, String> {
                         PortalInput::Button { code, down } => {
                             rd_session.call::<_, _, ()>("NotifyPointerButton", &(code, down)).await
                         }
-                        // Flag 1: finish (a whole scroll, not a touchpad gesture in progress).
+                        // Flag 8: a continuous source, which scrolls by the distance and never waits
+                        // for a stop. Not flag 1 (finish): Mutter then sends only the stop and
+                        // drops the distance, so nothing scrolled.
                         PortalInput::Scroll { dx, dy } => {
-                            rd_session.call::<_, _, ()>("NotifyPointerAxis", &(dx, dy, 1u32)).await
+                            rd_session.call::<_, _, ()>("NotifyPointerAxis", &(dx, dy, AXIS_CONTINUOUS)).await
                         }
                         PortalInput::Key { code, down } => {
                             rd_session.call::<_, _, ()>("NotifyKeyboardKeycode", &(code as u32, down)).await
