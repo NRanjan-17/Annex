@@ -472,6 +472,9 @@ final class AppModel: ObservableObject {
         isHosting = false
         hostStatus = HostController.Status()
         hostDirectWiFi = nil
+        // The sessions' end events no longer reach this Mac once the host is gone: nobody to
+        // drop files to now.
+        updateNotch()
     }
 
     // MARK: Internet
