@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Lets Annex install its own updates with no one at the screen to type a password.
+     The helper installs only Annex packages whose Ed25519-signed checksum verifies and whose
+     version is newer (or puts back the verified previous one); see apps/linux/src/update_helper.rs. -->
+<policyconfig>
+  <vendor>Annex</vendor>
+  <vendor_url>https://github.com/NRanjan-17/Annex</vendor_url>
+  <action id="dev.getannex.annex.update">
+    <description>Install a signed Annex update</description>
+    <message>Annex wants to install its update</message>
+    <defaults>
+      <allow_any>yes</allow_any>
+      <allow_inactive>yes</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/annex/annex-update-helper</annotate>
+  </action>
+</policyconfig>

@@ -841,6 +841,10 @@ fn status(m: &Model, json: bool) -> String {
             UpdateState::Available(u) => json!({ "state": "available", "version": u.version, "url": u.page_url }),
             UpdateState::Failed(e) => json!({ "state": "failed", "error": e }),
         };
+        let mut update = update;
+        if let Some(s) = &m.update_staged {
+            update["downloaded"] = json!(s.version);
+        }
         let v = json!({
             "running": true,
             "version": version(),
@@ -922,6 +926,9 @@ fn status(m: &Model, json: bool) -> String {
         UpdateState::Available(u) => format!("Update: {} ({})\n", UpdateState::headline(u), u.page_url),
         UpdateState::Failed(e) => format!("Updates: couldn't check ({e})\n"),
     };
+    if let Some(s) = &m.update_staged {
+        o += &format!("Update: Annex {} is downloaded; it installs once no one is connected\n", s.version);
+    }
     o += &format!("Nearby: {} computers, {sharing_peers} sharing\n", m.peers().len());
     o += &format!("Paired devices: {}\n", m.trusted.len());
     o

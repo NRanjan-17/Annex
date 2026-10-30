@@ -53,6 +53,8 @@ pub enum Msg {
     HostFailed(String),
     /// GitHub's releases list (its JSON), or why it couldn't be fetched.
     UpdateChecked(Result<String, String>),
+    /// No one at this screen: an update downloaded and verified, or why it couldn't be.
+    UpdatePrepared(Result<crate::autoupdate::Staged, String>),
 }
 
 /// What the UI should do, besides redrawing.
@@ -257,6 +259,12 @@ pub struct Model {
     pub update_dismissed: Option<String>,
     /// When the last check finished (Unix seconds).
     pub update_checked_at: Option<i64>,
+    /// No one at this screen: an update ready to install once no one is connected.
+    pub update_staged: Option<crate::autoupdate::Staged>,
+    /// Downloading one for that (this version).
+    update_preparing: Option<String>,
+    /// Since when no one has been connected, while an update waits.
+    idle_since: Option<std::time::Instant>,
 
     // Pairing and files, for the command line.
     pub pin_shown: Option<PinShown>,
@@ -337,6 +345,9 @@ impl Model {
             update: UpdateState::Idle,
             update_dismissed: None,
             update_checked_at: None,
+            update_staged: None,
+            update_preparing: None,
+            idle_since: None,
             pin_shown: None,
             pin_asked: None,
             cli_viewer: false,
@@ -1119,6 +1130,7 @@ impl Model {
                 self.render();
             }
             Msg::UpdateChecked(result) => self.update_checked(result),
+            Msg::UpdatePrepared(result) => self.update_prepared(result),
         }
     }
 
@@ -1152,7 +1164,9 @@ impl Model {
         const T: &str = "annex::update";
         self.update_checked_at =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64);
-        self.update = match result.and_then(|json| pick_update(&json, self.settings.beta_updates)) {
+        let picked =
+            result.as_ref().map_err(Clone::clone).and_then(|json| pick_update(json, self.settings.beta_updates));
+        self.update = match picked {
             Ok(Some(u)) => {
                 tracing::info!(target: T, version = u.version, asset = u.asset_name, "update: available");
                 UpdateState::Available(u)
@@ -1166,7 +1180,92 @@ impl Model {
                 UpdateState::Failed(e)
             }
         };
+        let offer = match (&self.update, &result) {
+            (UpdateState::Available(u), Ok(json)) => Some((u.clone(), json.clone())),
+            _ => None,
+        };
+        if let Some((u, json)) = offer {
+            self.prepare_unattended(u, json);
+        }
         self.render();
+    }
+
+    /// No one at this screen: downloads and verifies `u` now, in the background, to install once
+    /// no one is connected ([`Self::install_update_if_idle`]).
+    fn prepare_unattended(&mut self, u: annex_update::Update, releases: String) {
+        const T: &str = "annex::update";
+        if !self.settings.headless || !self.settings.check_for_updates || u.downgrade {
+            return;
+        }
+        if self.update_staged.as_ref().is_some_and(|s| s.version == u.version)
+            || self.update_preparing.as_deref() == Some(u.version.as_str())
+        {
+            return;
+        }
+        if crate::autoupdate::failed_version().as_deref() == Some(u.version.as_str()) {
+            tracing::warn!(target: T, version = u.version, "update: it didn't start here before, not installing it unattended");
+            return;
+        }
+        let Some(install) = crate::autoupdate::install() else {
+            tracing::info!(target: T, "update: not installed from a package or the .tar.gz, so it can't update itself");
+            return;
+        };
+        if let Some(old) = self.update_staged.take() {
+            crate::autoupdate::discard(&old);
+        }
+        tracing::info!(target: T, version = u.version, ?install, "update: No one at this screen, downloading it to install once no one is connected");
+        self.update_preparing = Some(u.version.clone());
+        let tx = self.tx.clone();
+        let spawned = std::thread::Builder::new().name("annex-update".into()).spawn(move || {
+            let _ = tx.send_blocking(Msg::UpdatePrepared(crate::autoupdate::prepare(&u, &install, &releases)));
+        });
+        if let Err(e) = spawned {
+            tracing::warn!(target: T, "update: couldn't start the download: {e}");
+            self.update_preparing = None;
+        }
+    }
+
+    fn update_prepared(&mut self, result: Result<crate::autoupdate::Staged, String>) {
+        const T: &str = "annex::update";
+        self.update_preparing = None;
+        match result {
+            Ok(s) => {
+                tracing::info!(target: T, version = s.version, "update: downloaded and verified, installs once no one is connected");
+                self.update_staged = Some(s);
+                self.idle_since = None;
+            }
+            Err(e) => tracing::warn!(target: T, "update: couldn't get it ready: {e}"),
+        }
+        self.render();
+    }
+
+    /// Every few seconds: installs a waiting update once no one has been connected for a minute.
+    /// True when Annex must quit now (the watchdog starts the new version).
+    pub fn install_update_if_idle(&mut self) -> bool {
+        const T: &str = "annex::update";
+        if self.update_staged.is_none() || !self.settings.headless {
+            return false;
+        }
+        if self.viewer.is_some() || !self.host_sessions.is_empty() {
+            self.idle_since = None;
+            return false;
+        }
+        let since = *self.idle_since.get_or_insert_with(std::time::Instant::now);
+        if since.elapsed() < crate::autoupdate::IDLE_BEFORE_INSTALL {
+            return false;
+        }
+        let Some(staged) = &self.update_staged else { return false };
+        tracing::info!(target: T, version = staged.version, "update: no one connected for a minute, installing it unattended");
+        match crate::autoupdate::switch(staged, self.host.is_some()) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(target: T, "update: couldn't install it: {e}");
+                if let Some(s) = self.update_staged.take() {
+                    crate::autoupdate::discard(&s);
+                }
+                false
+            }
+        }
     }
 
     /// The banner on Nearby and Share: an update, unless its banner was closed.
@@ -1613,7 +1712,13 @@ fn pick_update(json: &str, beta: bool) -> Result<Option<annex_update::Update>, S
         "aarch64" => "arm64",
         a => a,
     };
-    let rpm = !std::path::Path::new("/usr/bin/dpkg").exists() && std::path::Path::new("/usr/bin/rpm").exists();
+    // Unpacked from the .tar.gz: that's what updates it.
+    let install = crate::autoupdate::install();
+    if let Some(crate::autoupdate::Install::Folder(_)) = install {
+        let suffix = crate::autoupdate::asset_suffix(install.as_ref());
+        return annex_update::pick(json, annex_update::whats_new::CURRENT, beta, &suffix).map_err(|e| e.to_string());
+    }
+    let rpm = crate::autoupdate::package_kind() == "rpm";
     let kinds = if rpm { ["rpm", "deb"] } else { ["deb", "rpm"] };
     for kind in kinds {
         let suffix = format!("-linux-{arch}.{kind}");
