@@ -198,11 +198,19 @@ public sealed partial class MainWindow : Window
         _nameBox.PlaceholderText = Environment.MachineName;
         BuildShell();
         ScheduleWhatsNew();
-        if (_settings.StartSharingAtLaunch)
+        // Sharing when an unattended update closed Annex: share again.
+        var resume = File.Exists(Updater.ShareAfterUpdateFile);
+        if (resume)
         {
-            AnnexLog.Info("[host] sharing at launch (setting)");
+            try { File.Delete(Updater.ShareAfterUpdateFile); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { AnnexLog.Warn($"[update] {e.Message}"); }
+        }
+        if (_settings.StartSharingAtLaunch || resume)
+        {
+            AnnexLog.Info(resume ? "[host] sharing again after the update" : "[host] sharing at launch (setting)");
             SetHosting(true);
         }
+        if (!resume || _host is not null) Updater.ConfirmUpdate();
         if (Environment.GetEnvironmentVariable("ANNEX_SELFTEST") == "1") _ui.TryEnqueue(SelfTest);
     }
 
@@ -2313,6 +2321,8 @@ public sealed partial class MainWindow : Window
             Updater.Stage.Checking => Ui.GroupRow("Checking for updates…", leading: Spin()),
             Updater.Stage.Downloading => Ui.GroupRow("Downloading the update…", leading: Spin()),
             Updater.Stage.Installing => Ui.GroupRow("Installing… Annex opens again in a moment.", leading: Spin()),
+            Updater.Stage.Ready => Ui.GroupRow($"Annex {_updater.Available?.Version} is downloaded.", "It installs once no one is connected.",
+                UpdateButtons(), Mark("\uE896", "AccentFillColorDefaultBrush")),
             Updater.Stage.Available => Ui.GroupRow(UpdateText(), "Annex closes and opens again when it's done.", UpdateButtons(),
                 Mark("\uE896", "AccentFillColorDefaultBrush")),
             Updater.Stage.Failed => Ui.GroupRow(_updater.Error ?? "Couldn't check for updates.", leading: Mark("\uE7BA", "SystemFillColorCautionBrush")),
@@ -2367,15 +2377,30 @@ public sealed partial class MainWindow : Window
             }
             RenderIf("about", "share", "connect");
         });
+        _updater.Unattended = () => _settings.Headless && _settings.CheckForUpdates;
+        _updater.InSession = () => _viewer is not null || _sessions.Count > 0;
+        _updater.WillQuitToUpdate = () =>
+        {
+            if (_host is null) return;
+            try { File.WriteAllText(Updater.ShareAfterUpdateFile, "1"); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { AnnexLog.Warn($"[update] {e.Message}"); }
+        };
         // Shortly after launch, then once a day while Annex runs.
         var timer = _ui.CreateTimer();
         timer.Interval = TimeSpan.FromSeconds(10);
-        timer.Tick += (_, _) =>
+        timer.Tick += async (_, _) =>
         {
             timer.Interval = TimeSpan.FromHours(24);
-            if (_settings.CheckForUpdates) _ = _updater.CheckAsync(_settings.BetaUpdates, automatic: true);
+            if (!_settings.CheckForUpdates) return;
+            await _updater.CheckAsync(_settings.BetaUpdates, automatic: true);
+            await _updater.PrepareUnattendedAsync();
         };
         timer.Start();
+        // No one at this screen: a downloaded update installs once no one is connected.
+        var install = _ui.CreateTimer();
+        install.Interval = TimeSpan.FromSeconds(15);
+        install.Tick += (_, _) => _updater.InstallIfIdle();
+        install.Start();
     }
 
     private string UpdateText() => _updater.Available is { } u
