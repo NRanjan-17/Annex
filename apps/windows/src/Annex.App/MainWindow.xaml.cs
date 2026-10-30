@@ -1691,13 +1691,17 @@ public sealed partial class MainWindow : Window
     private async Task<bool> ShowWhatsNewAsync(IReadOnlyList<WhatsNewRelease> releases)
     {
         if (releases.Count == 0) return false;
+        // As on the Mac: a line under the title, a heading per version, then each kind's items as
+        // rows of one rounded group.
         var panel = new StackPanel { Spacing = 4, MinWidth = 420, MaxWidth = 520 };
+        panel.Children.Add(Ui.Text(releases.Count > 1 ? "Every version, newest first." : "What this update adds and fixes, in short.",
+            "BodyTextBlockStyle", Ui.Secondary));
         foreach (var release in releases)
         {
             if (releases.Count > 1)
             {
                 var heading = Ui.Text($"Annex {release.Version}", "SubtitleTextBlockStyle", wrap: false);
-                heading.Margin = new Thickness(0, panel.Children.Count == 0 ? 0 : 18, 0, 0);
+                heading.Margin = new Thickness(0, 18, 0, 0);
                 panel.Children.Add(heading);
             }
             foreach (var (kind, label) in new[] { ("new", "New"), ("improved", "Improved"), ("fixed", "Fixed") })
@@ -1705,15 +1709,15 @@ public sealed partial class MainWindow : Window
                 var items = release.Items.Where(i => i.Kind == kind).ToList();
                 if (items.Count == 0) continue;
                 var eyebrow = Ui.Eyebrow(label);
-                eyebrow.Margin = new Thickness(0, 14, 0, 4);
+                eyebrow.Margin = new Thickness(4, 14, 0, 4);
                 panel.Children.Add(eyebrow);
-                foreach (var item in items)
+                panel.Children.Add(Ui.Group(items.Select(item =>
                 {
-                    var entry = new StackPanel { Spacing = 2, Margin = new Thickness(0, 0, 0, 10) };
+                    var entry = new StackPanel { Spacing = 2 };
                     entry.Children.Add(Ui.Bold(item.Title));
-                    entry.Children.Add(Ui.Text(item.Detail, "BodyTextBlockStyle", Ui.Secondary));
-                    panel.Children.Add(entry);
-                }
+                    entry.Children.Add(Ui.Text(item.Detail, "CaptionTextBlockStyle", Ui.Secondary));
+                    return (UIElement?)entry;
+                }).ToArray()));
             }
         }
         var dialog = new ContentDialog
