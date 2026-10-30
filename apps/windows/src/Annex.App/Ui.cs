@@ -390,17 +390,25 @@ internal static class Ui
     /// direction reads right even when both computers have the same name.</summary>
     public static StackPanel Flow(string from, string to, bool thisIsFrom, double size = 13)
     {
-        Border Chip(string text, bool mine) => new()
+        Border Chip(string text, bool mine)
         {
-            CornerRadius = new CornerRadius(999),
-            Padding = new Thickness(10, 4, 10, 4),
-            Background = mine ? White(0.92) : White(0.08),
-            Child = new TextBlock
+            var chip = new Border
             {
-                Text = text, FontSize = size, FontWeight = FontWeights.SemiBold,
-                Foreground = mine ? Black(1) : White(0.95), TextTrimming = TextTrimming.CharacterEllipsis,
-            },
-        };
+                Padding = new Thickness(10, 4, 10, 4),
+                Background = mine ? White(0.92) : White(0.1),
+                BorderBrush = mine ? White(0.92) : White(0.14),
+                BorderThickness = new Thickness(1),
+                Child = new TextBlock
+                {
+                    Text = text, FontSize = size, FontWeight = FontWeights.SemiBold,
+                    Foreground = mine ? Black(1) : White(0.95), TextTrimming = TextTrimming.CharacterEllipsis,
+                },
+            };
+            // A capsule: WinUI draws a corner radius bigger than half the height as an oval, not a
+            // pill, so the radius follows the chip's real height.
+            chip.SizeChanged += (_, e) => chip.CornerRadius = new CornerRadius(e.NewSize.Height / 2);
+            return chip;
+        }
         var arrow = Glyph("\uE72A", size);
         arrow.Foreground = Live;
         arrow.VerticalAlignment = VerticalAlignment.Center;
