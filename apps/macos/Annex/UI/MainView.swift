@@ -1105,6 +1105,9 @@ private struct SettingsPage: View {
             ToggleRow(title: "Reverse Mouse Wheel on Windows and Linux",
                       subtitle: "With natural scrolling on, a mouse wheel turns the way it does on a PC. The trackpad stays natural.",
                       isOn: $settings.reverseScrollOnOthers)
+            ToggleRow(title: "⌘ works like Ctrl on Windows and Linux",
+                      subtitle: "⌘C, ⌘V and the rest do what Ctrl does there; ⌘Tab switches windows, ⌘Space opens Start, ⌘Q closes the window. Ctrl acts as the Windows key.",
+                      isOn: $settings.commandAsControl)
         }
     }
 

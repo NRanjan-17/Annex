@@ -314,6 +314,12 @@ final class AppModel: ObservableObject {
                 Annex.log(.info, "[scroll] reverse scrolling \(reverse ? "on" : "off") (setting \(on), host \(viewerPeerOS ?? "unknown"))")
                 viewerWindow.setReverseScroll(reverse)
             }.store(in: &cancellables)
+            settings.$commandAsControl.sink { [weak self] on in
+                guard let self, let viewerWindow else { return }
+                let pc = on && viewerPeerOS.map { $0 != "macos" } == true
+                Annex.log(.info, "[input] ⌘ as Ctrl \(pc ? "on" : "off") (setting \(on), host \(viewerPeerOS ?? "unknown"))")
+                viewerWindow.setCommandAsControl(pc)
+            }.store(in: &cancellables)
             deviceName = core.deviceName
             // Show up under Nearby on other computers as soon as Annex is open.
             core.setPresence(true)
@@ -857,6 +863,9 @@ final class AppModel: ObservableObject {
                       + "pointer \(relative ? "movement" : "positions")")
             Annex.log(.info, "[scroll] reverse scrolling \(reverse ? "on" : "off") (setting \(settings.reverseScrollOnOthers), host \(s.peerOs ?? "unknown"))")
             viewerWindow?.setReverseScroll(reverse)
+            let pc = settings.commandAsControl && s.peerOs.map { $0 != "macos" } == true
+            Annex.log(.info, "[input] ⌘ as Ctrl \(pc ? "on" : "off") (setting \(settings.commandAsControl), host \(s.peerOs ?? "unknown"))")
+            viewerWindow?.setCommandAsControl(pc)
             viewerWindow?.setRelativePointer(relative)
             if settings.controlWhenViewing {
                 viewerWindow?.setControlling(controllingHost, hostName: label(s.peerName))
