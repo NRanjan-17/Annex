@@ -9,6 +9,11 @@
       },
       {
         "kind": "improved",
+        "title": "⌘ works like Ctrl on Windows and Linux",
+        "detail": "Controlling a PC from a Mac, ⌘C, ⌘V and the rest do what Ctrl does there. ⌘Tab switches windows, ⌘Space opens Start, ⌘Q closes the window. Settings → Viewing turns it off."
+      },
+      {
+        "kind": "improved",
         "title": "The log says why a picture doesn't arrive",
         "detail": "If no video goes out in the first seconds, annex.log names the likely cause, and the PC's log names the video encoder it chose."
       },
