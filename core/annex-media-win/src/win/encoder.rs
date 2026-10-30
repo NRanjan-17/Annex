@@ -16,7 +16,7 @@ use windows::Win32::System::Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0
 use windows::core::Interface;
 
 use super::MediaError;
-use crate::annexb::{with_hevc_parameter_sets, with_parameter_sets};
+use crate::annexb::{is_keyframe, with_hevc_parameter_sets, with_parameter_sets};
 
 /// One encoded access unit (Annex B; keyframes carry SPS/PPS).
 #[derive(Debug, Clone)]
@@ -145,7 +145,9 @@ unsafe fn sample_to_frame(sample: &IMFSample, seq: &[u8], hevc: bool) -> Result<
         buf.Lock(&mut p, None, Some(&mut len))?;
         let data = std::slice::from_raw_parts(p, len as usize).to_vec();
         buf.Unlock()?;
-        let keyframe = sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0;
+        // Not every encoder marks its keyframes (CleanPoint); the bitstream always says. An
+        // unmarked keyframe would never be sent: the host waits for one after every drop.
+        let keyframe = sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0 || is_keyframe(&data, hevc);
         let capture_us = sample.GetSampleTime().unwrap_or(0) / 10;
         let data = match (keyframe, hevc) {
             (false, _) => data,
@@ -308,25 +310,31 @@ impl HardwareEncoder {
             // with E_UNEXPECTED). Then any other hardware encoder; the first that accepts our
             // device wins.
             let mut candidates = hardware_encoders(Some(adapter_luid(device)?), cfg.hevc)?;
+            let on_this_gpu = candidates.len();
             candidates.extend(hardware_encoders(None, cfg.hevc)?);
             let name = if cfg.hevc { "HEVC" } else { "H.264" };
             let mut last = MediaError::Other(format!("no hardware {name} encoder"));
             let mut chosen = None;
-            let mut candidates = candidates.into_iter();
-            for activate in candidates.by_ref() {
+            let mut candidates = candidates.into_iter().enumerate();
+            for (i, activate) in candidates.by_ref() {
+                let gpu = if i < on_this_gpu { "the capturing GPU" } else { "any GPU" };
                 match try_activate(&activate, &manager) {
                     Ok(mft) => {
+                        tracing::info!("hardware {name} encoder: {} (from {gpu})", friendly_name(&activate));
                         chosen = Some((ShutdownOnDrop(activate), mft));
                         break;
                     }
                     Err(e) => {
-                        tracing::info!("hardware encoder candidate rejected: {e}");
+                        tracing::info!(
+                            "hardware encoder candidate rejected: {} (from {gpu}): {e}",
+                            friendly_name(&activate)
+                        );
                         let _ = activate.ShutdownObject();
                         last = e;
                     }
                 }
             }
-            for untried in candidates {
+            for (_, untried) in candidates {
                 let _ = untried.ShutdownObject();
             }
             let (activate, mft) = chosen.ok_or(last)?;
@@ -414,6 +422,10 @@ fn event_loop(
                     sample.SetSampleDuration(10_000_000 / cfg.fps as i64)?;
                     mft.ProcessInput(0, &sample, 0)?;
                 }
+            } else if kind == MEError {
+                // The encoder gave up (a lost device, a GPU it can't use): say so instead of
+                // waiting for events that never come.
+                return Err(windows::core::Error::from_hresult(event.GetStatus()?).into());
             } else if kind == METransformHaveOutput {
                 {
                     let mut out = [MFT_OUTPUT_DATA_BUFFER {
@@ -522,6 +534,18 @@ fn hardware_encoders(adapter: Option<u64>, hevc: bool) -> Result<Vec<IMFActivate
         let out: Vec<IMFActivate> = list.iter_mut().filter_map(|a| a.take()).collect();
         CoTaskMemFree(Some(activates.cast()));
         Ok(out)
+    }
+}
+
+/// An encoder's name as Windows lists it ("NVIDIA HEVC Encoder MFT"), for the log.
+fn friendly_name(activate: &IMFActivate) -> String {
+    unsafe {
+        let Ok(len) = activate.GetStringLength(&MFT_FRIENDLY_NAME_Attribute) else { return "unnamed".into() };
+        let mut buf = vec![0u16; len as usize + 1];
+        if activate.GetString(&MFT_FRIENDLY_NAME_Attribute, &mut buf, None).is_err() {
+            return "unnamed".into();
+        }
+        String::from_utf16_lossy(&buf[..len as usize])
     }
 }
 

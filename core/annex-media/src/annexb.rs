@@ -34,6 +34,14 @@ pub fn has_hevc_vps(buf: &[u8]) -> bool {
     buf.windows(5).any(|w| w[..3] == [0, 0, 1] && w[3] == 0x40 && w[4] == 0x01)
 }
 
+/// Whether an Annex B access unit starts a picture a decoder can begin at: an IDR slice (type 5)
+/// for H.264; an IRAP slice (types 16–21: BLA, IDR, CRA) for HEVC, whose type is bits 1–6 of the
+/// first header byte. For encoders that don't mark their keyframes (`MFSampleExtension_CleanPoint`).
+pub fn is_keyframe(au: &[u8], hevc: bool) -> bool {
+    au.windows(4)
+        .any(|w| w[..3] == [0, 0, 1] && if hevc { (16..=21).contains(&((w[3] >> 1) & 0x3f)) } else { w[3] & 0x1f == 5 })
+}
+
 /// Ensures an HEVC keyframe carries VPS/SPS/PPS: if `au` has no VPS, prepends `sequence_header`.
 pub fn with_hevc_parameter_sets(au: Vec<u8>, sequence_header: &[u8]) -> Vec<u8> {
     if has_hevc_vps(&au) || sequence_header.is_empty() {
@@ -74,5 +82,20 @@ mod tests {
         assert_eq!(with_hevc_parameter_sets(key.clone(), &vps_sps_pps), key);
         // An H.264 SPS is never mistaken for a VPS.
         assert!(!has_hevc_vps(&[0, 0, 0, 1, 0x67, 0x64, 0, 0x1f]));
+    }
+
+    #[test]
+    fn keyframes_are_found_in_the_bitstream() {
+        // H.264: IDR (5) after SPS/PPS is a keyframe; a non-IDR slice (1) isn't.
+        assert!(is_keyframe(&[0, 0, 0, 1, 0x67, 9, 0, 0, 0, 1, 0x68, 9, 0, 0, 1, 0x65, 1], false));
+        assert!(!is_keyframe(&[0, 0, 0, 1, 0x41, 1], false));
+        // HEVC: IDR_W_RADL (19: 0x26), IDR_N_LP (20: 0x28) and CRA (21: 0x2a) are; TRAIL_R (1: 0x02) isn't.
+        for first in [0x26, 0x28, 0x2a] {
+            assert!(is_keyframe(&[0, 0, 0, 1, 0x40, 1, 9, 0, 0, 1, first, 1, 7], true));
+        }
+        assert!(!is_keyframe(&[0, 0, 0, 1, 0x02, 1, 7], true));
+        // HEVC's VPS (0x40) and an H.264 IDR (0x65 → HEVC type 50) aren't HEVC keyframes.
+        assert!(!is_keyframe(&[0, 0, 0, 1, 0x40, 1, 9], true));
+        assert!(!is_keyframe(&[0, 0, 0, 1, 0x65, 1], true));
     }
 }
