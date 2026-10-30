@@ -1356,9 +1356,10 @@ private struct AboutPage: View {
         case .installing: (.spinner, "Installing… Annex reopens in a moment.")
         case .failed(let message): (.symbol("exclamationmark.triangle.fill", .orange), message)
         case .manual(let message): (.symbol("arrow.down.circle", .primary), message)
+        case .ready(let info): (.symbol("arrow.down.circle.fill", .primary), "Annex \(info.version) is downloaded. It installs once no one is connected.")
         }
         return GroupRow(title: text, status: state) {
-            if case .available(let info) = updater.state {
+            if let info = updater.offered {
                 HStack(spacing: 12) {
                     if let page = URL(string: info.pageUrl) { Link("What's New", destination: page).pointingHand() }
                     Button("Install") { updater.confirmAndInstall() }

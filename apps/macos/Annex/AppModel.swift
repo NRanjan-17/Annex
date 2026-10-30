@@ -160,10 +160,25 @@ final class AppModel: ObservableObject {
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .sink { [weak self] _ in self?.refreshPermissions() }
             .store(in: &cancellables)
-        if settings.startSharingAtLaunch { startHosting() }
+        // Sharing when an unattended update quit Annex: share again.
+        let resume = UserDefaults.standard.bool(forKey: Self.shareAfterUpdate)
+        UserDefaults.standard.removeObject(forKey: Self.shareAfterUpdate)
+        if settings.startSharingAtLaunch || resume { startHosting() }
+        if !resume || isHosting { Updater.confirmUpdate() }
+        updater.unattended = { [weak self] in self?.settings.headless == true }
+        updater.busy = { [weak self] in self?.inSession ?? true }
+        updater.willQuitToUpdate = { [weak self] in
+            if self?.isHosting == true { UserDefaults.standard.set(true, forKey: Self.shareAfterUpdate) }
+        }
+        $inSession.removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { self?.updater.sessionsChanged() }
+        }.store(in: &cancellables)
         updater.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &cancellables)
         updater.startAutomaticChecks()
     }
+
+    /// Set when an unattended update quits Annex while sharing; read once at the next launch.
+    static let shareAfterUpdate = "shareAfterUpdate"
 
     var isViewing: Bool { viewer != nil }
     /// A session either way: this Mac shows another computer, or another computer shows this one.
