@@ -167,7 +167,9 @@ fn create_device(gpu: Option<u64>) -> Result<ID3D11Device, MediaError> {
 }
 
 fn encode(inner: &mut Inner, nv12: &ID3D11Texture2D, ts: i64) -> Result<(), MediaError> {
-    inner.counts.submitted.fetch_add(1, Ordering::Relaxed);
+    if inner.counts.submitted.fetch_add(1, Ordering::Relaxed) == 0 {
+        tracing::info!("first frame captured, into the encoder");
+    }
     match &mut inner.encoder {
         Encoder::Hardware(h) => {
             h.submit(nv12, ts);
@@ -252,7 +254,9 @@ impl HostPipeline {
         let output: OutputFn = {
             let counts = counts.clone();
             Arc::new(move |f: EncodedFrame| {
-                counts.encoded.fetch_add(1, Ordering::Relaxed);
+                if counts.encoded.fetch_add(1, Ordering::Relaxed) == 0 {
+                    tracing::info!(keyframe = f.keyframe, bytes = f.data.len(), "first frame out of the encoder");
+                }
                 output(f)
             })
         };
