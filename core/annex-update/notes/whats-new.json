@@ -1,5 +1,20 @@
 [
   {
+    "version": "0.4.2",
+    "items": [
+      {
+        "kind": "new",
+        "title": "Unattended computers update themselves",
+        "detail": "With No one at this screen on, Annex downloads a new version, checks its signature and installs it once no one has been connected for a minute, then shares again. If the new version doesn't start, the old one comes back."
+      },
+      {
+        "kind": "fixed",
+        "title": "Scrolling on Linux with GNOME",
+        "detail": "Scrolling from the viewer did nothing on GNOME. The wheel and trackpad scroll again."
+      }
+    ]
+  },
+  {
     "version": "0.4.1",
     "items": [
       {
