@@ -2,6 +2,7 @@
 //! display. GTK 4 for the window, GStreamer for video, the shared Rust core for the rest
 //! (docs/LINUX.md).
 
+mod autoupdate;
 mod cli;
 mod clipboard;
 mod desktop;
@@ -209,6 +210,10 @@ fn start(app: &gtk::Application, opts: cli::LaunchOpts, used_before: bool) {
         tracing::info!(target: "annex::host", from_option = opts.share, "sharing: on at launch");
         ui::act(app, &model, |m| m.set_hosting(true));
     }
+    // Started by an unattended update: say it runs (once sharing is back, if it should be).
+    if !opts.share || model.borrow().host.is_some() {
+        autoupdate::confirm();
+    }
     // Updates: now, then once a day, while Settings → Check for updates is on.
     if model.borrow().settings.check_for_updates {
         ui::act(app, &model, |m| m.check_for_updates());
@@ -218,6 +223,18 @@ fn start(app: &gtk::Application, opts: cli::LaunchOpts, used_before: bool) {
         glib::timeout_add_seconds_local(24 * 60 * 60, move || {
             if model.borrow().settings.check_for_updates {
                 ui::act(&app, &model, |m| m.check_for_updates());
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+    // No one at this screen: a downloaded update installs once no one is connected.
+    {
+        let (app, model) = (app.clone(), model.clone());
+        glib::timeout_add_seconds_local(15, move || {
+            let switched = model.borrow_mut().install_update_if_idle();
+            if switched {
+                quit(&app, &model);
+                return glib::ControlFlow::Break;
             }
             glib::ControlFlow::Continue
         });

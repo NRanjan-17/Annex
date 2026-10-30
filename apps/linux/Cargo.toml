@@ -12,6 +12,11 @@ publish = false
 name = "annex"
 path = "src/main.rs"
 
+# Installs a signed Annex package as root, for updates with no one at the screen (see the file).
+[[bin]]
+name = "annex-update-helper"
+path = "src/update_helper.rs"
+
 [dependencies]
 annex-discovery = { path = "../../core/annex-discovery" }
 annex-log = { path = "../../core/annex-log" }

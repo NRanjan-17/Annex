@@ -37,6 +37,11 @@ BIN="$ROOT/apps/linux/target/release/annex"
 TREE="$WORK/tree"
 install -Dm755 "$BIN" "$TREE/usr/bin/annex"
 strip "$TREE/usr/bin/annex"
+# Updates with no one at the screen: pkexec runs the helper as root without asking (the policy),
+# and it installs only signed, newer Annex packages.
+install -Dm755 "$ROOT/apps/linux/target/release/annex-update-helper" "$TREE/usr/lib/annex/annex-update-helper"
+strip "$TREE/usr/lib/annex/annex-update-helper"
+install -Dm644 "$ROOT/packaging/linux/dev.getannex.annex.update.policy" "$TREE/usr/share/polkit-1/actions/dev.getannex.annex.update.policy"
 
 # gtk4-layer-shell (MIT) puts the drop island at the top of the screen on wlroots desktops and KDE.
 # It goes inside Annex, in /usr/lib/annex, because Ubuntu 22.04 doesn't package it; Annex loads it
@@ -74,7 +79,7 @@ Architecture: $DEB_ARCH
 Maintainer: Annex contributors <https://github.com/NRanjan-17/Annex/issues>
 Installed-Size: $SIZE_KB
 Depends: libc6 (>= 2.35), libgtk-4-1 (>= 4.6), libgstreamer1.0-0 (>= 1.20), libgstreamer-plugins-base1.0-0 (>= 1.20), gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-libav, gstreamer1.0-pipewire, libxkbcommon0, wl-clipboard, libasound2t64 | libasound2, pulseaudio-utils, curl
-Recommends: gstreamer1.0-plugins-ugly, wlr-randr
+Recommends: gstreamer1.0-plugins-ugly, wlr-randr, pkexec | policykit-1
 Suggests: gstreamer1.0-vaapi
 Section: net
 Priority: optional
@@ -98,7 +103,7 @@ Summary: Show another computer's screen, share this one, or extend it
 License: MIT
 URL: https://github.com/NRanjan-17/Annex
 Requires: gtk4 >= 4.6, gstreamer1 >= 1.20, gstreamer1-plugins-base >= 1.20, gstreamer1-plugins-good, pipewire-gstreamer, libxkbcommon, wl-clipboard, alsa-lib, pulseaudio-utils, curl
-Recommends: gstreamer1-plugins-bad-free, gstreamer1-plugin-openh264, wlr-randr
+Recommends: gstreamer1-plugins-bad-free, gstreamer1-plugin-openh264, wlr-randr, polkit
 Suggests: gstreamer1-plugin-libav
 AutoReqProv: no
 
@@ -113,6 +118,8 @@ cp -a $TREE/. %{buildroot}/
 %files
 /usr/bin/annex
 /usr/lib/annex/libgtk4-layer-shell.so.0
+/usr/lib/annex/annex-update-helper
+/usr/share/polkit-1/actions/dev.getannex.annex.update.policy
 /usr/share/applications/dev.getannex.Annex.desktop
 /usr/share/icons/hicolor/*/apps/annex.png
 /usr/share/doc/annex/copyright

@@ -122,6 +122,43 @@ pub fn pick(releases_json: &str, current: &str, beta: bool, asset_suffix: &str) 
     }))
 }
 
+/// The release of exactly `version`, with its `asset_suffix` file: what an unattended update keeps
+/// to put this version back if the new one doesn't start. `None` if it isn't published (or isn't
+/// signed).
+pub fn find(releases_json: &str, version: &str, asset_suffix: &str) -> Result<Option<Update>, UpdateError> {
+    let releases: Vec<Release> =
+        serde_json::from_str(releases_json).map_err(|e| UpdateError::BadReleases(e.to_string()))?;
+    let v = version.trim_start_matches('v');
+    let Some(r) = releases.iter().find(|r| !r.draft && r.tag_name.trim_start_matches('v') == v) else { return Ok(None) };
+    let names = [format!("Annex-{v}{asset_suffix}"), format!("Annex-Setup-{v}{asset_suffix}")];
+    let (Some(asset), Some(sums), Some(sig)) = (
+        r.assets.iter().find(|a| names.contains(&a.name)),
+        r.assets.iter().find(|a| a.name == SUMS_NAME),
+        r.assets.iter().find(|a| a.name == SIG_NAME),
+    ) else {
+        return Ok(None);
+    };
+    Ok(Some(Update {
+        version: v.to_string(),
+        prerelease: r.prerelease,
+        downgrade: false,
+        notes: r.body.clone().unwrap_or_default(),
+        page_url: r.html_url.clone(),
+        asset_name: asset.name.clone(),
+        asset_url: asset.browser_download_url.clone(),
+        sums_url: sums.browser_download_url.clone(),
+        sig_url: sig.browser_download_url.clone(),
+    }))
+}
+
+/// Whether `candidate` is a newer version than `current` (semver; `false` if either doesn't parse).
+pub fn is_newer(candidate: &str, current: &str) -> bool {
+    match (Version::parse(candidate.trim_start_matches('v')), Version::parse(current.trim_start_matches('v'))) {
+        (Ok(a), Ok(b)) => a > b,
+        _ => false,
+    }
+}
+
 /// Checks a downloaded file against the release's signed checksums.
 pub fn verify(sums: &[u8], signature: &[u8], file: &Path, asset_name: &str) -> Result<(), UpdateError> {
     verify_with_key(&UPDATE_PUBLIC_KEY, sums, signature, file, asset_name)
@@ -261,6 +298,24 @@ mod tests {
             release("v1.0.0-pre.1", false, true).replace(r#""tag_name":"v1.0.0-pre.1""#, r#""tag_name":"v1.0.0""#)
         ]);
         assert_eq!(pick(&json, "0.1.0", false, "-x64.exe").unwrap(), None);
+    }
+
+    #[test]
+    fn find_returns_exactly_that_signed_version() {
+        let json = list(&[release("v0.4.1", false, true), release("v0.4.0", false, true), release("v0.3.9", false, false)]);
+        let u = find(&json, "0.4.0", "-macos-universal.dmg").unwrap().unwrap();
+        assert_eq!((u.version.as_str(), u.asset_name.as_str()), ("0.4.0", "Annex-0.4.0-macos-universal.dmg"));
+        assert!(find(&json, "0.3.9", "-macos-universal.dmg").unwrap().is_none(), "unsigned");
+        assert!(find(&json, "0.4.2", "-macos-universal.dmg").unwrap().is_none(), "not published");
+    }
+
+    #[test]
+    fn newer_compares_semver() {
+        assert!(is_newer("0.4.10", "0.4.9"));
+        assert!(is_newer("v0.5.0", "0.5.0-beta.2"));
+        assert!(!is_newer("0.4.1", "0.4.1"));
+        assert!(!is_newer("0.4.0", "0.4.1"));
+        assert!(!is_newer("garbage", "0.4.1"));
     }
 
     #[test]
