@@ -103,6 +103,44 @@ struct OutFrame {
     data: Arc<Vec<u8>>,
 }
 
+/// What happened to the frames the app gave one session, for the log: a viewer showing nothing
+/// can then be told apart as "nothing to send" or "everything held back".
+#[derive(Default)]
+struct VideoCounts {
+    /// Frames the app handed over for this session.
+    from_app: AtomicU32,
+    /// Of those, keyframes.
+    keyframes: AtomicU32,
+    /// Held back: a delta while waiting for a keyframe.
+    held: AtomicU32,
+    /// Dropped: the send queue was full (the link is slower than the stream).
+    congested: AtomicU32,
+    /// Mirror frames in a codec this viewer doesn't decode (until the app switches the stream).
+    other_codec: AtomicU32,
+}
+
+impl VideoCounts {
+    fn snapshot(&self) -> [u32; 5] {
+        [&self.from_app, &self.keyframes, &self.held, &self.congested, &self.other_codec]
+            .map(|c| c.load(Ordering::Relaxed))
+    }
+}
+
+/// Why a session sent no frame yet, from its counts ([`VideoCounts::snapshot`]).
+fn no_video_reason([from_app, keyframes, held, congested, other_codec]: [u32; 5]) -> &'static str {
+    if from_app == 0 && other_codec > 0 {
+        "the stream is in a codec this viewer doesn't decode, and hasn't switched"
+    } else if from_app == 0 {
+        "the app gave no frames: the screen capture or the encoder produces none"
+    } else if keyframes == 0 && held > 0 {
+        "every frame was held back waiting for a keyframe: the encoder never marked one"
+    } else if congested > 0 {
+        "every frame was dropped: the send queue stayed full"
+    } else {
+        "unknown"
+    }
+}
+
 struct SessionSlot {
     id: SessionId,
     mode: Mode,
@@ -118,6 +156,7 @@ struct SessionSlot {
     transfers: Option<Arc<crate::transfer::Transfers>>,
     /// The video codecs this viewer decodes (from its session request).
     codecs: Vec<Codec>,
+    counts: VideoCounts,
 }
 
 struct Shared {
@@ -145,10 +184,13 @@ impl Shared {
     }
 
     fn submit(&self, slot: &SessionSlot, data: &Arc<Vec<u8>>, capture_ts_us: i64, keyframe: bool) -> SubmitResult {
+        slot.counts.from_app.fetch_add(1, Ordering::Relaxed);
         if keyframe {
+            slot.counts.keyframes.fetch_add(1, Ordering::Relaxed);
             slot.need_keyframe.store(false, Ordering::Release);
         } else if slot.need_keyframe.load(Ordering::Acquire) {
             // Deltas after a drop would decode as garbage; wait for the keyframe.
+            slot.counts.held.fetch_add(1, Ordering::Relaxed);
             return SubmitResult::Dropped;
         }
         let frame = OutFrame {
@@ -162,6 +204,7 @@ impl Shared {
         match slot.frames.try_send(frame) {
             Ok(()) => SubmitResult::Sent,
             Err(mpsc::error::TrySendError::Full(_)) => {
+                slot.counts.congested.fetch_add(1, Ordering::Relaxed);
                 self.request_keyframe(slot);
                 SubmitResult::Dropped
             }
@@ -301,6 +344,7 @@ impl HostHandle {
                 targets.push(s.clone());
             } else {
                 // Waiting for the app to switch the stream to a codec it decodes: start it on a keyframe.
+                s.counts.other_codec.fetch_add(1, Ordering::Relaxed);
                 s.need_keyframe.store(true, Ordering::Release);
             }
         }
@@ -715,6 +759,7 @@ async fn run_session(
         ended: tokio::sync::Notify::new(),
         outbox,
         codecs: req.codecs.clone(),
+        counts: VideoCounts::default(),
         transfers: match quic {
             Some(conn) if peer.caps.iter().any(|c| c == crate::transfer::CAP) => {
                 // Only from a viewer that asked for, and still has, control of this computer.
@@ -804,6 +849,9 @@ async fn run_session(
         // The viewer chose a lower quality: start the encoder there rather than at 100 %.
         (shared.events)(Event::BitrateHint { session_id: id, scale_percent: rate.scale_percent() });
     }
+    // For the log: reports so far, frames sent so far, and the last summary's counts.
+    let (mut reports, mut sent, mut warned) = (0u32, 0u32, false);
+    let mut logged = [0u32; 5];
     let main = async {
         loop {
             tokio::select! {
@@ -850,6 +898,42 @@ async fn run_session(
                             writer.send_control(&Control::InputAllowed { allowed }).await?;
                             (shared.events)(Event::InputAllowed { session_id: id, allowed });
                         }
+                        reports += 1;
+                        let now = slot.counts.snapshot();
+                        let [from_app, keyframes, held, congested, other_codec] = now;
+                        let sent_now = from_app - held - congested;
+                        if sent_now == 0 && reports == 3 && !warned {
+                            warned = true;
+                            tracing::warn!(
+                                id,
+                                from_app,
+                                keyframes,
+                                held,
+                                congested,
+                                other_codec,
+                                "no video sent to this viewer in 3 s: {}",
+                                no_video_reason(now)
+                            );
+                        } else if warned && sent_now > 0 && sent == 0 {
+                            tracing::info!(id, after_s = reports, "video is reaching the viewer now");
+                        }
+                        sent = sent_now;
+                        // Every 10 s: what the app gave and what went out, beside what arrived.
+                        if reports % 10 == 0 {
+                            let d = std::array::from_fn::<u32, 5, _>(|i| now[i] - logged[i]);
+                            logged = now;
+                            tracing::debug!(
+                                id,
+                                from_app = d[0],
+                                keyframes = d[1],
+                                held_for_keyframe = d[2],
+                                dropped_congested = d[3],
+                                other_codec = d[4],
+                                viewer_frames = r.frames,
+                                viewer_datagrams = r.shards,
+                                "host: video in the last 10 s (viewer: last second)"
+                            );
+                        }
                         let d = rate.on_report(&r);
                         if let VideoOut::Datagrams { fec_percent, .. } = video {
                             fec_percent.store(d.fec_percent, Ordering::Relaxed);
@@ -887,6 +971,16 @@ async fn run_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_silent_session_says_why() {
+        // [from_app, keyframes, held, congested, other_codec]
+        assert!(no_video_reason([0, 0, 0, 0, 0]).contains("gave no frames"));
+        assert!(no_video_reason([0, 0, 0, 0, 40]).contains("codec"));
+        // The black Windows → Mac sessions of 0.4.0, if the encoder never marked a keyframe.
+        assert!(no_video_reason([180, 0, 180, 0, 0]).contains("never marked one"));
+        assert!(no_video_reason([180, 2, 0, 180, 0]).contains("queue"));
+    }
 
     fn display(width_px: u32, height_px: u32) -> DisplayInfo {
         DisplayInfo {

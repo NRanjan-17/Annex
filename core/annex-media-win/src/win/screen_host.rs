@@ -1,10 +1,10 @@
 //! Windows host pipeline: capture a monitor, convert to NV12 at stream size on the GPU, encode
 //! H.264 (hardware if available) or HEVC (hardware only), hand access units to the caller.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::LUID;
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN};
@@ -78,6 +78,23 @@ enum Encoder {
     Software { enc: SoftwareEncoder, scratch: Vec<u8> },
 }
 
+/// How long a hardware encoder may hold its first frame before it counts as broken. Real ones
+/// answer within a few frames.
+const FIRST_OUTPUT: Duration = Duration::from_secs(2);
+/// How long to wait for Windows to capture anything at all; without a frame the encoder can't be judged.
+const FIRST_CAPTURE: Duration = Duration::from_secs(3);
+
+/// Set once the hardware H.264 encoder took frames and gave nothing back: later pipelines in this
+/// process go straight to the software one instead of showing black for two seconds each time.
+static HARDWARE_H264_SILENT: AtomicBool = AtomicBool::new(false);
+
+/// Frames handed to the encoder and frames that came out, for [`HostPipeline::encoder_answers`].
+#[derive(Default)]
+struct Counts {
+    submitted: AtomicU32,
+    encoded: AtomicU32,
+}
+
 // SAFETY: the D3D11 device is created multithread-protected and every access to the converter
 // and encoder goes through `Inner`'s mutex.
 struct Inner {
@@ -87,6 +104,7 @@ struct Inner {
     /// With `max_fps`: when the last frame was encoded, and whether a newer one was skipped.
     last_encoded_us: i64,
     skipped: bool,
+    counts: Arc<Counts>,
 }
 unsafe impl Send for Inner {}
 
@@ -149,6 +167,9 @@ fn create_device(gpu: Option<u64>) -> Result<ID3D11Device, MediaError> {
 }
 
 fn encode(inner: &mut Inner, nv12: &ID3D11Texture2D, ts: i64) -> Result<(), MediaError> {
+    if inner.counts.submitted.fetch_add(1, Ordering::Relaxed) == 0 {
+        tracing::info!("first frame captured, into the encoder");
+    }
     match &mut inner.encoder {
         Encoder::Hardware(h) => {
             h.submit(nv12, ts);
@@ -163,17 +184,85 @@ fn encode(inner: &mut Inner, nv12: &ID3D11Texture2D, ts: i64) -> Result<(), Medi
 
 impl HostPipeline {
     /// `clock` supplies capture timestamps (µs, the core's monotonic clock).
+    ///
+    /// A hardware encoder must give back its first frame: some start without an error and then
+    /// never return one (on a laptop with AMD and NVIDIA graphics, the HEVC encoder Windows offered
+    /// took every frame and produced nothing, and the viewer stayed black). Then HEVC fails, so the
+    /// caller falls back to H.264, and H.264 falls back to the software encoder.
     pub fn start(
         cfg: HostPipelineConfig,
         clock: Arc<dyn Fn() -> i64 + Send + Sync>,
         output: OutputFn,
     ) -> Result<Self, MediaError> {
+        let hardware = cfg.hevc || (cfg.prefer_hardware && !HARDWARE_H264_SILENT.load(Ordering::Relaxed));
+        let p = Self::launch(cfg.clone(), clock.clone(), output.clone(), hardware)?;
+        if !p.hardware || p.encoder_answers() {
+            return Ok(p);
+        }
+        drop(p);
+        let name = if cfg.hevc { "HEVC" } else { "H.264" };
+        tracing::warn!("hardware {name} encoder took frames for {}s and returned none", FIRST_OUTPUT.as_secs());
+        if cfg.hevc {
+            return Err(MediaError::Other("the hardware HEVC encoder returns no frames".into()));
+        }
+        HARDWARE_H264_SILENT.store(true, Ordering::Relaxed);
+        tracing::warn!("using the software H.264 encoder from now on");
+        Self::launch(cfg, clock, output, false)
+    }
+
+    /// Waits for the hardware encoder's first frame: false if it took frames and returned none
+    /// within [`FIRST_OUTPUT`]. A still screen is captured once, and an encoder may hold a frame
+    /// until the next arrives, so the last capture is handed over again while waiting.
+    fn encoder_answers(&self) -> bool {
+        let counts = self.inner.lock().unwrap().counts.clone();
+        let started = Instant::now();
+        let mut first_submit: Option<Instant> = None;
+        loop {
+            if counts.encoded.load(Ordering::Relaxed) > 0 {
+                return true;
+            }
+            if counts.submitted.load(Ordering::Relaxed) > 0 {
+                let since = *first_submit.get_or_insert_with(Instant::now);
+                if since.elapsed() >= FIRST_OUTPUT {
+                    return false;
+                }
+            } else if started.elapsed() >= FIRST_CAPTURE {
+                // Nothing captured yet (a locked or sleeping screen): no verdict on the encoder.
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            if first_submit.is_some_and(|t| t.elapsed() >= Duration::from_millis(300)) {
+                let mut g = self.inner.lock().unwrap();
+                if let Some(last) = g.last.clone() {
+                    let ts = (self.clock)();
+                    let _ = encode(&mut g, &last, ts);
+                }
+            }
+        }
+    }
+
+    fn launch(
+        cfg: HostPipelineConfig,
+        clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+        output: OutputFn,
+        hardware: bool,
+    ) -> Result<Self, MediaError> {
         let device = create_device(cfg.gpu)?;
         let ecfg =
             EncoderConfig { width: cfg.width, height: cfg.height, fps: cfg.fps, bitrate: cfg.bitrate, hevc: cfg.hevc };
+        let counts = Arc::new(Counts::default());
+        let output: OutputFn = {
+            let counts = counts.clone();
+            Arc::new(move |f: EncodedFrame| {
+                if counts.encoded.fetch_add(1, Ordering::Relaxed) == 0 {
+                    tracing::info!(keyframe = f.keyframe, bytes = f.data.len(), "first frame out of the encoder");
+                }
+                output(f)
+            })
+        };
         let encoder = if cfg.hevc {
             Encoder::Hardware(HardwareEncoder::new(&device, ecfg, output.clone())?)
-        } else if cfg.prefer_hardware {
+        } else if hardware {
             match HardwareEncoder::new(&device, ecfg, output.clone()) {
                 Ok(h) => Encoder::Hardware(h),
                 Err(e) => {
@@ -191,6 +280,7 @@ impl HostPipeline {
             last: None,
             last_encoded_us: 0,
             skipped: false,
+            counts,
         }));
         // A little under the frame time, so a screen refreshing at exactly twice the rate isn't
         // cut to a third by timing jitter. 0: every frame.

@@ -527,6 +527,8 @@ async fn run(
         let mut stats_ticks = 0u32;
         let mut report = tokio::time::interval(Duration::from_secs(1));
         report.tick().await;
+        // Seconds into the session and whether any video arrived, for one warning if none does.
+        let (mut seconds, mut got_video) = (0u32, false);
         let mut keyframe_retry = tokio::time::interval(Duration::from_millis(100));
         keyframe_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -571,6 +573,17 @@ async fn run(
                         recovered: counters.recovered.swap(0, Relaxed),
                         rtt_us,
                     };
+                    seconds += 1;
+                    if r.shards > 0 || r.frames > 0 {
+                        if !got_video && seconds > 3 {
+                            tracing::info!(after_s = seconds, "viewer: video arriving now");
+                        }
+                        got_video = true;
+                    } else if !got_video && seconds == 3 {
+                        // The connection works (this report gets through), so the other side isn't
+                        // sending: its annex.log says why ("no video sent to this viewer").
+                        tracing::warn!("viewer: no video from the other computer in 3 s, though the connection works");
+                    }
                     writer.send_control(&Control::ReceiverReport(r)).await?;
                 }
                 Some(()) = lost_rx.recv() => {
