@@ -61,17 +61,27 @@ unsafe fn hevc_decoder() -> Result<Option<IMFTransform>, MediaError> {
             out
         };
         let Some(first) = list.first() else { return Ok(None) };
-        Ok(Some(first.ActivateObject()?))
+        Ok(Some(first.ActivateObject().map_err(|e| MediaError::Other(format!("opening the HEVC decoder: {e}")))?))
     }
 }
 
-/// Whether Windows has an HEVC decoder, so a viewer here can offer HEVC.
+/// Whether this PC can decode HEVC, so a viewer here can offer it: a decoder is installed (the
+/// HEVC Video Extensions) and really starts. Some PCs list one that then refuses to start (seen:
+/// "The requested attribute was not found", 0xC00D36E6); offering HEVC there left the viewer
+/// with no picture, so it's only offered once one has started here.
 pub fn hevc_decoder_available() -> bool {
-    // SAFETY: COM and Media Foundation start-up, then enumeration.
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        super::mf_startup().is_ok() && matches!(hevc_decoder(), Ok(Some(_)))
+    match H264Decoder::new_for(None, true) {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::info!("HEVC not offered: this PC's HEVC decoder doesn't start ({e}); the picture comes as H.264");
+            false
+        }
     }
+}
+
+/// Names the step that failed, so a decoder that won't start can be told apart in the log.
+fn step(what: &'static str) -> impl FnOnce(windows::core::Error) -> MediaError {
+    move |e| MediaError::Other(format!("{what}: {e}"))
 }
 
 fn unpack_size(v: u64) -> (u32, u32) {
@@ -113,11 +123,11 @@ impl H264Decoder {
                     None
                 }
             });
-            mft.SetInputType(0, &input, 0)?;
+            mft.SetInputType(0, &input, 0).map_err(step("setting the input type"))?;
             let mut dec = H264Decoder { mft, _manager: manager, width: 0, height: 0, stride: 0, visible: (0, 0) };
             dec.select_output_type()?;
-            dec.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
-            dec.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
+            dec.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0).map_err(step("starting"))?;
+            dec.mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0).map_err(step("starting the stream"))?;
             Ok(dec)
         }
     }

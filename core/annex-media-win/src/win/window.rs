@@ -506,7 +506,12 @@ fn run(
                     }
                     if keyframe && crate::annexb::has_hevc_vps(&data) != hevc {
                         hevc = !hevc;
-                        decoder = match H264Decoder::new_for(Some(renderer.device()), hevc) {
+                        // A hardware decoder that refuses the codec gets a software one instead.
+                        let made = H264Decoder::new_for(Some(renderer.device()), hevc).or_else(|e| {
+                            tracing::warn!(hevc, "the decoder refused the stream's codec ({e}); trying software");
+                            H264Decoder::new_for(None, hevc)
+                        });
+                        decoder = match made {
                             Ok(d) => {
                                 tracing::info!(hevc, hardware = d.is_hardware(), "stream switched codec; new decoder");
                                 Some(d)
