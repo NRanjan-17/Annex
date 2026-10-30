@@ -1686,7 +1686,14 @@ public sealed partial class MainWindow : Window
             XamlRoot = Content.XamlRoot,
             RequestedTheme = ElementTheme.Dark,
             Title = releases.Count == 1 ? $"What's new in Annex {releases[0].Version}" : "What's new in Annex",
-            Content = panel,
+            // Several releases' notes are long: they scroll inside a dialog that fits the window.
+            Content = new ScrollViewer
+            {
+                Content = panel,
+                MaxHeight = Math.Max(240, Content.XamlRoot.Size.Height - 240),
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Padding = new Thickness(0, 0, 12, 0),
+            },
             CloseButtonText = "Got it",
             DefaultButton = ContentDialogButton.Close,
         };
